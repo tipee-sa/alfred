@@ -1,10 +1,9 @@
 package scheduler
 
-import "github.com/gammadia/alfred/namegen"
+import (
+	"github.com/gammadia/alfred/proto"
+)
 
 type Job struct {
-	Name   namegen.ID
-	Image  string
-	Tasks  []string
-	Script string
+	*proto.Job
 }

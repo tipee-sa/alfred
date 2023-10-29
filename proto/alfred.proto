@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+option go_package = "github.com/gammadia/alfred/proto";
+
+package proto;
+
+service Alfred {
+    rpc LoadImage (stream LoadImageMessage) returns (stream LoadImageResponse);
+    rpc ScheduleJob (ScheduleJobRequest) returns (ScheduleJobResponse);
+    rpc Ping (PingRequest) returns (PingResponse);
+}
+
+message Job {
+    string name = 1;
+    string image = 2;
+    repeated string tasks = 3;
+}
+
+message LoadImageMessage {
+    message Init {
+        string image_id = 1;
+    }
+    message Data {
+        bytes chunk = 1;
+        uint32 length = 2;
+    }
+    message Done {}
+
+    oneof message {
+        Init init = 1;
+        Data data = 2;
+        Done done = 3;
+    }
+}
+
+message LoadImageResponse {
+    enum Status {
+        UNSPECIFIED = 0;
+        CONTINUE = 1;
+        OK = 2;
+    }
+
+    Status status = 1;
+    optional uint32 chunk_size = 2;
+}
+
+message ScheduleJobRequest {
+    Job job = 1;
+}
+
+message ScheduleJobResponse {
+
+}
+message PingRequest {}
+
+message PingResponse {
+    string version = 1;
+    string commit = 2;
+}

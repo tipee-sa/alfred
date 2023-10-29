@@ -1,5 +1,7 @@
 package scheduler
 
+import "log/slog"
+
 type NodeStatus string
 
 const (
@@ -19,4 +21,5 @@ type nodeState struct {
 	node   Node
 	status NodeStatus
 	tasks  []*Task
+	log    *slog.Logger
 }

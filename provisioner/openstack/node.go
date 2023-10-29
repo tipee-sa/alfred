@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"syscall"
@@ -24,6 +25,8 @@ type Node struct {
 	docker      *client.Client
 
 	terminated bool
+
+	log *slog.Logger
 }
 
 // Node implements scheduler.Node
@@ -81,7 +84,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		default:
 			time.Sleep(5 * time.Second)
 			n.ssh, err = ssh.Dial("tcp", fmt.Sprintf("%s:22", nodeAddress), &ssh.ClientConfig{
-				User:            n.provisioner.config.Username,
+				User:            n.provisioner.config.SshUsername,
 				Timeout:         10 * time.Second,
 				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 				Auth: []ssh.AuthMethod{
@@ -93,7 +96,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 				case errors.Is(err, syscall.ECONNREFUSED):
 				case errors.Is(err, syscall.ETIMEDOUT):
 				case errors.Is(err, os.ErrDeadlineExceeded):
-					n.provisioner.logger.Printf("SSH connection to server '%s' (%s) refused, retrying in 5 seconds", n.name, nodeAddress)
+					n.log.Debug("SSH connection to server refused, retrying in 5 seconds")
 
 				default:
 					return fmt.Errorf("failed to connect to server '%s': %w", n.name, err)

@@ -2,7 +2,7 @@ package openstack
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -20,18 +20,24 @@ type Provisioner struct {
 	name   namegen.ID
 	config Config
 	client *gophercloud.ServiceClient
-	logger *log.Logger
+	log    *slog.Logger
 
-	keyName    string
-	privateKey ssh.Signer
+	keypairName string
+	privateKey  ssh.Signer
 
+	// WaitGroup tracking all provisioned resources
+	// An item is added to track the first call to Shutdown()
 	wg sync.WaitGroup
+
+	// True if Shutdown() has been called
+	shutdown bool
 }
 
 // Provisioner implements scheduler.Provisioner
 var _ scheduler.Provisioner = (*Provisioner)(nil)
 
 func NewProvisioner(config Config) (*Provisioner, error) {
+	// OpenStack authentication
 	opts, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth options from env: %w", err)
@@ -42,6 +48,7 @@ func NewProvisioner(config Config) (*Provisioner, error) {
 		return nil, fmt.Errorf("failed to get authenticated client: %w", err)
 	}
 
+	// OpenStack compute client
 	client, err := openstack.NewComputeV2(provider, gophercloud.EndpointOpts{
 		Region: os.Getenv("OS_REGION_NAME"),
 	})
@@ -49,31 +56,46 @@ func NewProvisioner(config Config) (*Provisioner, error) {
 		return nil, fmt.Errorf("failed to get compute client: %w", err)
 	}
 
+	// Provisioner object
 	name := namegen.Get()
 	provisioner := &Provisioner{
 		name:   name,
 		config: config,
 		client: client,
+		log:    config.Logger.With(slog.Group("provisioner", "name", name)),
 
-		keyName: fmt.Sprintf("alfred-%s", name),
+		keypairName: fmt.Sprintf("alfred-%s", name),
 	}
+	provisioner.wg.Add(1) // One item for the provisioner itself
 
-	keypair, err := keypairs.Create(client, keypairs.CreateOpts{Name: provisioner.keyName}).Extract()
+	// Generate a temporary keypair
+	provisioner.log.Debug("Creating SSH keypair", "keypair", provisioner.keypairName)
+	keypair, err := keypairs.Create(client, keypairs.CreateOpts{Name: provisioner.keypairName}).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create keypair: %w", err)
 	} else {
+		provisioner.wg.Add(1) // One item for the keypair
 		provisioner.privateKey, err = ssh.ParsePrivateKey([]byte(keypair.PrivateKey))
 		if err != nil {
+			provisioner.deleteKeypair()
 			return nil, fmt.Errorf("failed to parse private key: %w", err)
 		}
 	}
-	provisioner.wg.Add(1) // One item for the keypair
 
 	return provisioner, nil
 }
 
-func (p *Provisioner) SetLogger(logger *log.Logger) {
-	p.logger = logger
+func (p *Provisioner) deleteKeypair() {
+	p.log.Debug("Deleting SSH keypair", "keypair", p.keypairName)
+	err := keypairs.Delete(p.client, p.keypairName, nil).ExtractErr()
+	p.wg.Done()
+	if err != nil {
+		p.log.Warn("Failed to delete keypair", "error", err)
+	}
+}
+
+func (p *Provisioner) GetName() namegen.ID {
+	return p.name
 }
 
 func (p *Provisioner) MaxNodes() int {
@@ -99,7 +121,7 @@ func (p *Provisioner) Provision() (scheduler.Node, error) {
 				"alfred-provisioned-at": time.Now().Format(time.RFC3339),
 			},
 		},
-		KeyName: p.keyName,
+		KeyName: p.keypairName,
 	}).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server '%s': %w", name, err)
@@ -109,18 +131,21 @@ func (p *Provisioner) Provision() (scheduler.Node, error) {
 		name:        name,
 		provisioner: p,
 		server:      server,
+		log:         p.log.With(slog.Group("node", "name", name)),
 	}
 
-	node.provisioner.logger.Printf("Created server '%s', waiting for it to become ready", name)
+	node.log.Info("Created server, waiting for it to become ready")
 	return node, node.connect(server)
 }
 
 func (p *Provisioner) Shutdown() {
-	err := keypairs.Delete(p.client, p.keyName, nil).ExtractErr()
-	if err != nil {
-		p.logger.Printf("Failed to delete keypair '%s': %v", p.keyName, err)
+	if p.shutdown {
+		p.log.Debug("Ignoring duplicate call to Shutdown()")
+		return
 	}
-	p.wg.Done()
+	p.shutdown = true
+	p.deleteKeypair()
+	p.wg.Done() // Remove the provisioner itself from the WaitGroup
 }
 
 func (p *Provisioner) Wait() {

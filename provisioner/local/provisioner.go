@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"runtime"
 
 	"github.com/docker/docker/client"
@@ -11,6 +12,7 @@ import (
 )
 
 type LocalProvisioner struct {
+	log    *slog.Logger
 	ctx    context.Context
 	cancel context.CancelFunc
 	docker *client.Client
@@ -21,7 +23,7 @@ type LocalProvisioner struct {
 // LocalProvisioner implements Provisioner
 var _ scheduler.Provisioner = (*LocalProvisioner)(nil)
 
-func NewProvisioner() (*LocalProvisioner, error) {
+func NewProvisioner(logger *slog.Logger) (*LocalProvisioner, error) {
 	docker, err := client.NewClientWithOpts()
 	if err != nil {
 		return nil, fmt.Errorf("failed to init docker client: %w", err)
@@ -30,6 +32,7 @@ func NewProvisioner() (*LocalProvisioner, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &LocalProvisioner{
+		log:    logger,
 		ctx:    ctx,
 		cancel: cancel,
 		docker: docker,

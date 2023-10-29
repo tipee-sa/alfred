@@ -1,0 +1,8 @@
+version: "1"
+name: test-job
+image:
+  dockerfile: job.dockerfile
+  context: ../
+tasks: |
+  echo "hello"
+  echo "world"

@@ -60,7 +60,7 @@ func (ln *LocalNode) Run(task *scheduler.Task) error {
 		ln.ctx,
 		&container.Config{
 			Image: image,
-			Cmd:   []string{"sh", "-c", task.Job.Script},
+			Cmd:   []string{"sh", "-c", "echo 'Hello, world'"},
 			Env:   []string{fmt.Sprintf("TASK_NAME=%s", task.Name)},
 		},
 		&container.HostConfig{

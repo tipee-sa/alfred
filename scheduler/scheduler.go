@@ -1,7 +1,8 @@
 package scheduler
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -11,10 +12,9 @@ import (
 )
 
 type Scheduler struct {
-	name        namegen.ID
 	provisioner Provisioner
 	config      Config
-	logger      *log.Logger
+	log         *slog.Logger
 	shutdown    bool
 
 	jobs map[namegen.ID]*Job
@@ -28,15 +28,16 @@ type Scheduler struct {
 	nodes []*nodeState
 
 	stop chan any
-	wg   sync.WaitGroup
+
+	// WaitGroup tracking all running tasks
+	wg sync.WaitGroup
 }
 
-func NewScheduler(provisioner Provisioner, config Config) *Scheduler {
+func New(provisioner Provisioner, config Config) *Scheduler {
 	scheduler := &Scheduler{
-		name:        namegen.Get(),
 		provisioner: provisioner,
 		config:      config,
-		logger:      log.Default(),
+		log:         config.Logger,
 
 		jobs: make(map[namegen.ID]*Job),
 
@@ -50,15 +51,11 @@ func NewScheduler(provisioner Provisioner, config Config) *Scheduler {
 		wg:   sync.WaitGroup{},
 	}
 
-	provisioner.SetLogger(scheduler.logger)
-
-	go scheduler.Run()
 	return scheduler
 }
 
 func (s *Scheduler) Schedule(job *Job) {
-	job.Name = namegen.Get()
-	s.logger.Printf("Starting job '%s'", job.Name)
+	s.log.Info("Scheduling job", "name", job.Name)
 
 	s.wg.Add(len(job.Tasks))
 	for _, name := range job.Tasks {
@@ -66,6 +63,8 @@ func (s *Scheduler) Schedule(job *Job) {
 			Job:    job,
 			Name:   name,
 			Status: TaskStatusPending,
+
+			log: s.log.With(slog.Group("task", "job", job.Name, "name", name)),
 		}
 
 		s.input <- &task
@@ -82,13 +81,12 @@ func (s *Scheduler) Shutdown() {
 }
 
 func (s *Scheduler) Run() {
-	s.logger.Printf("Scheduler is running")
-
+	s.log.Info("Scheduler is running")
 	for {
 		select {
 		case task := <-s.input:
 			if s.shutdown {
-				s.logger.Printf("Scheduler is shutting down, ignoring task '%s'", task.Name)
+				task.log.Debug("Scheduler is shutting down, ignoring task")
 			}
 			s.queue = append(s.queue, task)
 			s.requestTick()
@@ -106,7 +104,7 @@ func (s *Scheduler) Run() {
 			f()
 
 		case <-s.stop:
-			s.logger.Printf("Scheduler is stopping")
+			s.log.Info("Shutting down scheduler")
 			s.shutdown = true
 			s.provisioner.Shutdown()
 			for _, nodeState := range s.nodes {
@@ -150,7 +148,7 @@ func (s *Scheduler) scheduleTaskOnNode() bool {
 
 		for slot, runningTask := range nodeState.tasks {
 			if runningTask == nil {
-				s.logger.Printf("Scheduling task '%s' on node '%s:%d'", nextTask.Name, nodeState.node.Name(), slot)
+				nextTask.log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot))
 				nodeState.tasks[slot] = nextTask
 				s.queue = s.queue[1:]
 
@@ -175,7 +173,7 @@ func (s *Scheduler) resizePool() {
 			if lo.EveryBy(nodeState.tasks, func(task *Task) bool {
 				return task == nil
 			}) {
-				s.logger.Printf("Terminating node '%s'", nodeState.node.Name())
+				nodeState.log.Info("Terminating node")
 				nodeState.status = NodeStatusTerminating
 
 				go s.watchNodeTermination(nodeState)
@@ -200,9 +198,10 @@ func (s *Scheduler) resizePool() {
 			node:   nil,
 			status: NodeStatusProvisioning,
 			tasks:  make([]*Task, s.provisioner.MaxTasksPerNode()),
+			log:    s.log.With("component", "node"),
 		}
 		s.nodes = append(s.nodes, nodeState)
-		s.logger.Printf("Provisioning a new node")
+		s.log.Info("Provisioning a new node")
 
 		go s.watchNodeProvisioning(nodeState)
 	}
@@ -210,7 +209,7 @@ func (s *Scheduler) resizePool() {
 
 func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	if node, err := s.provisioner.Provision(); err != nil {
-		s.logger.Printf("Provisioning of node failed: %s", err)
+		nodeState.log.Error("Provisioning of node failed", "error", err)
 		nodeState.status = NodeStatusFailed
 
 		s.after(s.config.ProvisioningFailureCooldown, func() {
@@ -218,9 +217,10 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 			s.requestTick()
 		})
 	} else {
-		s.logger.Printf("Node '%s' is online", node.Name())
+		nodeState.log = nodeState.log.With(slog.Group("node", "name", node.Name()))
 		nodeState.node = node
 		nodeState.status = NodeStatusOnline
+		nodeState.log.Info("Node is online")
 	}
 
 	s.requestTick()
@@ -230,10 +230,10 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	node := nodeState.node
 
 	if err := node.Run(task); err != nil {
-		s.logger.Printf("Task '%s' failed: %s", task.Name, err)
+		task.log.Warn("Task failed: %s", "error", err)
 		task.Status = TaskStatusFailed
 	} else {
-		s.logger.Printf("Task '%s' completed", task.Name)
+		task.log.Info("Task completed")
 		task.Status = TaskStatusCompleted
 	}
 
@@ -248,9 +248,9 @@ func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 
 	if err := node.Terminate(); err != nil {
 		// TODO: retry
-		s.logger.Printf("Termination of node '%s' failed: %s", node.Name(), err)
+		nodeState.log.Error("Termination of node failed", "error", err)
 	} else {
-		s.logger.Printf("Node '%s' terminated", node.Name())
+		nodeState.log.Info("Node terminated")
 	}
 
 	s.nodes = lo.Without(s.nodes, nodeState)

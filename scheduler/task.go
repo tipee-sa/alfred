@@ -1,5 +1,7 @@
 package scheduler
 
+import "log/slog"
+
 type TaskStatus string
 
 const (
@@ -11,8 +13,9 @@ const (
 )
 
 type Task struct {
-	Job  *Job
-	Name string
-
+	Job    *Job
+	Name   string
 	Status TaskStatus
+
+	log *slog.Logger
 }

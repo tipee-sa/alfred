@@ -1,0 +1,1 @@
+alias alfred="go build -o bin/alfred ./client && bin/alfred"
