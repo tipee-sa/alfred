@@ -33,12 +33,16 @@ func createProvisioner() (s.Provisioner, error) {
 	logger := log.Base.With("component", "provisioner")
 	switch p := viper.GetString(flags.Provisioner); p {
 	case "local":
-		return local.NewProvisioner(logger)
-	case "openstack":
-		return openstack.NewProvisioner(openstack.Config{
+		return local.New(local.Config{
 			Logger:          logger,
-			MaxNodes:        viper.GetInt(flags.OpenstackMaxNodes),
-			MaxTasksPerNode: viper.GetInt(flags.OpenstackMaxTasksPerNode),
+			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
+			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
+		})
+	case "openstack":
+		return openstack.New(openstack.Config{
+			Logger:          logger,
+			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
+			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
 			Image:           viper.GetString(flags.OpenstackImage),
 			Flavor:          viper.GetString(flags.OpenstackFlavor),
 			Networks: lo.Map(

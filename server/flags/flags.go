@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -18,16 +19,16 @@ const (
 	LogSource                   = "log-source"
 	Port                        = "port"
 	Provisioner                 = "provisioner"
+	ProvisionerMaxNodes         = "provisioner-max-nodes"
+	ProvisionerMaxTasksPerNode  = "provisioner-max-tasks-per-node"
 	ProvisioningFailureCooldown = "provisioning-failure-cooldown"
 
-	OpenstackMaxNodes        = "openstack-max-nodes"
-	OpenstackMaxTasksPerNode = "openstack-max-tasks-per-node"
-	OpenstackImage           = "openstack-image"
-	OpenstackFlavor          = "openstack-flavor"
-	OpenstackNetworks        = "openstack-networks"
-	OpenstackSecurityGroups  = "openstack-security-groups"
-	OpenstackSshUsername     = "openstack-ssh-username"
-	OpenstackDockerHost      = "openstack-docker-host"
+	OpenstackImage          = "openstack-image"
+	OpenstackFlavor         = "openstack-flavor"
+	OpenstackNetworks       = "openstack-networks"
+	OpenstackSecurityGroups = "openstack-security-groups"
+	OpenstackSshUsername    = "openstack-ssh-username"
+	OpenstackDockerHost     = "openstack-docker-host"
 )
 
 func init() {
@@ -39,11 +40,11 @@ func init() {
 	flags.Bool(LogSource, false, "add source code location to logs")
 	flags.Int(Port, 25373, "listening port")
 	flags.String(Provisioner, "local", "node provisioner to use (local, openstack)")
+	flags.Int(ProvisionerMaxNodes, (runtime.NumCPU()+1)/2, "maximum number of nodes to provision")
+	flags.Int(ProvisionerMaxTasksPerNode, 2, "maximum number of tasks to run on a single node")
 	flags.Duration(ProvisioningFailureCooldown, 1*time.Minute, "how long to wait before retrying provisioning")
 
 	// Openstack
-	flags.Int(OpenstackMaxNodes, 1, "maximum number of nodes to provision")
-	flags.Int(OpenstackMaxTasksPerNode, 2, "maximum number of tasks to run on a single node")
 	flags.String(OpenstackImage, "", "image to use for provisioning")
 	flags.String(OpenstackFlavor, "", "flavor to use for provisioning")
 	flags.StringSlice(OpenstackNetworks, nil, "networks attached to the nodes")

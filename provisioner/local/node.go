@@ -9,7 +9,7 @@ import (
 	"github.com/gammadia/alfred/scheduler"
 )
 
-type LocalNode struct {
+type Node struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	docker *client.Client
@@ -17,17 +17,17 @@ type LocalNode struct {
 	nodeNumber int
 }
 
-// LocalNode implements scheduler.Node
-var _ scheduler.Node = (*LocalNode)(nil)
+// Node implements scheduler.Node
+var _ scheduler.Node = (*Node)(nil)
 
-func (ln *LocalNode) Name() string {
-	return fmt.Sprintf("local-%d", ln.nodeNumber)
+func (n *Node) Name() string {
+	return fmt.Sprintf("local-%d", n.nodeNumber)
 }
 
-func (ln *LocalNode) Run(task *scheduler.Task) error {
-	return internal.RunContainer(ln.ctx, ln.docker, task)
+func (n *Node) Run(task *scheduler.Task) error {
+	return internal.RunContainer(n.ctx, n.docker, task)
 }
 
-func (*LocalNode) Terminate() error {
+func (*Node) Terminate() error {
 	return nil
 }
