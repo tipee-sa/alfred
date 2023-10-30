@@ -7,5 +7,6 @@ import (
 
 type Config struct {
 	Logger                      *slog.Logger
+	ProvisioningDelay           time.Duration
 	ProvisioningFailureCooldown time.Duration
 }

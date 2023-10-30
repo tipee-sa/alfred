@@ -21,6 +21,7 @@ const (
 	Provisioner                 = "provisioner"
 	ProvisionerMaxNodes         = "provisioner-max-nodes"
 	ProvisionerMaxTasksPerNode  = "provisioner-max-tasks-per-node"
+	ProvisioningDelay           = "provisioning-delay"
 	ProvisioningFailureCooldown = "provisioning-failure-cooldown"
 
 	OpenstackImage          = "openstack-image"
@@ -42,6 +43,7 @@ func init() {
 	flags.String(Provisioner, "local", "node provisioner to use (local, openstack)")
 	flags.Int(ProvisionerMaxNodes, (runtime.NumCPU()+1)/2, "maximum number of nodes to provision")
 	flags.Int(ProvisionerMaxTasksPerNode, 2, "maximum number of tasks to run on a single node")
+	flags.Duration(ProvisioningDelay, 20*time.Second, "how long to wait between provisioning nodes")
 	flags.Duration(ProvisioningFailureCooldown, 1*time.Minute, "how long to wait before retrying provisioning")
 
 	// Openstack
