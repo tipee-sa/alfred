@@ -11,7 +11,7 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
 - [Reflex](https://github.com/cespare/reflex)
   - `go install github.com/cespare/reflex@latest`
 - [Protocol Buffer](https://grpc.io/docs/protoc-installation/) (needed for [gRPC](https://grpc.io/))
-  - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/tag/latest) archive, unpack it
+  - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/latest) archive, unpack it
   - Move the `bin/protoc` file to `/usr/local/bin/protoc`
   - Move the `include/google` folder to `/usr/local/include/google`
   - Install Go plugins :
