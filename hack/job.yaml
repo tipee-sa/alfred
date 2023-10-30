@@ -4,4 +4,4 @@ image:
   dockerfile: job.dockerfile
   context: .
 tasks: |
-  sloth instance list -o json | jq -r '.[] | select(.features.tests) | .id'
+  sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id'

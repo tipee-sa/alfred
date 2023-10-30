@@ -19,6 +19,19 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
     - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
   - If not done already, add `$(go env GOPATH)/bin` to your `$PATH`
 
+### Run alfred
+
+Run the client :
+```shell
+source hack/alfred.alias
+alfred
+```
+
+Run the server :
+```shell
+make run-server
+```
+
 ### OpenStack credentials
 
 To run alfred server with the OpenStack provisioner, you need credentials to access the OpenStack API.
