@@ -113,7 +113,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	n.docker, err = client.NewClientWithOpts(
 		client.WithHost(n.provisioner.config.DockerHost),
 		client.WithDialContext(func(ctx context.Context, network, addr string) (conn net.Conn, err error) {
-			ctx, cancel := context.WithDeadline(ctx, time.Now().Add(1*time.Minute))
+			ctx, cancel := context.WithDeadline(ctx, time.Now().Add(2*time.Minute))
 			defer cancel()
 			for {
 				select {
