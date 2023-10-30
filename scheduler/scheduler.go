@@ -57,7 +57,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 }
 
 func (s *Scheduler) Schedule(job *Job) {
-	s.log.Info("Scheduling job", "name", job.Name)
+	job.id = namegen.Get()
+	s.log.Info("Scheduling job", "name", job.FQN())
 
 	s.wg.Add(len(job.Tasks))
 	for _, name := range job.Tasks {
@@ -249,7 +250,7 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	node := nodeState.node
 
 	if err := node.RunTask(task); err != nil {
-		task.log.Warn("Task failed: %s", "error", err)
+		task.log.Warn("Task failed", "error", err)
 		task.Status = TaskStatusFailed
 	} else {
 		task.log.Info("Task completed")

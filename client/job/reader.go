@@ -71,8 +71,9 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 					Value: value,
 				}
 			}),
-			Health: lo.Ternary(service.Health.Cmd == "", nil, &proto.Job_Service_Health{
-				Cmd: service.Health.Cmd,
+			Health: lo.Ternary(len(service.Health.Cmd) < 1, nil, &proto.Job_Service_Health{
+				Cmd:  service.Health.Cmd[0],
+				Args: service.Health.Cmd[1:],
 			}),
 		})
 	}

@@ -24,6 +24,7 @@ message Job {
 
         message Health {
             string cmd = 1;
+            repeated string args = 2;
         }
     }
 

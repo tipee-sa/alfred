@@ -27,7 +27,7 @@ type JobfileService struct {
 }
 
 type JobfileServiceHealth struct {
-	Cmd string
+	Cmd []string
 }
 
 func (jobfile Jobfile) Validate() error {

@@ -3,6 +3,8 @@ package local
 import (
 	"context"
 	"fmt"
+	"log/slog"
+
 	"github.com/docker/docker/client"
 	"github.com/gammadia/alfred/scheduler"
 )
@@ -56,6 +58,7 @@ func (p *Provisioner) Provision() (scheduler.Node, error) {
 		docker: p.docker,
 
 		nodeNumber: p.nextNodeNumber,
+		log:        p.config.Logger.With(slog.Group("node", "name", fmt.Sprintf("local-%d", p.nextNodeNumber))),
 	}, nil
 }
 

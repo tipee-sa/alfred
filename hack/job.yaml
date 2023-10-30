@@ -1,20 +1,18 @@
 version: "1"
-name: test-job
+name: test
 image:
   dockerfile: job.dockerfile
   context: .
 services:
-  redis:
-    image: redis:7.0.5-alpine
+  #redis:
+    #image: redis:7.0.5-alpine
     #health:
-    #  cmd: redis-cli ping
+    #  cmd: [redis-cli, ping]
   mysql:
     image: mysql:8.0.31
     env:
-      MYSQL_ALLOW_EMPTY_PASSWORD: "false"
       MYSQL_ROOT_PASSWORD: "root"
-      MYSQL_DATABASE: "db"
     health:
-      cmd: mysqladmin ping
+      cmd: ["mysqladmin", "-u", "root", "-proot", "-h", "127.0.0.1", "ping"]
 tasks: |
-  sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id'
+  sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 1
