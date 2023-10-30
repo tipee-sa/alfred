@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/gammadia/alfred/proto"
+	schedulerpkg "github.com/gammadia/alfred/scheduler"
 )
 
 type server struct {
@@ -12,7 +12,8 @@ type server struct {
 }
 
 func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) (*proto.ScheduleJobResponse, error) {
-	return &proto.ScheduleJobResponse{}, fmt.Errorf("i do not know how to schedule a job")
+	scheduler.Schedule(&schedulerpkg.Job{Job: in.Job})
+	return &proto.ScheduleJobResponse{}, nil
 }
 
 func (s *server) Ping(ctx context.Context, in *proto.PingRequest) (*proto.PingResponse, error) {

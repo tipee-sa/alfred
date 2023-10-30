@@ -2,7 +2,6 @@ version: "1"
 name: test-job
 image:
   dockerfile: job.dockerfile
-  context: ../
+  context: .
 tasks: |
-  echo "hello"
-  echo "world"
+  sloth instance list -o json | jq -r '.[] | select(.features.tests) | .id'

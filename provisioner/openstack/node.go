@@ -7,13 +7,16 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
+	"github.com/gammadia/alfred/provisioner/internal"
 	"github.com/gammadia/alfred/scheduler"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/samber/lo"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -26,7 +29,8 @@ type Node struct {
 
 	terminated bool
 
-	log *slog.Logger
+	log   *slog.Logger
+	mutex sync.Mutex
 }
 
 // Node implements scheduler.Node
@@ -93,9 +97,9 @@ func (n *Node) connect(server *servers.Server) (err error) {
 			})
 			if err != nil {
 				switch {
-				case errors.Is(err, syscall.ECONNREFUSED):
-				case errors.Is(err, syscall.ETIMEDOUT):
-				case errors.Is(err, os.ErrDeadlineExceeded):
+				case errors.Is(err, syscall.ECONNREFUSED),
+					errors.Is(err, syscall.ETIMEDOUT),
+					errors.Is(err, os.ErrDeadlineExceeded):
 					n.log.Debug("SSH connection to server refused, retrying in 5 seconds")
 
 				default:
@@ -120,6 +124,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 					if conn, err = n.ssh.Dial(network, addr); err == nil {
 						return
 					} else {
+						n.log.Debug("Connection to Docker daemon refused, retrying in 5 seconds")
 						time.Sleep(5 * time.Second)
 					}
 				}
@@ -134,14 +139,52 @@ func (n *Node) connect(server *servers.Server) (err error) {
 }
 
 func (n *Node) Run(task *scheduler.Task) error {
-	nets, err := n.docker.NetworkList(context.Background(), types.NetworkListOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to list networks: %w", err)
+	if err := n.ensureNodeHasImage(task.Job.Image); err != nil {
+		return fmt.Errorf("node has image: %w", err)
 	}
 
-	fmt.Printf("Networks: %+v\n", nets)
+	return internal.RunContainer(context.TODO(), n.docker, task)
+}
 
-	return fmt.Errorf("not implemented")
+func (n *Node) ensureNodeHasImage(image string) error {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+
+	n.log.Debug("Ensuring node has image", "image", image)
+
+	if _, _, err := n.docker.ImageInspectWithRaw(context.Background(), image); err == nil {
+		n.log.Debug("Image already on node", "image", image)
+		return nil
+	} else if !client.IsErrNotFound(err) {
+		return fmt.Errorf("inspect image: %w", err)
+	}
+
+	n.log.Info("Image not on node, loading", "image", image)
+
+	session, err := n.ssh.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	defer session.Close()
+
+	saveCmd := exec.Command("docker", "save", image)
+	saveOut := lo.Must(saveCmd.StdoutPipe())
+	session.Stdin = saveOut
+
+	if err := saveCmd.Start(); err != nil {
+		return fmt.Errorf("failed to start docker save: %w", err)
+	}
+
+	if err := session.Run("docker load"); err != nil {
+		return fmt.Errorf("failed docker load: %w", err)
+	}
+
+	if err := saveCmd.Wait(); err != nil {
+		return fmt.Errorf("failed docker save: %w", err)
+	}
+
+	n.log.Debug("Image loaded on node", "image", image)
+	return nil
 }
 
 func (n *Node) Terminate() error {

@@ -14,7 +14,7 @@ import (
 
 func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 	job = &proto.Job{}
-	workDir := path.Dir(p)
+	workDir := path.Join(lo.Must(os.Getwd()), path.Dir(p))
 
 	var buf []byte
 	buf, err = os.ReadFile(p)
@@ -98,11 +98,9 @@ func buildImage(dockerfile string, dir string, options []string) (string, error)
 	cmd := exec.Command("docker", args...)
 
 	cmd.Dir = dir
-	//cmd.Stdout = os.Stdout
-	//cmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
-		return "", err
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(output)))
 	}
 
 	imageId, err := os.ReadFile(tmp.Name())
