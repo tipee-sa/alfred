@@ -14,8 +14,3 @@ proto:
 .PHONY: run-server
 run-server: proto
 	reflex -s -t 120s -r '\.go' -- bash -c "make bin/alfred-server && bin/alfred-server"
-
-.PHONY: play
-play:
-	go build -o bin/playground ./playground/playground.go
-	PROVISIONER=$(PROVISIONER) ./bin/playground
