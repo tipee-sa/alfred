@@ -248,7 +248,7 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Task) {
 	node := nodeState.node
 
-	if err := node.Run(task); err != nil {
+	if err := node.RunTask(task); err != nil {
 		task.log.Warn("Task failed: %s", "error", err)
 		task.Status = TaskStatusFailed
 	} else {

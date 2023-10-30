@@ -24,7 +24,7 @@ func (n *Node) Name() string {
 	return fmt.Sprintf("local-%d", n.nodeNumber)
 }
 
-func (n *Node) Run(task *scheduler.Task) error {
+func (n *Node) RunTask(task *scheduler.Task) error {
 	return internal.RunContainer(n.ctx, n.docker, task)
 }
 

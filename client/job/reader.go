@@ -23,7 +23,7 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 		return
 	}
 
-	var jobfile JobFile
+	var jobfile Jobfile
 	if err = yaml.Unmarshal(buf, &jobfile); err != nil {
 		err = fmt.Errorf("unmarshal: %w", err)
 		return
@@ -58,6 +58,23 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 	); err != nil {
 		err = fmt.Errorf("build: %w", err)
 		return
+	}
+
+	// Services
+	for name, service := range jobfile.Services {
+		job.Services = append(job.Services, &proto.Job_Service{
+			Name:  name,
+			Image: service.Image,
+			Env: lo.MapToSlice(service.Env, func(key string, value string) *proto.Job_Env {
+				return &proto.Job_Env{
+					Key:   key,
+					Value: value,
+				}
+			}),
+			Health: lo.Ternary(service.Health.Cmd == "", nil, &proto.Job_Service_Health{
+				Cmd: service.Health.Cmd,
+			}),
+		})
 	}
 
 	return
