@@ -1,7 +1,7 @@
 PROVISIONER ?= local
 
-.PHONY: bin/alfred-client # TODO: proper dependencies
-bin/alfred-client:
+.PHONY: bin/alfred # TODO: proper dependencies
+bin/alfred:
 	go build -o $@ ./client
 
 .PHONY: bin/alfred-server # TODO: proper dependencies

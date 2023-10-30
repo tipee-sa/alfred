@@ -3,16 +3,12 @@ package local
 import (
 	"context"
 	"fmt"
-	"log"
-	"log/slog"
-	"runtime"
-
 	"github.com/docker/docker/client"
 	"github.com/gammadia/alfred/scheduler"
 )
 
-type LocalProvisioner struct {
-	log    *slog.Logger
+type Provisioner struct {
+	config Config
 	ctx    context.Context
 	cancel context.CancelFunc
 	docker *client.Client
@@ -20,10 +16,10 @@ type LocalProvisioner struct {
 	nextNodeNumber int
 }
 
-// LocalProvisioner implements Provisioner
-var _ scheduler.Provisioner = (*LocalProvisioner)(nil)
+// Provisioner implements scheduler.Provisioner
+var _ scheduler.Provisioner = (*Provisioner)(nil)
 
-func NewProvisioner(logger *slog.Logger) (*LocalProvisioner, error) {
+func New(config Config) (*Provisioner, error) {
 	docker, err := client.NewClientWithOpts()
 	if err != nil {
 		return nil, fmt.Errorf("failed to init docker client: %w", err)
@@ -31,8 +27,8 @@ func NewProvisioner(logger *slog.Logger) (*LocalProvisioner, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &LocalProvisioner{
-		log:    logger,
+	return &Provisioner{
+		config: config,
 		ctx:    ctx,
 		cancel: cancel,
 		docker: docker,
@@ -41,36 +37,32 @@ func NewProvisioner(logger *slog.Logger) (*LocalProvisioner, error) {
 	}, nil
 }
 
-func (lp *LocalProvisioner) SetLogger(logger *log.Logger) {
-	// No-op
+func (p *Provisioner) MaxNodes() int {
+	return p.config.MaxNodes
 }
 
-func (lp *LocalProvisioner) MaxNodes() int {
-	return (runtime.NumCPU() + 1) / 2
+func (p *Provisioner) MaxTasksPerNode() int {
+	return p.config.MaxTasksPerNode
 }
 
-func (lp *LocalProvisioner) MaxTasksPerNode() int {
-	return 2
-}
+func (p *Provisioner) Provision() (scheduler.Node, error) {
+	p.nextNodeNumber += 1
 
-func (lp *LocalProvisioner) Provision() (scheduler.Node, error) {
-	lp.nextNodeNumber += 1
+	ctx, cancel := context.WithCancel(p.ctx)
 
-	ctx, cancel := context.WithCancel(lp.ctx)
-
-	return &LocalNode{
+	return &Node{
 		ctx:    ctx,
 		cancel: cancel,
-		docker: lp.docker,
+		docker: p.docker,
 
-		nodeNumber: lp.nextNodeNumber,
+		nodeNumber: p.nextNodeNumber,
 	}, nil
 }
 
-func (lp *LocalProvisioner) Shutdown() {
+func (p *Provisioner) Shutdown() {
 	// TODO
 }
 
-func (lp *LocalProvisioner) Wait() {
+func (p *Provisioner) Wait() {
 	// TODO
 }

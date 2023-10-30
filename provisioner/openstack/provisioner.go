@@ -36,7 +36,7 @@ type Provisioner struct {
 // Provisioner implements scheduler.Provisioner
 var _ scheduler.Provisioner = (*Provisioner)(nil)
 
-func NewProvisioner(config Config) (*Provisioner, error) {
+func New(config Config) (*Provisioner, error) {
 	// OpenStack authentication
 	opts, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
