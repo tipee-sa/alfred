@@ -10,15 +10,14 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
 - [Go 1.21+](https://go.dev/doc/install)
 - [Reflex](https://github.com/cespare/reflex)
   - `go install github.com/cespare/reflex@latest`
-- https://grpc.io/docs/languages/go/quickstart
-  - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/tag/latest)
-  - Unpack the zip
+- [Protocol Buffer](https://grpc.io/docs/protoc-installation/) (needed for [gRPC](https://grpc.io/))
+  - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/tag/latest) archive, unpack it
   - Move the `bin/protoc` file to `/usr/local/bin/protoc`
   - Move the `include/google` folder to `/usr/local/include/google`
-  - Install the golang plugins :
+  - Install Go plugins :
     - `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest`
     - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
-  - Add `$(go env GOPATH)/bin` to your `$PATH`
+  - If not done already, add `$(go env GOPATH)/bin` to your `$PATH`
 
 ### OpenStack credentials
 
