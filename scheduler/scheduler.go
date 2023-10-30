@@ -25,7 +25,9 @@ type Scheduler struct {
 
 	queue []*Task
 
-	nodes []*nodeState
+	nodes                 []*nodeState
+	provisionedNodes      int
+	lastNodeProvisionedAt time.Time
 
 	stop chan any
 
@@ -193,12 +195,22 @@ func (s *Scheduler) resizePool() {
 
 	nodesToProvision := int(math.Min(requiredNodes, maximumMoreNodes))
 
+	var delay time.Duration
 	for i := 0; i < nodesToProvision; i++ {
+		if s.provisionedNodes > 0 {
+			delay = s.config.ProvisioningDelay
+		}
+
+		s.provisionedNodes += 1
+		s.lastNodeProvisionedAt = lo.Must(lo.Coalesce(s.lastNodeProvisionedAt, time.Now())).Add(delay)
+
 		nodeState := &nodeState{
 			node:   nil,
-			status: NodeStatusProvisioning,
+			status: NodeStatusPending,
 			tasks:  make([]*Task, s.provisioner.MaxTasksPerNode()),
 			log:    s.log.With("component", "node"),
+
+			earliestStart: s.lastNodeProvisionedAt,
 		}
 		s.nodes = append(s.nodes, nodeState)
 		s.log.Info("Provisioning a new node")
@@ -208,6 +220,13 @@ func (s *Scheduler) resizePool() {
 }
 
 func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
+	now := time.Now()
+	if nodeState.status == NodeStatusPending && now.Before(nodeState.earliestStart) {
+		wait := nodeState.earliestStart.Sub(now)
+		time.Sleep(wait)
+	}
+
+	nodeState.status = NodeStatusProvisioning
 	if node, err := s.provisioner.Provision(); err != nil {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
 		nodeState.status = NodeStatusFailed

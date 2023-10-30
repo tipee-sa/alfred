@@ -23,6 +23,7 @@ func createScheduler() error {
 
 	scheduler = s.New(provisioner, s.Config{
 		Logger:                      log.Base.With("component", "scheduler"),
+		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
 	})
 

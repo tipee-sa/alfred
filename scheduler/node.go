@@ -1,10 +1,14 @@
 package scheduler
 
-import "log/slog"
+import (
+	"log/slog"
+	"time"
+)
 
 type NodeStatus string
 
 const (
+	NodeStatusPending      NodeStatus = "pending"
 	NodeStatusProvisioning NodeStatus = "provisioning"
 	NodeStatusOnline       NodeStatus = "online"
 	NodeStatusTerminating  NodeStatus = "terminating"
@@ -22,4 +26,6 @@ type nodeState struct {
 	status NodeStatus
 	tasks  []*Task
 	log    *slog.Logger
+
+	earliestStart time.Time
 }
