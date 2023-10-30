@@ -14,7 +14,7 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
   - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/tag/latest)
   - Unpack the zip
   - Move the `bin/protoc` file to `/usr/local/bin/protoc`
-  - Move the `include/google` folder to `/usr/local/include`
+  - Move the `include/google` folder to `/usr/local/include/google`
   - Install the golang plugins :
     - `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest`
     - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
