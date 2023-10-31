@@ -106,8 +106,8 @@ func (p *Provisioner) MaxTasksPerNode() int {
 	return p.config.MaxTasksPerNode
 }
 
-func (p *Provisioner) Provision() (scheduler.Node, error) {
-	name := fmt.Sprintf("alfred-%s", namegen.Get())
+func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
+	name := fmt.Sprintf("alfred-%s", nodeName)
 
 	server, err := servers.Create(p.client, keypairs.CreateOptsExt{
 		CreateOptsBuilder: servers.CreateOpts{

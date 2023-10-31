@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"github.com/gammadia/alfred/namegen"
 	"log/slog"
 	"time"
 )
@@ -27,5 +28,6 @@ type nodeState struct {
 	tasks  []*Task
 	log    *slog.Logger
 
+	nodeName      namegen.ID
 	earliestStart time.Time
 }

@@ -208,16 +208,17 @@ func (s *Scheduler) resizePool() {
 		s.provisionedNodes += 1
 		s.lastNodeProvisionedAt = lo.Must(lo.Coalesce(s.lastNodeProvisionedAt, time.Now())).Add(delay)
 
+		nodeName := namegen.Get()
 		nodeState := &nodeState{
 			node:   nil,
 			status: NodeStatusPending,
 			tasks:  make([]*Task, s.provisioner.MaxTasksPerNode()),
-			log:    s.log.With("component", "node"),
+			log:    s.log.With("component", "node").With(slog.Group("node", "name", nodeName)),
 
+			nodeName:      nodeName,
 			earliestStart: s.lastNodeProvisionedAt,
 		}
 		s.nodes = append(s.nodes, nodeState)
-		s.log.Info("Provisioning a new node")
 
 		go s.watchNodeProvisioning(nodeState)
 	}
@@ -227,11 +228,14 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	now := time.Now()
 	if nodeState.status == NodeStatusPending && now.Before(nodeState.earliestStart) {
 		wait := nodeState.earliestStart.Sub(now)
+		nodeState.log.Info("Waiting before provisioning node", "wait", wait)
 		time.Sleep(wait)
 	}
 
+	nodeState.log.Info("Provisioning node")
+
 	nodeState.status = NodeStatusProvisioning
-	if node, err := s.provisioner.Provision(); err != nil {
+	if node, err := s.provisioner.Provision(nodeState.nodeName); err != nil {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
 		nodeState.status = NodeStatusFailed
 
@@ -240,7 +244,6 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 			s.requestTick()
 		})
 	} else {
-		nodeState.log = nodeState.log.With(slog.Group("node", "name", node.Name()))
 		nodeState.node = node
 		nodeState.status = NodeStatusOnline
 		nodeState.log.Info("Node is online")
