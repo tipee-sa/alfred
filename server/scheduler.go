@@ -24,6 +24,8 @@ func createScheduler() error {
 
 	scheduler = s.New(provisioner, s.Config{
 		Logger:                      log.Base.With("component", "scheduler"),
+		MaxNodes:                    viper.GetInt(flags.ProvisionerMaxNodes),
+		MaxTasksPerNode:             viper.GetInt(flags.ProvisionerMaxTasksPerNode),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
 	})
@@ -36,20 +38,16 @@ func createProvisioner() (s.Provisioner, error) {
 	switch p := viper.GetString(flags.Provisioner); p {
 	case "local":
 		config := local.Config{
-			Logger:          logger,
-			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
-			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
+			Logger: logger,
 		}
 		logger.Debug("Provisioner config", "provisioner", p, "config", string(lo.Must(json.Marshal(config))))
 		return local.New(config)
 
 	case "openstack":
 		config := openstack.Config{
-			Logger:          logger,
-			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
-			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
-			Image:           viper.GetString(flags.OpenstackImage),
-			Flavor:          viper.GetString(flags.OpenstackFlavor),
+			Logger: logger,
+			Image:  viper.GetString(flags.OpenstackImage),
+			Flavor: viper.GetString(flags.OpenstackFlavor),
 			Networks: lo.Map(
 				viper.GetStringSlice(flags.OpenstackNetworks),
 				func(s string, _ int) servers.Network {

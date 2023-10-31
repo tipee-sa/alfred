@@ -187,15 +187,15 @@ func (s *Scheduler) resizePool() {
 		}
 	}
 
-	if len(s.queue) < 1 || len(s.nodes) >= s.provisioner.MaxNodes() {
+	if len(s.queue) < 1 || len(s.nodes) >= s.config.MaxNodes {
 		return
 	}
 
 	// At this point, we need more nodes!
 
-	incomingCapacity := pendingNodes * s.provisioner.MaxTasksPerNode()
-	requiredNodes := math.Ceil(float64(len(s.queue)-incomingCapacity) / float64(s.provisioner.MaxTasksPerNode()))
-	maximumMoreNodes := float64(s.provisioner.MaxNodes() - len(s.nodes))
+	incomingCapacity := pendingNodes * s.config.MaxTasksPerNode
+	requiredNodes := math.Ceil(float64(len(s.queue)-incomingCapacity) / float64(s.config.MaxTasksPerNode))
+	maximumMoreNodes := float64(s.config.MaxNodes - len(s.nodes))
 
 	nodesToProvision := int(math.Min(requiredNodes, maximumMoreNodes))
 
@@ -212,7 +212,7 @@ func (s *Scheduler) resizePool() {
 		nodeState := &nodeState{
 			node:   nil,
 			status: NodeStatusPending,
-			tasks:  make([]*Task, s.provisioner.MaxTasksPerNode()),
+			tasks:  make([]*Task, s.config.MaxTasksPerNode),
 			log:    s.log.With("component", "node").With(slog.Group("node", "name", nodeName)),
 
 			nodeName:      nodeName,

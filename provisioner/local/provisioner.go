@@ -3,10 +3,10 @@ package local
 import (
 	"context"
 	"fmt"
-	"github.com/gammadia/alfred/namegen"
 	"log/slog"
 
 	"github.com/docker/docker/client"
+	"github.com/gammadia/alfred/namegen"
 	"github.com/gammadia/alfred/scheduler"
 )
 
@@ -38,14 +38,6 @@ func New(config Config) (*Provisioner, error) {
 
 		nextNodeNumber: 0,
 	}, nil
-}
-
-func (p *Provisioner) MaxNodes() int {
-	return p.config.MaxNodes
-}
-
-func (p *Provisioner) MaxTasksPerNode() int {
-	return p.config.MaxTasksPerNode
 }
 
 func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {

@@ -98,14 +98,6 @@ func (p *Provisioner) GetName() namegen.ID {
 	return p.name
 }
 
-func (p *Provisioner) MaxNodes() int {
-	return p.config.MaxNodes
-}
-
-func (p *Provisioner) MaxTasksPerNode() int {
-	return p.config.MaxTasksPerNode
-}
-
 func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
 	name := fmt.Sprintf("alfred-%s", nodeName)
 
