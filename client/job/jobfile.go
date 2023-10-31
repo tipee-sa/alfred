@@ -12,7 +12,8 @@ import (
 const JobfileVersion = "1"
 
 type Jobfile struct {
-	Path     string
+	path string
+
 	Version  string
 	Name     string
 	Image    JobfileImage
@@ -51,14 +52,14 @@ func (jobfile Jobfile) Validate() error {
 	if jobfile.Image.Dockerfile == "" {
 		return fmt.Errorf("image.dockerfile is required")
 	}
-	if _, err := os.Stat(path.Join(jobfile.Path, jobfile.Image.Dockerfile)); os.IsNotExist(err) {
+	if _, err := os.Stat(path.Join(jobfile.path, jobfile.Image.Dockerfile)); os.IsNotExist(err) {
 		return fmt.Errorf("image.dockerfile must be an existing file on disk")
 	}
 
 	if jobfile.Image.Context == "" {
 		return fmt.Errorf("image.context is required")
 	}
-	if _, err := os.Stat(path.Join(jobfile.Path, jobfile.Image.Context)); os.IsNotExist(err) {
+	if _, err := os.Stat(path.Join(jobfile.path, jobfile.Image.Context)); os.IsNotExist(err) {
 		return fmt.Errorf("image.context must be an existing folder on disk")
 	}
 

@@ -43,7 +43,7 @@ func TestJobValidate(t *testing.T) {
 				assert.Equal(t, tt.expected, err.Error())
 				return
 			}
-			jobfile.Path = path.Dir(tt.file)
+			jobfile.path = path.Dir(tt.file)
 			if err = jobfile.Validate(); err != nil {
 				assert.Equal(t, tt.expected, err.Error())
 				return

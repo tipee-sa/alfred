@@ -30,7 +30,7 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 		err = fmt.Errorf("unmarshal: %w", err)
 		return
 	}
-	jobfile.Path = path.Dir(p)
+	jobfile.path = workDir
 	if err = jobfile.Validate(); err != nil {
 		err = fmt.Errorf("validate: %w", err)
 		return
