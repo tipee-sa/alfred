@@ -6,7 +6,7 @@ import (
 )
 
 type Config struct {
-	Logger                      *slog.Logger
-	ProvisioningDelay           time.Duration
-	ProvisioningFailureCooldown time.Duration
+	Logger                      *slog.Logger  `json:"-"`
+	ProvisioningDelay           time.Duration `json:"provisioning-delay"`
+	ProvisioningFailureCooldown time.Duration `json:"provisioning-failure-cooldown"`
 }

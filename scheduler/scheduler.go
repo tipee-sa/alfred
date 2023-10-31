@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math"
@@ -52,6 +53,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		stop: make(chan any),
 		wg:   sync.WaitGroup{},
 	}
+
+	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
 
 	return scheduler
 }
