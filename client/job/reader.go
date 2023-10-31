@@ -2,16 +2,17 @@ package job
 
 import (
 	"fmt"
-	"github.com/gammadia/alfred/proto"
-	"github.com/samber/lo"
-	"google.golang.org/protobuf/types/known/durationpb"
-	"gopkg.in/yaml.v3"
 	"os"
 	"os/exec"
 	"path"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gammadia/alfred/proto"
+	"github.com/samber/lo"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"gopkg.in/yaml.v3"
 )
 
 func Read(p string, overrides Overrides) (job *proto.Job, err error) {
@@ -61,6 +62,16 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 	); err != nil {
 		err = fmt.Errorf("build: %w", err)
 		return
+	}
+
+	// Env
+	if len(jobfile.Env) > 0 {
+		job.Env = lo.MapToSlice(jobfile.Env, func(key string, value string) *proto.Job_Env {
+			return &proto.Job_Env{
+				Key:   key,
+				Value: value,
+			}
+		})
 	}
 
 	// Services

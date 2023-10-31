@@ -4,5 +4,5 @@ image:
   dockerfile: "a.dockerfile"
   context: "."
 services:
-  - mysql
-  - redis
+  - "mysql"
+  - "redis"

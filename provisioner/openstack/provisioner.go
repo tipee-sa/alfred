@@ -21,6 +21,7 @@ type Provisioner struct {
 	config Config
 	client *gophercloud.ServiceClient
 	log    *slog.Logger
+	fs     *fs
 
 	keypairName string
 	privateKey  ssh.Signer
@@ -63,6 +64,7 @@ func New(config Config) (*Provisioner, error) {
 		config: config,
 		client: client,
 		log:    config.Logger.With(slog.Group("provisioner", "name", name)),
+		fs:     newFs(config.Workspace),
 
 		keypairName: fmt.Sprintf("alfred-%s", name),
 	}

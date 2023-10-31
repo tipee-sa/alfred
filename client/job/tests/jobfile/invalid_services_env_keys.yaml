@@ -5,6 +5,6 @@ image:
   context: "."
 services:
   mysql:
-    image: mysql
+    image: "mysql"
     env:
-      0/2: foo
+      0/2: "foo"

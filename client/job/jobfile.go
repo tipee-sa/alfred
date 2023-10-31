@@ -17,6 +17,7 @@ type Jobfile struct {
 	Version  string
 	Name     string
 	Image    JobfileImage
+	Env      map[string]string
 	Services map[string]JobfileService
 	Tasks    string
 }
@@ -39,6 +40,9 @@ type JobfileServiceHealth struct {
 	Interval string
 	Retries  string
 }
+
+var envKeyRegex = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
+var serviceNameRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]+$`)
 
 func (jobfile Jobfile) Validate() error {
 	if jobfile.Version != JobfileVersion {
@@ -63,8 +67,11 @@ func (jobfile Jobfile) Validate() error {
 		return fmt.Errorf("image.context must be an existing folder on disk")
 	}
 
-	serviceNameRegex := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]+$`)
-	serviceEnvKeyRegex := regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
+	for key := range jobfile.Env {
+		if !envKeyRegex.MatchString(key) {
+			return fmt.Errorf("env[%s] must be a valid environment variable identifier", key)
+		}
+	}
 
 	for name, service := range jobfile.Services {
 		if !serviceNameRegex.MatchString(name) {
@@ -75,8 +82,8 @@ func (jobfile Jobfile) Validate() error {
 			return fmt.Errorf("services[%s].image is required", name)
 		}
 
-		for key, _ := range service.Env {
-			if !serviceEnvKeyRegex.MatchString(key) {
+		for key := range service.Env {
+			if !envKeyRegex.MatchString(key) {
 				return fmt.Errorf("services[%s].env[%s] must be a valid environment variable identifier", name, key)
 			}
 		}

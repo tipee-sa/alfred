@@ -38,7 +38,8 @@ func createProvisioner() (s.Provisioner, error) {
 	switch p := viper.GetString(flags.Provisioner); p {
 	case "local":
 		config := local.Config{
-			Logger: logger,
+			Logger:    logger,
+			Workspace: viper.GetString(flags.NodeWorkspace),
 		}
 		logger.Debug("Provisioner config", "provisioner", p, "config", string(lo.Must(json.Marshal(config))))
 		return local.New(config)
@@ -57,6 +58,7 @@ func createProvisioner() (s.Provisioner, error) {
 			SecurityGroups: viper.GetStringSlice(flags.OpenstackSecurityGroups),
 			SshUsername:    viper.GetString(flags.OpenstackSshUsername),
 			DockerHost:     viper.GetString(flags.OpenstackDockerHost),
+			Workspace:      viper.GetString(flags.NodeWorkspace),
 		}
 		logger.Debug("Provisioner config", "provisioner", p, "config", string(lo.Must(json.Marshal(config))))
 		return openstack.New(config)

@@ -15,8 +15,9 @@ service Alfred {
 message Job {
     string name = 1;
     string image = 2;
-    repeated Service services = 3;
-    repeated string tasks = 4;
+    repeated Env env = 3;
+    repeated Service services = 4;
+    repeated string tasks = 5;
 
     message Service {
         string name = 1;

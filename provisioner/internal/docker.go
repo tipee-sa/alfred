@@ -3,12 +3,14 @@ package internal
 import (
 	"context"
 	"fmt"
-	"github.com/docker/docker/api/types/filters"
 	"io"
 	"log/slog"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/mount"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -20,7 +22,7 @@ import (
 	"github.com/samber/lo"
 )
 
-func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, task *scheduler.Task) error {
+func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, task *scheduler.Task, fs WorkspaceFS) error {
 	cleanup := func(what string, thunk func() error, args ...any) {
 		if err := thunk(); err != nil {
 			args = append([]any{"error", err}, args...)
@@ -40,14 +42,47 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 		func() error { return docker.NetworkRemove(context.Background(), networkId) },
 	)
 
+	// Initialize workspace
+	taskFs := fs.Scope(task.FQN())
+
+	if err := taskFs.MkDir("/"); err != nil {
+		return fmt.Errorf("failed to create workspace: %w", err)
+	}
+	defer cleanup(
+		"workspace",
+		func() error { return taskFs.Delete("/") },
+	)
+
+	for _, dir := range []string{"output"} {
+		if err := taskFs.MkDir("/" + dir); err != nil {
+			return fmt.Errorf("failed to create workspace directory '%s': %w", dir, err)
+		}
+	}
+
+	// Create main container
 	resp, err := docker.ContainerCreate(
 		ctx,
 		&container.Config{
 			Image: task.Job.Image,
-			Env:   []string{fmt.Sprintf("ALFRED_TASK=%s", task.Name)},
+			Env: append(
+				lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
+					return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
+				}),
+				[]string{
+					fmt.Sprintf("ALFRED_TASK=%s", task.Name),
+					"ALFRED_OUTPUT=/alfred/output",
+				}...,
+			),
 		},
 		&container.HostConfig{
 			AutoRemove: false, // Otherwise this will remove the container before we can get the logs
+			Mounts: []mount.Mount{
+				{
+					Type:   mount.TypeBind,
+					Source: taskFs.HostPath("/"),
+					Target: "/alfred",
+				},
+			},
 		},
 		&network.NetworkingConfig{
 			EndpointsConfig: map[string]*network.EndpointSettings{
@@ -257,6 +292,17 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	case err := <-errChan:
 		return fmt.Errorf("failed to wait for container: %w", err)
 	}
+
+	// Copy output files
+	reader, err := taskFs.Archive("/output")
+	if err != nil {
+		return fmt.Errorf("failed to archive output: %w", err)
+	}
+	defer reader.Close()
+
+	file := lo.Must(os.OpenFile("workspace/node/output.tar.gz", os.O_CREATE|os.O_WRONLY, 0644))
+	_, _ = io.Copy(file, reader)
+	defer file.Close()
 
 	return nil
 }

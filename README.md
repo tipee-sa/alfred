@@ -42,3 +42,12 @@ Ask [@BastienClement](https://github.com/BastienClement).
 By default, the `alfred` client will connect to the production server. 
 
 For development, you can override the default remote by setting the `ALFRED_REMOTE` environment variable to point to your local server.
+
+## Alfred nodes' image
+
+Creating the Alfred node image is done using [Packer](https://www.packer.io/) in a separate project. Ask [@BastienClement](https://github.com/BastienClement).
+
+### Dependencies
+
+- docker
+- tar

@@ -5,4 +5,4 @@ image:
   context: "."
 services:
   0/2:
-    image: mysql
+    image: "mysql"

@@ -2,3 +2,6 @@
 /.vscode
 /bin/*
 !/bin/.gitkeep
+/workspace/*
+!/workspace/node/.gitkeep
+!/workspace/server/.gitkeep

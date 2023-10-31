@@ -15,6 +15,7 @@ type Provisioner struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	docker *client.Client
+	fs     *fs
 
 	nextNodeNumber int
 }
@@ -35,6 +36,7 @@ func New(config Config) (*Provisioner, error) {
 		ctx:    ctx,
 		cancel: cancel,
 		docker: docker,
+		fs:     newFs(config.Workspace),
 
 		nextNodeNumber: 0,
 	}, nil
@@ -46,6 +48,8 @@ func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
 	ctx, cancel := context.WithCancel(p.ctx)
 
 	node := &Node{
+		provisioner: p,
+
 		ctx:    ctx,
 		cancel: cancel,
 		docker: p.docker,

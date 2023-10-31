@@ -21,4 +21,6 @@ type Config struct {
 	SshUsername string `json:"openstack-ssh-username"`
 	// Docker host to use when connecting to nodes
 	DockerHost string `json:"openstack-docker-host"`
+	// Path to workspace
+	Workspace string `json:"workspace"`
 }

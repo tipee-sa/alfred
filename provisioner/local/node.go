@@ -11,6 +11,8 @@ import (
 )
 
 type Node struct {
+	provisioner *Provisioner
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	docker *client.Client
@@ -27,7 +29,7 @@ func (n *Node) Name() string {
 }
 
 func (n *Node) RunTask(task *scheduler.Task) error {
-	return internal.RunContainer(n.ctx, n.log, n.docker, task)
+	return internal.RunContainer(n.ctx, n.log, n.docker, task, n.provisioner.fs)
 }
 
 func (*Node) Terminate() error {

@@ -6,4 +6,4 @@ image:
 services:
   mysql:
     env:
-      TOTO: toto
+      TOTO: "toto"
