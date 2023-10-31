@@ -8,7 +8,7 @@ import (
 type Config struct {
 	Logger                      *slog.Logger  `json:"-"`
 	MaxNodes                    int           `json:"max-nodes"`
-	MaxTasksPerNode             int           `json:"max-tasks-per-node"`
 	ProvisioningDelay           time.Duration `json:"provisioning-delay"`
 	ProvisioningFailureCooldown time.Duration `json:"provisioning-failure-cooldown"`
+	TasksPerNode                int           `json:"tasks-per-node"`
 }

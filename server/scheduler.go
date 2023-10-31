@@ -24,10 +24,10 @@ func createScheduler() error {
 
 	scheduler = s.New(provisioner, s.Config{
 		Logger:                      log.Base.With("component", "scheduler"),
-		MaxNodes:                    viper.GetInt(flags.ProvisionerMaxNodes),
-		MaxTasksPerNode:             viper.GetInt(flags.ProvisionerMaxTasksPerNode),
+		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
+		TasksPerNode:                viper.GetInt(flags.TasksPerNode),
 	})
 
 	return nil
