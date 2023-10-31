@@ -32,19 +32,17 @@ func createScheduler() error {
 }
 
 func createProvisioner() (s.Provisioner, error) {
-	p := viper.GetString(flags.Provisioner)
-	logger := log.Base.With("component", "provisioner", "type", p)
-	switch p {
+	logger := log.Base.With("component", "provisioner")
+	switch p := viper.GetString(flags.Provisioner); p {
 	case "local":
 		config := local.Config{
 			Logger:          logger,
 			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
 			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
 		}
-
-		logger.Debug("Provisioner config", "config", string(lo.Must(json.Marshal(config))))
-
+		logger.Debug("Provisioner config", "provisioner", p, "config", string(lo.Must(json.Marshal(config))))
 		return local.New(config)
+
 	case "openstack":
 		config := openstack.Config{
 			Logger:          logger,
@@ -62,9 +60,7 @@ func createProvisioner() (s.Provisioner, error) {
 			SshUsername:    viper.GetString(flags.OpenstackSshUsername),
 			DockerHost:     viper.GetString(flags.OpenstackDockerHost),
 		}
-
-		logger.Debug("Provisioner config", "config", string(lo.Must(json.Marshal(config))))
-
+		logger.Debug("Provisioner config", "provisioner", p, "config", string(lo.Must(json.Marshal(config))))
 		return openstack.New(config)
 	default:
 		return nil, fmt.Errorf("unknown provisioner")
