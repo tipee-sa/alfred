@@ -18,3 +18,7 @@ proto:
 .PHONY: run-server
 run-server: proto
 	reflex -s -t 120s -r '\.go' -- bash -c "make bin/alfred-server && bin/alfred-server"
+
+.PHONY: test
+test:
+	go test -v ./...

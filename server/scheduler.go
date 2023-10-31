@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/gammadia/alfred/provisioner/local"
@@ -31,16 +32,21 @@ func createScheduler() error {
 }
 
 func createProvisioner() (s.Provisioner, error) {
-	logger := log.Base.With("component", "provisioner")
-	switch p := viper.GetString(flags.Provisioner); p {
+	p := viper.GetString(flags.Provisioner)
+	logger := log.Base.With("component", "provisioner", "type", p)
+	switch p {
 	case "local":
-		return local.New(local.Config{
+		config := local.Config{
 			Logger:          logger,
 			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
 			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
-		})
+		}
+
+		logger.Debug("Provisioner config", "config", string(lo.Must(json.Marshal(config))))
+
+		return local.New(config)
 	case "openstack":
-		return openstack.New(openstack.Config{
+		config := openstack.Config{
 			Logger:          logger,
 			MaxNodes:        viper.GetInt(flags.ProvisionerMaxNodes),
 			MaxTasksPerNode: viper.GetInt(flags.ProvisionerMaxTasksPerNode),
@@ -55,7 +61,11 @@ func createProvisioner() (s.Provisioner, error) {
 			SecurityGroups: viper.GetStringSlice(flags.OpenstackSecurityGroups),
 			SshUsername:    viper.GetString(flags.OpenstackSshUsername),
 			DockerHost:     viper.GetString(flags.OpenstackDockerHost),
-		})
+		}
+
+		logger.Debug("Provisioner config", "config", string(lo.Must(json.Marshal(config))))
+
+		return openstack.New(config)
 	default:
 		return nil, fmt.Errorf("unknown provisioner")
 	}

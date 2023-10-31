@@ -1,0 +1,5 @@
+version: "42"
+name: "test"
+image:
+  dockerfile: "a.dockerfile"
+  context: "."

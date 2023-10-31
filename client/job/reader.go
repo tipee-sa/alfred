@@ -2,14 +2,16 @@ package job
 
 import (
 	"fmt"
+	"github.com/gammadia/alfred/proto"
+	"github.com/samber/lo"
+	"google.golang.org/protobuf/types/known/durationpb"
+	"gopkg.in/yaml.v3"
 	"os"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
-
-	"github.com/gammadia/alfred/proto"
-	"github.com/samber/lo"
-	"gopkg.in/yaml.v3"
+	"time"
 )
 
 func Read(p string, overrides Overrides) (job *proto.Job, err error) {
@@ -28,6 +30,7 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 		err = fmt.Errorf("unmarshal: %w", err)
 		return
 	}
+	jobfile.path = workDir
 	if err = jobfile.Validate(); err != nil {
 		err = fmt.Errorf("validate: %w", err)
 		return
@@ -62,7 +65,7 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 
 	// Services
 	for name, service := range jobfile.Services {
-		job.Services = append(job.Services, &proto.Job_Service{
+		jobService := &proto.Job_Service{
 			Name:  name,
 			Image: service.Image,
 			Env: lo.MapToSlice(service.Env, func(key string, value string) *proto.Job_Env {
@@ -75,7 +78,20 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 				Cmd:  service.Health.Cmd[0],
 				Args: service.Health.Cmd[1:],
 			}),
-		})
+		}
+
+		if service.Health.Timeout != "" {
+			jobService.Health.Timeout = durationpb.New(lo.Must(time.ParseDuration(service.Health.Timeout)))
+		}
+		if service.Health.Interval != "" {
+			jobService.Health.Interval = durationpb.New(lo.Must(time.ParseDuration(service.Health.Interval)))
+		}
+		if service.Health.Retries != "" {
+			retries := lo.Must(strconv.ParseUint(service.Health.Retries, 10, 64))
+			jobService.Health.Retries = &retries
+		}
+
+		job.Services = append(job.Services, jobService)
 	}
 
 	return

@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"fmt"
+	"github.com/gammadia/alfred/namegen"
 	"log/slog"
 
 	"github.com/docker/docker/client"
@@ -47,19 +48,21 @@ func (p *Provisioner) MaxTasksPerNode() int {
 	return p.config.MaxTasksPerNode
 }
 
-func (p *Provisioner) Provision() (scheduler.Node, error) {
+func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
 	p.nextNodeNumber += 1
 
 	ctx, cancel := context.WithCancel(p.ctx)
 
-	return &Node{
+	node := &Node{
 		ctx:    ctx,
 		cancel: cancel,
 		docker: p.docker,
 
 		nodeNumber: p.nextNodeNumber,
-		log:        p.config.Logger.With(slog.Group("node", "name", fmt.Sprintf("local-%d", p.nextNodeNumber))),
-	}, nil
+	}
+	node.log = p.config.Logger.With(slog.Group("node", "name", node.Name()))
+
+	return node, nil
 }
 
 func (p *Provisioner) Shutdown() {
