@@ -17,7 +17,7 @@ const (
 
 type Node interface {
 	Name() string
-	Run(task *Task) error // TODO: we need cancellation
+	RunTask(task *Task) error // TODO: we need cancellation
 	Terminate() error
 }
 

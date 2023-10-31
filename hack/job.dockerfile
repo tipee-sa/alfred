@@ -1,4 +1,4 @@
-FROM alpine:latest
+FROM mysql:8.0.31
 
 ADD job.sh /job.sh
 RUN chmod +x /job.sh

@@ -13,7 +13,25 @@ service Alfred {
 message Job {
     string name = 1;
     string image = 2;
-    repeated string tasks = 3;
+    repeated Service services = 3;
+    repeated string tasks = 4;
+
+    message Service {
+        string name = 1;
+        string image = 2;
+        repeated Env env = 3;
+        optional Health health = 4;
+
+        message Health {
+            string cmd = 1;
+            repeated string args = 2;
+        }
+    }
+
+    message Env {
+        string key = 1;
+        string value = 2;
+    }
 }
 
 message LoadImageMessage {

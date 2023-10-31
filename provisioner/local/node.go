@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/docker/docker/client"
 	"github.com/gammadia/alfred/provisioner/internal"
@@ -15,6 +16,7 @@ type Node struct {
 	docker *client.Client
 
 	nodeNumber int
+	log        *slog.Logger
 }
 
 // Node implements scheduler.Node
@@ -24,8 +26,8 @@ func (n *Node) Name() string {
 	return fmt.Sprintf("local-%d", n.nodeNumber)
 }
 
-func (n *Node) Run(task *scheduler.Task) error {
-	return internal.RunContainer(n.ctx, n.docker, task)
+func (n *Node) RunTask(task *scheduler.Task) error {
+	return internal.RunContainer(n.ctx, n.log, n.docker, task)
 }
 
 func (*Node) Terminate() error {

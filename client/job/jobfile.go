@@ -1,23 +1,36 @@
 package job
 
-import "fmt"
+import (
+	"fmt"
+)
 
 const JobfileVersion = "1"
 
-type JobFile struct {
-	Version string
-	Name    string
-	Image   JobFileImage
-	Tasks   string
+type Jobfile struct {
+	Version  string
+	Name     string
+	Image    JobfileImage
+	Services map[string]JobfileService
+	Tasks    string
 }
 
-type JobFileImage struct {
+type JobfileImage struct {
 	Dockerfile string
 	Context    string
 	Options    []string
 }
 
-func (jobfile JobFile) Validate() error {
+type JobfileService struct {
+	Image  string
+	Env    map[string]string
+	Health JobfileServiceHealth
+}
+
+type JobfileServiceHealth struct {
+	Cmd []string
+}
+
+func (jobfile Jobfile) Validate() error {
 	if jobfile.Version != JobfileVersion {
 		return fmt.Errorf("unsupported version '%s'", jobfile.Version)
 	}

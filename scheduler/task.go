@@ -1,6 +1,9 @@
 package scheduler
 
-import "log/slog"
+import (
+	"fmt"
+	"log/slog"
+)
 
 type TaskStatus string
 
@@ -18,4 +21,8 @@ type Task struct {
 	Status TaskStatus
 
 	log *slog.Logger
+}
+
+func (t *Task) FQN() string {
+	return fmt.Sprintf("%s-%s", t.Job.FQN(), t.Name)
 }
