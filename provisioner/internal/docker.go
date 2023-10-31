@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"github.com/docker/docker/api/types/filters"
 	"io"
 	"log/slog"
 	"os"
@@ -75,10 +76,36 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	serviceContainers := map[string]string{}
 
 	for _, service := range task.Job.Services {
+		serviceLog := log.With("service", service.Name)
+
 		env := lo.Map(service.Env, func(jobEnv *proto.Job_Env, _ int) string {
 			return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
 		})
 		serviceEnv[service.Name] = env
+
+		// Make sure the image has been loaded
+		list, err := docker.ImageList(ctx, types.ImageListOptions{
+			Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to list images for service '%s': %w", service.Name, err)
+		}
+
+		// We only need to check that the list is non-empty, because we filtered by reference
+		if len(list) == 0 {
+			serviceLog.Debug("Pulling service image")
+			reader, err := docker.ImagePull(ctx, service.Image, types.ImagePullOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to pull image for service '%s': %w", service.Name, err)
+			}
+			defer reader.Close()
+
+			// Wait for the pull to finish
+			_, _ = io.Copy(io.Discard, reader)
+
+			// We might not be handling pull error properly, but parsing the JSON response is a pain
+			// Let's just assume it worked, and if it didn't, the container create will fail
+		}
 
 		resp, err := docker.ContainerCreate(
 			ctx,
