@@ -1,0 +1,10 @@
+version: "1"
+name: "test"
+image:
+  dockerfile: "a.dockerfile"
+  context: "."
+services:
+  mysql:
+    image: mysql
+    health:
+      retries: 1

@@ -4,6 +4,8 @@ option go_package = "github.com/gammadia/alfred/proto";
 
 package proto;
 
+import "google/protobuf/duration.proto";
+
 service Alfred {
     rpc LoadImage (stream LoadImageMessage) returns (stream LoadImageResponse);
     rpc ScheduleJob (ScheduleJobRequest) returns (ScheduleJobResponse);
@@ -25,6 +27,10 @@ message Job {
         message Health {
             string cmd = 1;
             repeated string args = 2;
+
+            optional google.protobuf.Duration timeout = 3;
+            optional google.protobuf.Duration interval = 4;
+            optional uint64 retries = 5;
         }
     }
 

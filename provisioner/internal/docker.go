@@ -162,13 +162,14 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 				return
 			}
 
-			// TODO: move to job definition
-			interval := 10 * time.Second
-			timeout := 5 * time.Second
-			retries := 3
+			interval := lo.Ternary(service.Health.Interval != nil, service.Health.Interval.AsDuration(), 10*time.Second)
+			timeout := lo.Ternary(service.Health.Timeout != nil, service.Health.Timeout.AsDuration(), 5*time.Second)
+			retries := lo.Ternary(service.Health.Retries != nil, int(*service.Health.Retries), 3)
 
 			for i := 0; i < retries; i++ {
-				time.Sleep(interval)
+				// Always wait 1 second before running the health check, and potentially more between retries
+				time.Sleep(lo.Ternary(i > 0, interval, 1*time.Second))
+
 				healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
 
 				exec, err := docker.ContainerExecCreate(ctx, containerId, types.ExecConfig{
