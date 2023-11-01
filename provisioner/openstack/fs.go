@@ -8,6 +8,7 @@ import (
 
 	"github.com/alessio/shellescape"
 	"github.com/gammadia/alfred/provisioner/internal"
+	"github.com/samber/lo"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -50,8 +51,23 @@ func (f *fs) MkDir(p string) error {
 	})
 }
 
-func (f *fs) Archive(p string) (rc io.ReadCloser, err error) {
-	return nil, fmt.Errorf("not implemented")
+// Archive returns a .tar.gz of the given path
+func (f *fs) Archive(p string) (io.ReadCloser, error) {
+	session, err := f.ssh.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSH session: %w", err)
+	}
+
+	out := lo.Must(session.StdoutPipe())
+	if err = session.Start(fmt.Sprintf(
+		"tar -c -f - -z -C %s %s",
+		shellescape.Quote(f.root),
+		shellescape.Quote(strings.TrimLeft(p, "/")),
+	)); err != nil {
+		return nil, err
+	}
+
+	return splitReadCloser{out, session}, nil
 }
 
 func (f *fs) Delete(p string) error {
@@ -66,4 +82,9 @@ func (f *fs) Delete(p string) error {
 
 func (f *fs) Scope(p string) internal.WorkspaceFS {
 	return &internal.ScopedFS{Parent: f, Prefix: p}
+}
+
+type splitReadCloser struct {
+	io.Reader
+	io.Closer
 }

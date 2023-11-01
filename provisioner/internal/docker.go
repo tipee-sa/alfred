@@ -22,7 +22,7 @@ import (
 	"github.com/samber/lo"
 )
 
-func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, task *scheduler.Task, fs WorkspaceFS) error {
+func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, task *scheduler.Task, fs WorkspaceFS) (int, error) {
 	cleanup := func(what string, thunk func() error, args ...any) {
 		if err := thunk(); err != nil {
 			args = append([]any{"error", err}, args...)
@@ -34,7 +34,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	networkName := fmt.Sprintf("alfred-%s", task.FQN())
 	netResp, err := docker.NetworkCreate(ctx, networkName, types.NetworkCreate{Driver: "bridge"})
 	if err != nil {
-		return fmt.Errorf("failed to create network: %w", err)
+		return -1, fmt.Errorf("failed to create network: %w", err)
 	}
 	networkId := netResp.ID
 	defer cleanup(
@@ -46,7 +46,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	taskFs := fs.Scope(task.FQN())
 
 	if err := taskFs.MkDir("/"); err != nil {
-		return fmt.Errorf("failed to create workspace: %w", err)
+		return -1, fmt.Errorf("failed to create workspace: %w", err)
 	}
 	defer cleanup(
 		"workspace",
@@ -55,7 +55,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 
 	for _, dir := range []string{"output"} {
 		if err := taskFs.MkDir("/" + dir); err != nil {
-			return fmt.Errorf("failed to create workspace directory '%s': %w", dir, err)
+			return -1, fmt.Errorf("failed to create workspace directory '%s': %w", dir, err)
 		}
 	}
 
@@ -95,7 +95,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 		fmt.Sprintf("alfred-%s", task.FQN()),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create container: %w", err)
+		return -1, fmt.Errorf("failed to create container: %w", err)
 	}
 	defer cleanup(
 		"main container",
@@ -123,7 +123,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 			Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
 		})
 		if err != nil {
-			return fmt.Errorf("failed to list images for service '%s': %w", service.Name, err)
+			return -1, fmt.Errorf("failed to list images for service '%s': %w", service.Name, err)
 		}
 
 		// We only need to check that the list is non-empty, because we filtered by reference
@@ -131,7 +131,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 			serviceLog.Debug("Pulling service image")
 			reader, err := docker.ImagePull(ctx, service.Image, types.ImagePullOptions{})
 			if err != nil {
-				return fmt.Errorf("failed to pull image for service '%s': %w", service.Name, err)
+				return -1, fmt.Errorf("failed to pull image for service '%s': %w", service.Name, err)
 			}
 			defer reader.Close()
 
@@ -161,7 +161,7 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 			fmt.Sprintf("alfred-%s-%s", task.FQN(), service.Name),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to create container for service '%s': %w", service.Name, err)
+			return -1, fmt.Errorf("failed to create container for service '%s': %w", service.Name, err)
 		}
 		defer cleanup(
 			"service container",
@@ -264,19 +264,19 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	close(serviceErrors)
 
 	if err := <-serviceErrors; err != nil {
-		return fmt.Errorf("service: %w", err)
+		return -1, fmt.Errorf("service: %w", err)
 	}
 
 	// Start main container
 	wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
 	err = docker.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to start container: %w", err)
+		return -1, fmt.Errorf("failed to start container: %w", err)
 	}
 
 	out, err := docker.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: true, Details: true})
 	if err != nil {
-		return fmt.Errorf("failed to get container logs: %w", err)
+		return -1, fmt.Errorf("failed to get container logs: %w", err)
 	}
 	defer out.Close()
 
@@ -287,16 +287,16 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	case resp := <-wait:
 		// Container is done
 		if resp.StatusCode != 0 {
-			return fmt.Errorf("exited status: %d", resp.StatusCode)
+			return int(resp.StatusCode), fmt.Errorf("exited status: %d", resp.StatusCode)
 		}
 	case err := <-errChan:
-		return fmt.Errorf("failed to wait for container: %w", err)
+		return -1, fmt.Errorf("failed to wait for container: %w", err)
 	}
 
 	// Copy output files
 	reader, err := taskFs.Archive("/output")
 	if err != nil {
-		return fmt.Errorf("failed to archive output: %w", err)
+		return -1, fmt.Errorf("failed to archive output: %w", err)
 	}
 	defer reader.Close()
 
@@ -304,5 +304,5 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	_, _ = io.Copy(file, reader)
 	defer file.Close()
 
-	return nil
+	return 0, nil
 }

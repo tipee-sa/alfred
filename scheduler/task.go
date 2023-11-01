@@ -3,22 +3,27 @@ package scheduler
 import (
 	"fmt"
 	"log/slog"
+
+	"github.com/gammadia/alfred/proto"
 )
 
-type TaskStatus string
+type TaskStatus proto.TaskStatus_Status
 
 const (
-	TaskStatusPending   TaskStatus = "pending"
-	TaskStatusRunning   TaskStatus = "running"
-	TaskStatusAborted   TaskStatus = "aborted"
-	TaskStatusFailed    TaskStatus = "failed"
-	TaskStatusCompleted TaskStatus = "completed"
+	TaskStatusQueued    TaskStatus = TaskStatus(proto.TaskStatus_QUEUED)
+	TaskStatusRunning   TaskStatus = TaskStatus(proto.TaskStatus_RUNNING)
+	TaskStatusAborted   TaskStatus = TaskStatus(proto.TaskStatus_ABORTED)
+	TaskStatusFailed    TaskStatus = TaskStatus(proto.TaskStatus_FAILED)
+	TaskStatusCompleted TaskStatus = TaskStatus(proto.TaskStatus_COMPLETED)
 )
 
+func (ts TaskStatus) AsProto() proto.TaskStatus_Status {
+	return proto.TaskStatus_Status(ts)
+}
+
 type Task struct {
-	Job    *Job
-	Name   string
-	Status TaskStatus
+	Job  *Job
+	Name string
 
 	log *slog.Logger
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ const (
 	Provisioner                 = "provisioner"
 	ProvisioningDelay           = "provisioning-delay"
 	ProvisioningFailureCooldown = "provisioning-failure-cooldown"
+	ServerData                  = "server-data"
 	TasksPerNode                = "tasks-per-node"
 
 	OpenstackDockerHost     = "openstack-docker-host"
@@ -41,11 +43,12 @@ func init() {
 	flags.String(LogLevel, "INFO", "minimum log level")
 	flags.Bool(LogSource, false, "add source code location to logs")
 	flags.Int(MaxNodes, (runtime.NumCPU()+1)/2, "maximum number of nodes to provision")
-	flags.String(NodeWorkspace, "/tmp/alfred", "workspace directory for nodes")
+	flags.String(NodeWorkspace, "/tmp/alfred-workspace", "workspace directory for nodes")
 	flags.Int(Port, 25373, "listening port")
 	flags.String(Provisioner, "local", "node provisioner to use (local, openstack)")
 	flags.Duration(ProvisioningDelay, 20*time.Second, "how long to wait between provisioning nodes")
 	flags.Duration(ProvisioningFailureCooldown, 1*time.Minute, "how long to wait before retrying provisioning")
+	flags.String(ServerData, path.Join(lo.Must(os.Getwd()), "alfred-data"), "data directory for server")
 	flags.Int(TasksPerNode, 2, "maximum number of tasks to run on a single node")
 
 	// Openstack

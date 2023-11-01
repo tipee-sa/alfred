@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 
+	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/job"
 	"github.com/gammadia/alfred/client/ui"
 	"github.com/gammadia/alfred/proto"
@@ -47,7 +48,7 @@ var runCmd = &cobra.Command{
 		}
 
 		spinner = ui.NewSpinner("Scheduling job")
-		r, err := client.ScheduleJob(cmd.Context(), &proto.ScheduleJobRequest{Job: j})
+		job, err := client.ScheduleJob(cmd.Context(), &proto.ScheduleJobRequest{Job: j})
 		if err != nil {
 			spinner.Fail()
 			return err
@@ -55,13 +56,20 @@ var runCmd = &cobra.Command{
 			spinner.Success()
 		}
 
-		fmt.Printf("%+v\n", r)
+		if !lo.Must(cmd.Flags().GetBool("async")) {
+			if err := watchCmd.RunE(cmd, []string{job.Name}); err != nil {
+				return err
+			}
+		} else {
+			cmd.Printf(color.HiGreenString("Scheduled job '%s'\n"), job.Name)
+		}
 
 		return nil
 	},
 }
 
 func init() {
+	runCmd.Flags().Bool("async", false, "run the job asynchronously")
 	runCmd.Flags().StringP("name", "n", "", "name of the job")
 	runCmd.Flags().StringSliceP("tasks", "t", nil, "list of tasks to run, overrides the jobfile")
 	runCmd.Flags().StringSlice("skip-tasks", nil, "skips the given tasks")

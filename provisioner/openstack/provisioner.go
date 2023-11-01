@@ -17,7 +17,7 @@ import (
 )
 
 type Provisioner struct {
-	name   namegen.ID
+	name   string
 	config Config
 	client *gophercloud.ServiceClient
 	log    *slog.Logger
@@ -95,11 +95,11 @@ func (p *Provisioner) deleteKeypair() {
 	}
 }
 
-func (p *Provisioner) GetName() namegen.ID {
+func (p *Provisioner) GetName() string {
 	return p.name
 }
 
-func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
+func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 	name := fmt.Sprintf("alfred-%s", nodeName)
 
 	server, err := servers.Create(p.client, keypairs.CreateOptsExt{
@@ -110,7 +110,7 @@ func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
 			Networks:       p.config.Networks,
 			SecurityGroups: p.config.SecurityGroups,
 			Metadata: map[string]string{
-				"alfred-provisioner":    p.name.String(),
+				"alfred-provisioner":    p.name,
 				"alfred-provisioned-at": time.Now().Format(time.RFC3339),
 			},
 		},

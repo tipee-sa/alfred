@@ -29,6 +29,11 @@ func NewSpinner(msg string) *Spinner {
 	return s
 }
 
+func (s *Spinner) UpdateMessage(msg string) {
+	s.Spinner.Suffix = " " + msg
+	s.msg = msg
+}
+
 func (s *Spinner) Success(msg ...string) {
 	if len(msg) == 0 {
 		msg = []string{s.msg}

@@ -62,9 +62,11 @@ var alfredCmd = &cobra.Command{
 }
 
 func init() {
+	alfredCmd.AddCommand(psCmd)
 	alfredCmd.AddCommand(runCmd)
 	alfredCmd.AddCommand(topCmd)
 	alfredCmd.AddCommand(versionCmd)
+	alfredCmd.AddCommand(watchCmd)
 
 	alfredCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	alfredCmd.PersistentFlags().String("remote", lo.Must(lo.Coalesce(os.Getenv("ALFRED_REMOTE"), "alfred.tipee.dev:25373")), "the server remote address")

@@ -6,7 +6,7 @@ import (
 
 	"github.com/gammadia/alfred/provisioner/local"
 	"github.com/gammadia/alfred/provisioner/openstack"
-	s "github.com/gammadia/alfred/scheduler"
+	schedulerpkg "github.com/gammadia/alfred/scheduler"
 	"github.com/gammadia/alfred/server/flags"
 	"github.com/gammadia/alfred/server/log"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-var scheduler *s.Scheduler
+var scheduler *schedulerpkg.Scheduler
 
 func createScheduler() error {
 	provisioner, err := createProvisioner()
@@ -22,7 +22,7 @@ func createScheduler() error {
 		return fmt.Errorf("unable to create provisioner '%s': %w", viper.GetString(flags.Provisioner), err)
 	}
 
-	scheduler = s.New(provisioner, s.Config{
+	scheduler = schedulerpkg.New(provisioner, schedulerpkg.Config{
 		Logger:                      log.Base.With("component", "scheduler"),
 		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
@@ -30,10 +30,14 @@ func createScheduler() error {
 		TasksPerNode:                viper.GetInt(flags.TasksPerNode),
 	})
 
+	serverStatus.Scheduler.Provisioner = viper.GetString(flags.Provisioner)
+	serverStatus.Scheduler.MaxNodes = uint32(viper.GetInt(flags.MaxNodes))
+	serverStatus.Scheduler.TasksPerNodes = uint32(viper.GetDuration(flags.TasksPerNode))
+
 	return nil
 }
 
-func createProvisioner() (s.Provisioner, error) {
+func createProvisioner() (schedulerpkg.Provisioner, error) {
 	logger := log.Base.With("component", "provisioner")
 	switch p := viper.GetString(flags.Provisioner); p {
 	case "local":

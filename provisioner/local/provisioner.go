@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/docker/docker/client"
-	"github.com/gammadia/alfred/namegen"
 	"github.com/gammadia/alfred/scheduler"
 )
 
@@ -42,7 +41,7 @@ func New(config Config) (*Provisioner, error) {
 	}, nil
 }
 
-func (p *Provisioner) Provision(nodeName namegen.ID) (scheduler.Node, error) {
+func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 	p.nextNodeNumber += 1
 
 	ctx, cancel := context.WithCancel(p.ctx)

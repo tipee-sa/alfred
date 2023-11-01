@@ -16,9 +16,6 @@ type Scheduler struct {
 	provisioner Provisioner
 	config      Config
 	log         *slog.Logger
-	shutdown    bool
-
-	jobs map[namegen.ID]*Job
 
 	input        chan *Task
 	tickRequests chan any
@@ -30,7 +27,12 @@ type Scheduler struct {
 	provisionedNodes      int
 	lastNodeProvisionedAt time.Time
 
-	stop chan any
+	events         chan Event
+	listeners      map[chan Event]bool
+	listenersMutex sync.RWMutex
+
+	shutdown bool
+	stop     chan any
 
 	// WaitGroup tracking all running tasks
 	wg sync.WaitGroup
@@ -42,39 +44,80 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		config:      config,
 		log:         config.Logger,
 
-		jobs: make(map[namegen.ID]*Job),
-
 		input:        make(chan *Task),
 		tickRequests: make(chan any, 1),
 		deferred:     make(chan func()),
 
 		queue: nil,
 
+		events:    make(chan Event, 64),
+		listeners: make(map[chan Event]bool),
+
 		stop: make(chan any),
 		wg:   sync.WaitGroup{},
 	}
 
 	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
+	go scheduler.forwardEvents()
 
 	return scheduler
 }
 
-func (s *Scheduler) Schedule(job *Job) {
+func (s *Scheduler) Subscribe() (<-chan Event, func()) {
+	s.listenersMutex.Lock()
+	defer s.listenersMutex.Unlock()
+
+	channel := make(chan Event, 1024)
+	s.listeners[channel] = true
+
+	return channel, func() {
+		s.listenersMutex.Lock()
+		defer s.listenersMutex.Unlock()
+		delete(s.listeners, channel)
+	}
+}
+
+func (s *Scheduler) broadcast(event Event) {
+	s.events <- event
+}
+
+func (s *Scheduler) forwardEvents() {
+	emit := func(event Event) {
+		s.listenersMutex.RLock()
+		defer s.listenersMutex.RUnlock()
+
+		for channel := range s.listeners {
+			select {
+			case channel <- event:
+				// Event sent
+			default:
+				s.log.Debug("Listener queue full, dropping message")
+			}
+		}
+	}
+	for event := range s.events {
+		emit(event)
+	}
+}
+
+func (s *Scheduler) Schedule(job *Job) string {
 	job.id = namegen.Get()
 	s.log.Info("Scheduling job", "name", job.FQN())
 
+	s.broadcast(EventJobScheduled{Job: job.FQN(), About: job.About, Tasks: job.Tasks})
 	s.wg.Add(len(job.Tasks))
 	for _, name := range job.Tasks {
 		task := Task{
-			Job:    job,
-			Name:   name,
-			Status: TaskStatusPending,
+			Job:  job,
+			Name: name,
 
-			log: s.log.With(slog.Group("task", "job", job.Name, "name", name)),
+			log: s.log.With(slog.Group("task", "job", job.FQN(), "name", name)),
 		}
 
 		s.input <- &task
 	}
+
+	return job.FQN()
 }
 
 func (s *Scheduler) Wait() {
@@ -84,6 +127,10 @@ func (s *Scheduler) Wait() {
 
 func (s *Scheduler) Shutdown() {
 	close(s.stop)
+	go func() {
+		s.Wait()
+		close(s.events)
+	}()
 }
 
 func (s *Scheduler) Run() {
@@ -94,6 +141,7 @@ func (s *Scheduler) Run() {
 			if s.shutdown {
 				task.log.Debug("Scheduler is shutting down, ignoring task")
 			}
+			s.broadcast(EventTaskQueued{Job: task.Job.FQN(), Task: task.Name})
 			s.queue = append(s.queue, task)
 			s.requestTick()
 
@@ -157,6 +205,7 @@ func (s *Scheduler) scheduleTaskOnNode() bool {
 				nextTask.log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot))
 				nodeState.tasks[slot] = nextTask
 				s.queue = s.queue[1:]
+				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: &NodeSlotTask{nextTask.Job.Name, nextTask.Name}})
 
 				go s.watchTaskExecution(nodeState, slot, nextTask)
 				return true
@@ -180,7 +229,7 @@ func (s *Scheduler) resizePool() {
 				return task == nil
 			}) {
 				nodeState.log.Info("Terminating node")
-				nodeState.status = NodeStatusTerminating
+				nodeState.UpdateStatus(NodeStatusTerminating)
 
 				go s.watchNodeTermination(nodeState)
 			}
@@ -210,6 +259,8 @@ func (s *Scheduler) resizePool() {
 
 		nodeName := namegen.Get()
 		nodeState := &nodeState{
+			scheduler: s,
+
 			node:   nil,
 			status: NodeStatusPending,
 			tasks:  make([]*Task, s.config.TasksPerNode),
@@ -219,6 +270,7 @@ func (s *Scheduler) resizePool() {
 			earliestStart: s.lastNodeProvisionedAt,
 		}
 		s.nodes = append(s.nodes, nodeState)
+		s.broadcast(EventNodeCreated{Node: nodeName, Status: nodeState.status})
 
 		go s.watchNodeProvisioning(nodeState)
 	}
@@ -234,10 +286,10 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 
 	nodeState.log.Info("Provisioning node")
 
-	nodeState.status = NodeStatusProvisioning
+	nodeState.UpdateStatus(NodeStatusProvisioning)
 	if node, err := s.provisioner.Provision(nodeState.nodeName); err != nil {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
-		nodeState.status = NodeStatusFailed
+		nodeState.UpdateStatus(NodeStatusFailed)
 
 		s.after(s.config.ProvisioningFailureCooldown, func() {
 			s.nodes = lo.Without(s.nodes, nodeState)
@@ -245,7 +297,7 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 		})
 	} else {
 		nodeState.node = node
-		nodeState.status = NodeStatusOnline
+		nodeState.UpdateStatus(NodeStatusOnline)
 		nodeState.log.Info("Node is online")
 	}
 
@@ -255,17 +307,23 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Task) {
 	node := nodeState.node
 
-	if err := node.RunTask(task); err != nil {
+	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
+	if exitCode, err := node.RunTask(task); err != nil {
+		s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		task.log.Warn("Task failed", "error", err)
-		task.Status = TaskStatusFailed
 	} else {
+		s.broadcast(EventTaskCompleted{Job: task.Job.FQN(), Task: task.Name})
 		task.log.Info("Task completed")
-		task.Status = TaskStatusCompleted
 	}
 
-	nodeState.tasks[slot] = nil
-	s.wg.Done()
+	if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
+		s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
+	}
 
+	s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
+	nodeState.tasks[slot] = nil
+
+	s.wg.Done()
 	s.requestTick()
 }
 
@@ -280,5 +338,6 @@ func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 	}
 
 	s.nodes = lo.Without(s.nodes, nodeState)
+	s.broadcast(EventNodeTerminated{Node: nodeState.nodeName})
 	s.requestTick()
 }

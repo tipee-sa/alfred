@@ -4,21 +4,21 @@ image:
   dockerfile: "job.dockerfile"
   context: "."
 services:
-  redis:
-    image: "redis:7.0.5-alpine"
-    health:
-      cmd: ["redis-cli", "ping"]
-      timeout: "5s"
-      wait: "1s"
-      retries: 10
-  mysql:
-    image: "mysql:8.0.31"
-    env:
-      MYSQL_ROOT_PASSWORD: "root"
-    health:
-      cmd: ["mysqladmin", "-u", "root", "-proot", "-h", "127.0.0.1", "ping"]
-      timeout: "10s"
-      interval: "2s"
-      retries: 20
+#  redis:
+#    image: "redis:7.0.5-alpine"
+#    health:
+#      cmd: ["redis-cli", "ping"]
+#      timeout: "5s"
+#      wait: "1s"
+#      retries: 10
+#  mysql:
+#    image: "mysql:8.0.31"
+#    env:
+#      MYSQL_ROOT_PASSWORD: "root"
+#    health:
+#      cmd: ["mysqladmin", "-u", "root", "-proot", "-h", "127.0.0.1", "ping"]
+#      timeout: "10s"
+#      interval: "2s"
+#      retries: 20
 tasks: |
-  sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 1
+  sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 10

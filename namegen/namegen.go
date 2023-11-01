@@ -6,12 +6,6 @@ import (
 
 var gen = vendor.New()
 
-type ID string
-
-func Get() ID {
-	return ID(gen.Get())
-}
-
-func (id ID) String() string {
-	return string(id)
+func Get() string {
+	return gen.Get()
 }

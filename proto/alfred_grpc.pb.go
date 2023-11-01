@@ -22,6 +22,8 @@ const (
 	Alfred_LoadImage_FullMethodName   = "/proto.Alfred/LoadImage"
 	Alfred_ScheduleJob_FullMethodName = "/proto.Alfred/ScheduleJob"
 	Alfred_Ping_FullMethodName        = "/proto.Alfred/Ping"
+	Alfred_WatchJob_FullMethodName    = "/proto.Alfred/WatchJob"
+	Alfred_WatchJobs_FullMethodName   = "/proto.Alfred/WatchJobs"
 )
 
 // AlfredClient is the client API for Alfred service.
@@ -31,6 +33,8 @@ type AlfredClient interface {
 	LoadImage(ctx context.Context, opts ...grpc.CallOption) (Alfred_LoadImageClient, error)
 	ScheduleJob(ctx context.Context, in *ScheduleJobRequest, opts ...grpc.CallOption) (*ScheduleJobResponse, error)
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	WatchJob(ctx context.Context, in *WatchJobRequest, opts ...grpc.CallOption) (Alfred_WatchJobClient, error)
+	WatchJobs(ctx context.Context, in *WatchJobsRequest, opts ...grpc.CallOption) (Alfred_WatchJobsClient, error)
 }
 
 type alfredClient struct {
@@ -90,6 +94,70 @@ func (c *alfredClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.C
 	return out, nil
 }
 
+func (c *alfredClient) WatchJob(ctx context.Context, in *WatchJobRequest, opts ...grpc.CallOption) (Alfred_WatchJobClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[1], Alfred_WatchJob_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &alfredWatchJobClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type Alfred_WatchJobClient interface {
+	Recv() (*JobStatus, error)
+	grpc.ClientStream
+}
+
+type alfredWatchJobClient struct {
+	grpc.ClientStream
+}
+
+func (x *alfredWatchJobClient) Recv() (*JobStatus, error) {
+	m := new(JobStatus)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (c *alfredClient) WatchJobs(ctx context.Context, in *WatchJobsRequest, opts ...grpc.CallOption) (Alfred_WatchJobsClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[2], Alfred_WatchJobs_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &alfredWatchJobsClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type Alfred_WatchJobsClient interface {
+	Recv() (*JobsList, error)
+	grpc.ClientStream
+}
+
+type alfredWatchJobsClient struct {
+	grpc.ClientStream
+}
+
+func (x *alfredWatchJobsClient) Recv() (*JobsList, error) {
+	m := new(JobsList)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // AlfredServer is the server API for Alfred service.
 // All implementations must embed UnimplementedAlfredServer
 // for forward compatibility
@@ -97,6 +165,8 @@ type AlfredServer interface {
 	LoadImage(Alfred_LoadImageServer) error
 	ScheduleJob(context.Context, *ScheduleJobRequest) (*ScheduleJobResponse, error)
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	WatchJob(*WatchJobRequest, Alfred_WatchJobServer) error
+	WatchJobs(*WatchJobsRequest, Alfred_WatchJobsServer) error
 	mustEmbedUnimplementedAlfredServer()
 }
 
@@ -112,6 +182,12 @@ func (UnimplementedAlfredServer) ScheduleJob(context.Context, *ScheduleJobReques
 }
 func (UnimplementedAlfredServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
+}
+func (UnimplementedAlfredServer) WatchJob(*WatchJobRequest, Alfred_WatchJobServer) error {
+	return status.Errorf(codes.Unimplemented, "method WatchJob not implemented")
+}
+func (UnimplementedAlfredServer) WatchJobs(*WatchJobsRequest, Alfred_WatchJobsServer) error {
+	return status.Errorf(codes.Unimplemented, "method WatchJobs not implemented")
 }
 func (UnimplementedAlfredServer) mustEmbedUnimplementedAlfredServer() {}
 
@@ -188,6 +264,48 @@ func _Alfred_Ping_Handler(srv interface{}, ctx context.Context, dec func(interfa
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Alfred_WatchJob_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchJobRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AlfredServer).WatchJob(m, &alfredWatchJobServer{stream})
+}
+
+type Alfred_WatchJobServer interface {
+	Send(*JobStatus) error
+	grpc.ServerStream
+}
+
+type alfredWatchJobServer struct {
+	grpc.ServerStream
+}
+
+func (x *alfredWatchJobServer) Send(m *JobStatus) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func _Alfred_WatchJobs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchJobsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AlfredServer).WatchJobs(m, &alfredWatchJobsServer{stream})
+}
+
+type Alfred_WatchJobsServer interface {
+	Send(*JobsList) error
+	grpc.ServerStream
+}
+
+type alfredWatchJobsServer struct {
+	grpc.ServerStream
+}
+
+func (x *alfredWatchJobsServer) Send(m *JobsList) error {
+	return x.ServerStream.SendMsg(m)
+}
+
 // Alfred_ServiceDesc is the grpc.ServiceDesc for Alfred service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -210,6 +328,16 @@ var Alfred_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _Alfred_LoadImage_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
+		},
+		{
+			StreamName:    "WatchJob",
+			Handler:       _Alfred_WatchJob_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchJobs",
+			Handler:       _Alfred_WatchJobs_Handler,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "proto/alfred.proto",

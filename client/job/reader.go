@@ -98,7 +98,7 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 			jobService.Health.Interval = durationpb.New(lo.Must(time.ParseDuration(service.Health.Interval)))
 		}
 		if service.Health.Retries != "" {
-			retries := lo.Must(strconv.ParseUint(service.Health.Retries, 10, 64))
+			retries := uint32(lo.Must(strconv.ParseUint(service.Health.Retries, 10, 32)))
 			jobService.Health.Retries = &retries
 		}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	_ "google.golang.org/grpc/encoding/gzip"
 )
@@ -30,6 +31,7 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("Alfred server starting up...", "version", version, "commit", commit)
+	serverStatus.Server.StartedAt = timestamppb.Now()
 
 	// Setup network listener
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", viper.GetInt("port")))
@@ -65,6 +67,11 @@ func main() {
 		scheduler.Wait()
 		wg.Done()
 	}()
+
+	// Listen for events from the scheduler
+	channel, unsubscribe := scheduler.Subscribe()
+	defer unsubscribe()
+	go listenEvents(channel)
 
 	// Start serving gRPC requests
 	wg.Add(1)

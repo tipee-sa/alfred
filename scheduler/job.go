@@ -2,15 +2,17 @@ package scheduler
 
 import (
 	"fmt"
+	"sync/atomic"
 
-	"github.com/gammadia/alfred/namegen"
 	"github.com/gammadia/alfred/proto"
 )
 
 type Job struct {
 	*proto.Job
 
-	id namegen.ID
+	id string
+
+	tasksCompleted atomic.Uint32
 }
 
 func (j *Job) FQN() string {

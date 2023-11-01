@@ -17,7 +17,9 @@ proto:
 
 .PHONY: run-server
 run-server: proto
-	reflex -s -t 120s -r '\.go' -- bash -c "make bin/alfred-server && bin/alfred-server"
+	reflex -s -t 120s \
+		-R '^.github/' -R '^client/' -R '^hack/^' -R '^workspace/' \
+		-r '\.go' -- bash -c "make bin/alfred-server && bin/alfred-server"
 
 .PHONY: test
 test:

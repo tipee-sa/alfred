@@ -5,19 +5,23 @@ option go_package = "github.com/gammadia/alfred/proto";
 package proto;
 
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 
 service Alfred {
     rpc LoadImage (stream LoadImageMessage) returns (stream LoadImageResponse);
     rpc ScheduleJob (ScheduleJobRequest) returns (ScheduleJobResponse);
     rpc Ping (PingRequest) returns (PingResponse);
+    rpc WatchJob (WatchJobRequest) returns (stream JobStatus);
+    rpc WatchJobs (WatchJobsRequest) returns (stream JobsList);
 }
 
 message Job {
     string name = 1;
-    string image = 2;
-    repeated Env env = 3;
-    repeated Service services = 4;
-    repeated string tasks = 5;
+    string about = 2;
+    string image = 3;
+    repeated Env env = 4;
+    repeated Service services = 5;
+    repeated string tasks = 6;
 
     message Service {
         string name = 1;
@@ -31,7 +35,7 @@ message Job {
 
             optional google.protobuf.Duration timeout = 3;
             optional google.protobuf.Duration interval = 4;
-            optional uint64 retries = 5;
+            optional uint32 retries = 5;
         }
     }
 
@@ -74,11 +78,87 @@ message ScheduleJobRequest {
 }
 
 message ScheduleJobResponse {
-
+    string name = 1;
 }
+
 message PingRequest {}
 
 message PingResponse {
     string version = 1;
     string commit = 2;
+}
+
+message WatchJobRequest {
+    string name = 1;
+}
+
+message WatchJobsRequest {}
+
+message JobsList {
+    repeated JobStatus jobs = 1;
+}
+
+message Status {
+    Server server = 1;
+    Scheduler scheduler = 2;
+    repeated JobStatus jobs = 3;
+    repeated NodeStatus nodes = 4;
+
+    message Server {
+        google.protobuf.Timestamp started_at = 1;
+    }
+
+    message Scheduler {
+        string provisioner = 1;
+        uint32 max_nodes = 2;
+        uint32 tasks_per_nodes = 3;
+    }
+}
+
+message JobStatus {
+    string name = 1;
+    string about = 2;
+    repeated TaskStatus tasks = 3;
+    google.protobuf.Timestamp scheduled_at = 4;
+    optional google.protobuf.Timestamp completed_at = 5;
+}
+
+message TaskStatus {
+    string name = 1;
+    Status status = 2;
+    optional int32 exit_code = 3;
+
+    enum Status {
+        UNKNOWN = 0;
+        QUEUED = 1;
+        RUNNING = 2;
+        ABORTED = 3;
+        FAILED = 4;
+        COMPLETED = 5;
+    }
+}
+
+message NodeStatus {
+    string name = 1;
+    Status status = 2;
+    repeated Slot slots = 3;
+
+    enum Status {
+        UNKNOWN = 0;
+        PENDING = 1;
+        PROVISIONING = 2;
+        ONLINE = 3;
+        TERMINATING = 4;
+        FAILED = 5;
+    }
+
+    message Slot {
+        uint32 id = 1;
+        optional Task task = 2;
+
+        message Task {
+            string job = 1;
+            string name = 2;
+        }
+    }
 }
