@@ -15,12 +15,12 @@ import (
 )
 
 const (
+	Listen                      = "listen"
 	LogFormat                   = "log-format"
 	LogLevel                    = "log-level"
 	LogSource                   = "log-source"
 	MaxNodes                    = "max-nodes"
 	NodeWorkspace               = "node-workspace"
-	Port                        = "port"
 	Provisioner                 = "provisioner"
 	ProvisioningDelay           = "provisioning-delay"
 	ProvisioningFailureCooldown = "provisioning-failure-cooldown"
@@ -44,7 +44,7 @@ func init() {
 	flags.Bool(LogSource, false, "add source code location to logs")
 	flags.Int(MaxNodes, (runtime.NumCPU()+1)/2, "maximum number of nodes to provision")
 	flags.String(NodeWorkspace, "/tmp/alfred-workspace", "workspace directory for nodes")
-	flags.Int(Port, 25373, "listening port")
+	flags.String(Listen, ":25373", "listening address and port")
 	flags.String(Provisioner, "local", "node provisioner to use (local, openstack)")
 	flags.Duration(ProvisioningDelay, 20*time.Second, "how long to wait between provisioning nodes")
 	flags.Duration(ProvisioningFailureCooldown, 1*time.Minute, "how long to wait before retrying provisioning")

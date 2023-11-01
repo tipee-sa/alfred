@@ -42,15 +42,15 @@ type JobfileServiceHealth struct {
 }
 
 var envKeyRegex = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
-var serviceNameRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]+$`)
+var nameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]+$`)
 
 func (jobfile Jobfile) Validate() error {
 	if jobfile.Version != JobfileVersion {
 		return fmt.Errorf("unsupported version '%s'", jobfile.Version)
 	}
 
-	if jobfile.Name == "" {
-		return fmt.Errorf("name is required")
+	if !nameRegex.MatchString(jobfile.Name) {
+		return fmt.Errorf("name must be a valid identifier")
 	}
 
 	if jobfile.Image.Dockerfile == "" {
@@ -74,7 +74,7 @@ func (jobfile Jobfile) Validate() error {
 	}
 
 	for name, service := range jobfile.Services {
-		if !serviceNameRegex.MatchString(name) {
+		if !nameRegex.MatchString(name) {
 			return fmt.Errorf("services names must be valid identifiers")
 		}
 

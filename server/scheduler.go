@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path"
 
 	"github.com/gammadia/alfred/provisioner/local"
 	"github.com/gammadia/alfred/provisioner/openstack"
@@ -23,6 +26,7 @@ func createScheduler() error {
 	}
 
 	scheduler = schedulerpkg.New(provisioner, schedulerpkg.Config{
+		ArtifactPreserver:           preserveArtifacts,
 		Logger:                      log.Base.With("component", "scheduler"),
 		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
@@ -33,6 +37,25 @@ func createScheduler() error {
 	serverStatus.Scheduler.Provisioner = viper.GetString(flags.Provisioner)
 	serverStatus.Scheduler.MaxNodes = uint32(viper.GetInt(flags.MaxNodes))
 	serverStatus.Scheduler.TasksPerNodes = uint32(viper.GetDuration(flags.TasksPerNode))
+
+	return nil
+}
+
+func preserveArtifacts(reader io.Reader, task *schedulerpkg.Task) error {
+	artifactsDir := path.Join(dataRoot, "artifacts", task.Job.FQN())
+	if err := os.MkdirAll(artifactsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create artifacts directory: %w", err)
+	}
+
+	artifactFile := fmt.Sprintf("%s.tar.gz", task.Name)
+	file, err := os.OpenFile(path.Join(artifactsDir, artifactFile), os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create artifact file: %w", err)
+	}
+
+	if _, err := io.Copy(file, reader); err != nil {
+		return fmt.Errorf("failed to copy artifact file: %w", err)
+	}
 
 	return nil
 }

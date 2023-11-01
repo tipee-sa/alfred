@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/flags"
 	"github.com/gammadia/alfred/server/log"
 
 	"github.com/spf13/viper"
@@ -21,6 +22,7 @@ import (
 // Versioning information set at build time
 var version, commit = "dev", "n/a"
 
+var dataRoot string
 var ctx, cancel = context.WithCancel(context.Background())
 var wg sync.WaitGroup
 
@@ -33,8 +35,15 @@ func main() {
 	log.Info("Alfred server starting up...", "version", version, "commit", commit)
 	serverStatus.Server.StartedAt = timestamppb.Now()
 
+	// Create data directory
+	dataRoot = viper.GetString(flags.ServerData)
+	if err := os.MkdirAll(dataRoot, 0755); err != nil {
+		log.Error("Failed to create data directory", "error", err)
+		os.Exit(1)
+	}
+
 	// Setup network listener
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", viper.GetInt("port")))
+	lis, err := net.Listen("tcp", viper.GetString(flags.Listen))
 	if err != nil {
 		log.Error("Failed to listen", "error", err)
 		os.Exit(1)

@@ -19,17 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	Alfred_LoadImage_FullMethodName   = "/proto.Alfred/LoadImage"
-	Alfred_ScheduleJob_FullMethodName = "/proto.Alfred/ScheduleJob"
-	Alfred_Ping_FullMethodName        = "/proto.Alfred/Ping"
-	Alfred_WatchJob_FullMethodName    = "/proto.Alfred/WatchJob"
-	Alfred_WatchJobs_FullMethodName   = "/proto.Alfred/WatchJobs"
+	Alfred_DownloadArtifact_FullMethodName = "/proto.Alfred/DownloadArtifact"
+	Alfred_LoadImage_FullMethodName        = "/proto.Alfred/LoadImage"
+	Alfred_ScheduleJob_FullMethodName      = "/proto.Alfred/ScheduleJob"
+	Alfred_Ping_FullMethodName             = "/proto.Alfred/Ping"
+	Alfred_WatchJob_FullMethodName         = "/proto.Alfred/WatchJob"
+	Alfred_WatchJobs_FullMethodName        = "/proto.Alfred/WatchJobs"
 )
 
 // AlfredClient is the client API for Alfred service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AlfredClient interface {
+	DownloadArtifact(ctx context.Context, in *DownloadArtifactRequest, opts ...grpc.CallOption) (Alfred_DownloadArtifactClient, error)
 	LoadImage(ctx context.Context, opts ...grpc.CallOption) (Alfred_LoadImageClient, error)
 	ScheduleJob(ctx context.Context, in *ScheduleJobRequest, opts ...grpc.CallOption) (*ScheduleJobResponse, error)
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
@@ -45,8 +47,40 @@ func NewAlfredClient(cc grpc.ClientConnInterface) AlfredClient {
 	return &alfredClient{cc}
 }
 
+func (c *alfredClient) DownloadArtifact(ctx context.Context, in *DownloadArtifactRequest, opts ...grpc.CallOption) (Alfred_DownloadArtifactClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[0], Alfred_DownloadArtifact_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &alfredDownloadArtifactClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type Alfred_DownloadArtifactClient interface {
+	Recv() (*DownloadArtifactChunk, error)
+	grpc.ClientStream
+}
+
+type alfredDownloadArtifactClient struct {
+	grpc.ClientStream
+}
+
+func (x *alfredDownloadArtifactClient) Recv() (*DownloadArtifactChunk, error) {
+	m := new(DownloadArtifactChunk)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 func (c *alfredClient) LoadImage(ctx context.Context, opts ...grpc.CallOption) (Alfred_LoadImageClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[0], Alfred_LoadImage_FullMethodName, opts...)
+	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[1], Alfred_LoadImage_FullMethodName, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +129,7 @@ func (c *alfredClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.C
 }
 
 func (c *alfredClient) WatchJob(ctx context.Context, in *WatchJobRequest, opts ...grpc.CallOption) (Alfred_WatchJobClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[1], Alfred_WatchJob_FullMethodName, opts...)
+	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[2], Alfred_WatchJob_FullMethodName, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +161,7 @@ func (x *alfredWatchJobClient) Recv() (*JobStatus, error) {
 }
 
 func (c *alfredClient) WatchJobs(ctx context.Context, in *WatchJobsRequest, opts ...grpc.CallOption) (Alfred_WatchJobsClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[2], Alfred_WatchJobs_FullMethodName, opts...)
+	stream, err := c.cc.NewStream(ctx, &Alfred_ServiceDesc.Streams[3], Alfred_WatchJobs_FullMethodName, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +196,7 @@ func (x *alfredWatchJobsClient) Recv() (*JobsList, error) {
 // All implementations must embed UnimplementedAlfredServer
 // for forward compatibility
 type AlfredServer interface {
+	DownloadArtifact(*DownloadArtifactRequest, Alfred_DownloadArtifactServer) error
 	LoadImage(Alfred_LoadImageServer) error
 	ScheduleJob(context.Context, *ScheduleJobRequest) (*ScheduleJobResponse, error)
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
@@ -174,6 +209,9 @@ type AlfredServer interface {
 type UnimplementedAlfredServer struct {
 }
 
+func (UnimplementedAlfredServer) DownloadArtifact(*DownloadArtifactRequest, Alfred_DownloadArtifactServer) error {
+	return status.Errorf(codes.Unimplemented, "method DownloadArtifact not implemented")
+}
 func (UnimplementedAlfredServer) LoadImage(Alfred_LoadImageServer) error {
 	return status.Errorf(codes.Unimplemented, "method LoadImage not implemented")
 }
@@ -200,6 +238,27 @@ type UnsafeAlfredServer interface {
 
 func RegisterAlfredServer(s grpc.ServiceRegistrar, srv AlfredServer) {
 	s.RegisterService(&Alfred_ServiceDesc, srv)
+}
+
+func _Alfred_DownloadArtifact_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DownloadArtifactRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AlfredServer).DownloadArtifact(m, &alfredDownloadArtifactServer{stream})
+}
+
+type Alfred_DownloadArtifactServer interface {
+	Send(*DownloadArtifactChunk) error
+	grpc.ServerStream
+}
+
+type alfredDownloadArtifactServer struct {
+	grpc.ServerStream
+}
+
+func (x *alfredDownloadArtifactServer) Send(m *DownloadArtifactChunk) error {
+	return x.ServerStream.SendMsg(m)
 }
 
 func _Alfred_LoadImage_Handler(srv interface{}, stream grpc.ServerStream) error {
@@ -323,6 +382,11 @@ var Alfred_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "DownloadArtifact",
+			Handler:       _Alfred_DownloadArtifact_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "LoadImage",
 			Handler:       _Alfred_LoadImage_Handler,

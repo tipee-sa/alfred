@@ -142,12 +142,12 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	return nil
 }
 
-func (n *Node) RunTask(task *scheduler.Task) (int, error) {
+func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
 	if err := n.ensureNodeHasImage(task.Job.Image); err != nil {
 		return -1, fmt.Errorf("node has image: %w", err)
 	}
 
-	return internal.RunContainer(context.TODO(), n.log, n.docker, task, n.fs)
+	return internal.RunContainer(context.TODO(), n.log, n.docker, task, n.fs, runConfig)
 }
 
 func (n *Node) ensureNodeHasImage(image string) error {

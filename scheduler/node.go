@@ -21,9 +21,13 @@ func (ns NodeStatus) AsProto() proto.NodeStatus_Status {
 	return proto.NodeStatus_Status(ns)
 }
 
+type RunTaskConfig struct {
+	ArtifactPreserver ArtifactPreserver
+}
+
 type Node interface {
 	Name() string
-	RunTask(task *Task) (int, error) // TODO: we need cancellation
+	RunTask(task *Task, config RunTaskConfig) (int, error) // TODO: we need cancellation
 	Terminate() error
 }
 

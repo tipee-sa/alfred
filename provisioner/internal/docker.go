@@ -22,7 +22,14 @@ import (
 	"github.com/samber/lo"
 )
 
-func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, task *scheduler.Task, fs WorkspaceFS) (int, error) {
+func RunContainer(
+	ctx context.Context,
+	log *slog.Logger,
+	docker *client.Client,
+	task *scheduler.Task,
+	fs WorkspaceFS,
+	runConfig scheduler.RunTaskConfig,
+) (int, error) {
 	cleanup := func(what string, thunk func() error, args ...any) {
 		if err := thunk(); err != nil {
 			args = append([]any{"error", err}, args...)
@@ -283,26 +290,30 @@ func RunContainer(ctx context.Context, log *slog.Logger, docker *client.Client, 
 	_, _ = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 
 	// Wait for the container to finish
+	var status container.WaitResponse
 	select {
-	case resp := <-wait:
+	case status = <-wait:
 		// Container is done
-		if resp.StatusCode != 0 {
-			return int(resp.StatusCode), fmt.Errorf("exited status: %d", resp.StatusCode)
-		}
 	case err := <-errChan:
 		return -1, fmt.Errorf("failed to wait for container: %w", err)
 	}
 
-	// Copy output files
-	reader, err := taskFs.Archive("/output")
-	if err != nil {
-		return -1, fmt.Errorf("failed to archive output: %w", err)
-	}
-	defer reader.Close()
+	// Preserve artifacts
+	if runConfig.ArtifactPreserver != nil {
+		reader, err := taskFs.Archive("/output")
+		if err != nil {
+			return -1, fmt.Errorf("failed to archive output: %w", err)
+		}
+		defer reader.Close()
 
-	file := lo.Must(os.OpenFile("workspace/node/output.tar.gz", os.O_CREATE|os.O_WRONLY, 0644))
-	_, _ = io.Copy(file, reader)
-	defer file.Close()
+		if err := runConfig.ArtifactPreserver(reader, task); err != nil {
+			return -1, fmt.Errorf("failed to preserve artifacts: %w", err)
+		}
+	}
+
+	if status.StatusCode != 0 {
+		return int(status.StatusCode), fmt.Errorf("exited status: %d", status.StatusCode)
+	}
 
 	return 0, nil
 }

@@ -307,8 +307,12 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Task) {
 	node := nodeState.node
 
+	runConfig := RunTaskConfig{
+		ArtifactPreserver: s.config.ArtifactPreserver,
+	}
+
 	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
-	if exitCode, err := node.RunTask(task); err != nil {
+	if exitCode, err := node.RunTask(task, runConfig); err != nil {
 		s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		task.log.Warn("Task failed", "error", err)
 	} else {

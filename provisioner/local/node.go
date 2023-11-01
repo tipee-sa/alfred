@@ -28,8 +28,8 @@ func (n *Node) Name() string {
 	return fmt.Sprintf("local-%d", n.nodeNumber)
 }
 
-func (n *Node) RunTask(task *scheduler.Task) (int, error) {
-	return internal.RunContainer(n.ctx, n.log, n.docker, task, n.provisioner.fs)
+func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
+	return internal.RunContainer(n.ctx, n.log, n.docker, task, n.provisioner.fs, runConfig)
 }
 
 func (*Node) Terminate() error {

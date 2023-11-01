@@ -62,6 +62,7 @@ var alfredCmd = &cobra.Command{
 }
 
 func init() {
+	alfredCmd.AddCommand(artifactCmd)
 	alfredCmd.AddCommand(psCmd)
 	alfredCmd.AddCommand(runCmd)
 	alfredCmd.AddCommand(topCmd)
@@ -73,6 +74,7 @@ func init() {
 }
 
 func main() {
+	alfredCmd.SetOut(os.Stdout)
 	if err := alfredCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, color.HiRedString(fmt.Sprint(err)))
 		os.Exit(1)

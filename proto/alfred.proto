@@ -8,6 +8,7 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 service Alfred {
+    rpc DownloadArtifact (DownloadArtifactRequest) returns (stream DownloadArtifactChunk);
     rpc LoadImage (stream LoadImageMessage) returns (stream LoadImageResponse);
     rpc ScheduleJob (ScheduleJobRequest) returns (ScheduleJobResponse);
     rpc Ping (PingRequest) returns (PingResponse);
@@ -45,21 +46,33 @@ message Job {
     }
 }
 
-message LoadImageMessage {
-    message Init {
-        string image_id = 1;
-    }
-    message Data {
-        bytes chunk = 1;
-        uint32 length = 2;
-    }
-    message Done {}
+message DownloadArtifactRequest {
+    string job = 1;
+    string task = 2;
+}
 
+message DownloadArtifactChunk {
+    bytes data = 1;
+    uint32 length = 2;
+}
+
+message LoadImageMessage {
     oneof message {
         Init init = 1;
         Data data = 2;
         Done done = 3;
     }
+
+    message Init {
+        string image_id = 1;
+    }
+
+    message Data {
+        bytes chunk = 1;
+        uint32 length = 2;
+    }
+
+    message Done {}
 }
 
 message LoadImageResponse {

@@ -17,12 +17,13 @@ var flagtests = []struct {
 	{"tests/jobfile/valid_minimalist.yaml", ""},
 	{"tests/jobfile/valid_full_featured.yaml", ""},
 
-	{"tests/jobfile/invalid_missing_name.yaml", "name is required"},
+	{"tests/jobfile/invalid_missing_name.yaml", "name must be a valid identifier"},
 	{"tests/jobfile/invalid_missing_image_dockerfile.yaml", "image.dockerfile is required"},
 	{"tests/jobfile/invalid_missing_image_context.yaml", "image.context is required"},
 	{"tests/jobfile/invalid_missing_services_image.yaml", "services[mysql].image is required"},
 	{"tests/jobfile/invalid_missing_services_health_cmd.yaml", "services[mysql].health.cmd is required"},
 
+	{"tests/jobfile/invalid_name.yaml", "name must be a valid identifier"},
 	{"tests/jobfile/invalid_version.yaml", "unsupported version '42'"},
 	{"tests/jobfile/invalid_image_dockerfile.yaml", "image.dockerfile must be an existing file on disk"},
 	{"tests/jobfile/invalid_image_context.yaml", "image.context must be an existing folder on disk"},

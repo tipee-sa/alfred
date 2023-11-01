@@ -1,0 +1,5 @@
+version: "1"
+name: "Toto ../"
+image:
+  dockerfile: "a.dockerfile"
+  context: "."
