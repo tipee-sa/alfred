@@ -158,11 +158,14 @@ message NodeStatus {
 
     enum Status {
         UNKNOWN = 0;
-        PENDING = 1;
+        QUEUED = 1;
         PROVISIONING = 2;
-        ONLINE = 3;
-        TERMINATING = 4;
-        FAILED = 5;
+        FAILED_PROVISIONING = 3;
+        DISCARDED = 4;
+        ONLINE = 5;
+        TERMINATING = 6;
+        FAILED_TERMINATING = 7;
+        TERMINATED = 8;
     }
 
     message Slot {

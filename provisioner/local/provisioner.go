@@ -47,15 +47,14 @@ func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 	ctx, cancel := context.WithCancel(p.ctx)
 
 	node := &Node{
+		name:        nodeName,
 		provisioner: p,
 
 		ctx:    ctx,
 		cancel: cancel,
 		docker: p.docker,
-
-		nodeNumber: p.nextNodeNumber,
 	}
-	node.log = p.config.Logger.With(slog.Group("node", "name", node.Name()))
+	node.log = p.config.Logger.With(slog.Group("node", "name", nodeName))
 
 	return node, nil
 }
