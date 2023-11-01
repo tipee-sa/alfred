@@ -3,6 +3,7 @@ module github.com/gammadia/alfred
 go 1.21
 
 require (
+	github.com/alessio/shellescape v1.4.2
 	github.com/anandvarma/namegen v0.0.0-20230727084436-5197c6ea3255
 	github.com/briandowns/spinner v1.23.0
 	github.com/docker/docker v24.0.7+incompatible

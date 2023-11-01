@@ -26,6 +26,7 @@ type Node struct {
 	server      *servers.Server
 	ssh         *ssh.Client
 	docker      *client.Client
+	fs          *fs
 
 	terminated bool
 
@@ -135,6 +136,9 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		return fmt.Errorf("failed to init docker client: %w", err)
 	}
 
+	// Initialize file system
+	n.fs = newFs(n.provisioner.config.Workspace, n.ssh)
+
 	return nil
 }
 
@@ -143,7 +147,7 @@ func (n *Node) RunTask(task *scheduler.Task) error {
 		return fmt.Errorf("node has image: %w", err)
 	}
 
-	return internal.RunContainer(context.TODO(), n.log, n.docker, task, n.provisioner.fs)
+	return internal.RunContainer(context.TODO(), n.log, n.docker, task, n.fs)
 }
 
 func (n *Node) ensureNodeHasImage(image string) error {
