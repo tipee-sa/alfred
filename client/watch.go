@@ -63,10 +63,10 @@ var watchCmd = &cobra.Command{
 				statItems = append(statItems, fmt.Sprintf("⏳ %d", queued))
 			}
 			if running > 0 {
-				statItems = append(statItems, fmt.Sprintf("⚙️ %d", running))
+				statItems = append(statItems, fmt.Sprintf("⚙️  %d", running))
 			}
 			if aborted > 0 {
-				statItems = append(statItems, fmt.Sprintf("🚫 %d", aborted))
+				statItems = append(statItems, fmt.Sprintf("💥 %d", aborted))
 			}
 			if failed > 0 {
 				statItems = append(statItems, fmt.Sprintf("❌ %d", failed))
@@ -75,9 +75,9 @@ var watchCmd = &cobra.Command{
 				statItems = append(statItems, fmt.Sprintf("✅ %d", completed))
 			}
 			if msg.CompletedAt != nil {
-				statItems = append(statItems, fmt.Sprintf("⏱️ %s", msg.CompletedAt.AsTime().Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second)))
+				statItems = append(statItems, fmt.Sprintf("⏱️  %s", msg.CompletedAt.AsTime().Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second)))
 			} else {
-				statItems = append(statItems, fmt.Sprintf("⏱️ %s", time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second)))
+				statItems = append(statItems, fmt.Sprintf("⏱️  %s", time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second)))
 			}
 
 			stats = strings.Join(statItems, ", ")

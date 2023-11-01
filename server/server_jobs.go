@@ -10,8 +10,8 @@ import (
 )
 
 func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) (*proto.ScheduleJobResponse, error) {
-	jobName := scheduler.Schedule(&schedulerpkg.Job{Job: in.Job})
-	return &proto.ScheduleJobResponse{Name: jobName}, nil
+	jobName, err := scheduler.Schedule(&schedulerpkg.Job{Job: in.Job})
+	return &proto.ScheduleJobResponse{Name: jobName}, err
 }
 
 func (s *server) WatchJob(req *proto.WatchJobRequest, srv proto.Alfred_WatchJobServer) error {
