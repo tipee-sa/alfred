@@ -76,7 +76,7 @@ func init() {
 func main() {
 	alfredCmd.SetOut(os.Stdout)
 	if err := alfredCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, color.HiRedString(fmt.Sprint(err)))
+		lo.Must(fmt.Fprintln(os.Stderr, color.HiRedString(fmt.Sprint(err))))
 		os.Exit(1)
 	}
 }

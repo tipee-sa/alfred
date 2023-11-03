@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -113,7 +114,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 		chunk := make([]byte, *resp.ChunkSize)
 		for {
 			n, err := io.ReadFull(reader, chunk)
-			if err != nil && err != io.ErrUnexpectedEOF {
+			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 				if err == io.EOF {
 					return c.Send(&proto.LoadImageMessage{
 						Message: &proto.LoadImageMessage_Done_{

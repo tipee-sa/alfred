@@ -10,14 +10,14 @@ import (
 type NodeStatus proto.NodeStatus_Status
 
 const (
-	NodeStatusQueued             NodeStatus = NodeStatus(proto.NodeStatus_QUEUED)
-	NodeStatusProvisioning       NodeStatus = NodeStatus(proto.NodeStatus_PROVISIONING)
-	NodeStatusFailedProvisioning NodeStatus = NodeStatus(proto.NodeStatus_FAILED_PROVISIONING)
-	NodeStatusDiscarded          NodeStatus = NodeStatus(proto.NodeStatus_DISCARDED)
-	NodeStatusOnline             NodeStatus = NodeStatus(proto.NodeStatus_ONLINE)
-	NodeStatusTerminating        NodeStatus = NodeStatus(proto.NodeStatus_TERMINATING)
-	NodeStatusFailedTerminating  NodeStatus = NodeStatus(proto.NodeStatus_FAILED_TERMINATING)
-	NodeStatusTerminated         NodeStatus = NodeStatus(proto.NodeStatus_TERMINATED)
+	NodeStatusQueued             = NodeStatus(proto.NodeStatus_QUEUED)
+	NodeStatusProvisioning       = NodeStatus(proto.NodeStatus_PROVISIONING)
+	NodeStatusFailedProvisioning = NodeStatus(proto.NodeStatus_FAILED_PROVISIONING)
+	NodeStatusDiscarded          = NodeStatus(proto.NodeStatus_DISCARDED)
+	NodeStatusOnline             = NodeStatus(proto.NodeStatus_ONLINE)
+	NodeStatusTerminating        = NodeStatus(proto.NodeStatus_TERMINATING)
+	NodeStatusFailedTerminating  = NodeStatus(proto.NodeStatus_FAILED_TERMINATING)
+	NodeStatusTerminated         = NodeStatus(proto.NodeStatus_TERMINATED)
 )
 
 func (ns NodeStatus) AsProto() proto.NodeStatus_Status {

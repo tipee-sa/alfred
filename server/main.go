@@ -12,6 +12,7 @@ import (
 	"github.com/gammadia/alfred/server/flags"
 	"github.com/gammadia/alfred/server/log"
 
+	"github.com/samber/lo"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -29,7 +30,7 @@ var wg sync.WaitGroup
 func main() {
 	// Setup logger first as this will be used to report progress of the rest of the setup
 	if err := log.Init(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		lo.Must(fmt.Fprintln(os.Stderr, err))
 		os.Exit(1)
 	}
 	log.Info("Alfred server starting up...", "version", version, "commit", commit)
