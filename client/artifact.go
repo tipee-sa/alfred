@@ -72,7 +72,7 @@ var artifactCmd = &cobra.Command{
 
 func init() {
 	artifactCmd.Flags().StringP("output", "o", "", "output directory")
-	artifactCmd.MarkFlagRequired("output")
+	lo.Must0(artifactCmd.MarkFlagRequired("output"))
 }
 
 func getJob(ctx context.Context, name string) (*proto.JobStatus, error) {

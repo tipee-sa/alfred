@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,7 +27,7 @@ func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.
 	chunk := make([]byte, 2*1024*1024) // 2MB
 	for {
 		n, err := io.ReadFull(file, chunk)
-		if err != nil && err != io.ErrUnexpectedEOF {
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 			if err == io.EOF {
 				return nil
 			} else {

@@ -10,11 +10,11 @@ import (
 type TaskStatus proto.TaskStatus_Status
 
 const (
-	TaskStatusQueued    TaskStatus = TaskStatus(proto.TaskStatus_QUEUED)
-	TaskStatusRunning   TaskStatus = TaskStatus(proto.TaskStatus_RUNNING)
-	TaskStatusAborted   TaskStatus = TaskStatus(proto.TaskStatus_ABORTED)
-	TaskStatusFailed    TaskStatus = TaskStatus(proto.TaskStatus_FAILED)
-	TaskStatusCompleted TaskStatus = TaskStatus(proto.TaskStatus_COMPLETED)
+	TaskStatusQueued    = TaskStatus(proto.TaskStatus_QUEUED)
+	TaskStatusRunning   = TaskStatus(proto.TaskStatus_RUNNING)
+	TaskStatusAborted   = TaskStatus(proto.TaskStatus_ABORTED)
+	TaskStatusFailed    = TaskStatus(proto.TaskStatus_FAILED)
+	TaskStatusCompleted = TaskStatus(proto.TaskStatus_COMPLETED)
 )
 
 func (ts TaskStatus) AsProto() proto.TaskStatus_Status {

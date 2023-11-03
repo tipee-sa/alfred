@@ -63,7 +63,7 @@ func init() {
 	// Init
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, err)
+			lo.Must(fmt.Fprintln(os.Stderr, err))
 		}
 		os.Exit(1)
 	}

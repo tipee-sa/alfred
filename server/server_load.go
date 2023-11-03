@@ -29,19 +29,23 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 		if err != nil {
 			if client.IsErrNotFound(err) {
 				log.Debug("Image not found, sending continue")
-				srv.Send(&proto.LoadImageResponse{
+				if err = srv.Send(&proto.LoadImageResponse{
 					Status:    proto.LoadImageResponse_CONTINUE,
 					ChunkSize: lo.ToPtr(uint32(2 * 1024 * 1024)), // 2MB chunks
-				})
+				}); err != nil {
+					return
+				}
 				break
 			} else {
 				return err
 			}
 		} else {
 			log.Debug("Image found, sending ok")
-			srv.Send(&proto.LoadImageResponse{
+			if err = srv.Send(&proto.LoadImageResponse{
 				Status: proto.LoadImageResponse_OK,
-			})
+			}); err != nil {
+				return
+			}
 			return nil
 		}
 	default:
@@ -67,7 +71,9 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 		switch msg := msg.Message.(type) {
 		case *proto.LoadImageMessage_Data_:
 			log.Debug("Got image load chunk", "length", msg.Data.Length)
-			writer.Write(msg.Data.Chunk[:msg.Data.Length])
+			if _, err = writer.Write(msg.Data.Chunk[:msg.Data.Length]); err != nil {
+				return err
+			}
 		case *proto.LoadImageMessage_Done_:
 			log.Debug("Got image load done")
 			writer.Close()
