@@ -1,12 +1,15 @@
-package job
+package jobfile
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/gammadia/alfred/proto"
@@ -15,53 +18,57 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func Read(p string, overrides Overrides) (job *proto.Job, err error) {
+type ReadOptions struct {
+	// Use verbose output when reading the jobfile
+	Verbose bool
+	// Jobfile arguments
+	Args []string
+	// Jobfile parameters
+	Params map[string]string
+}
+
+type UnmarshalError struct {
+	error
+	Source string
+}
+
+func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 	job = &proto.Job{}
-	workDir := path.Join(lo.Must(os.Getwd()), path.Dir(p))
+	workDir := path.Join(lo.Must(os.Getwd()), path.Dir(file))
 
 	var buf []byte
-	buf, err = os.ReadFile(p)
+	if buf, err = os.ReadFile(file); err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+
+	source, err := evaluateTemplate(string(buf), workDir, options)
 	if err != nil {
-		err = fmt.Errorf("read file: %w", err)
-		return
+		return nil, fmt.Errorf("evaluate template: %w", err)
 	}
 
 	var jobfile Jobfile
-	if err = yaml.Unmarshal(buf, &jobfile); err != nil {
-		err = fmt.Errorf("unmarshal: %w", err)
-		return
+	if err = yaml.Unmarshal([]byte(source), &jobfile); err != nil {
+		return nil, UnmarshalError{fmt.Errorf("unmarshal: %w", err), source}
 	}
 	jobfile.path = workDir
 	if err = jobfile.Validate(); err != nil {
-		err = fmt.Errorf("validate: %w", err)
-		return
+		return nil, UnmarshalError{fmt.Errorf("validate: %w", err), source}
 	}
 
 	// Name
-	job.Name = lo.Must(lo.Coalesce(overrides.Name, jobfile.Name))
+	job.Name = jobfile.Name
 
 	// Tasks
-	if len(overrides.Tasks) > 0 {
-		job.Tasks = overrides.Tasks
-	} else {
-		tasks, err := shell(jobfile.Tasks, workDir)
-		if err != nil {
-			return job, err
-		}
-		job.Tasks = lo.WithoutEmpty(strings.Split(tasks, "\n"))
-	}
-	if len(overrides.SkipTasks) > 0 {
-		job.Tasks = lo.Without(job.Tasks, overrides.SkipTasks...)
-	}
+	job.Tasks = jobfile.Tasks
 
 	// Image
 	if job.Image, err = buildImage(
 		path.Join(workDir, jobfile.Image.Dockerfile),
 		path.Join(workDir, jobfile.Image.Context),
 		jobfile.Image.Options,
+		options,
 	); err != nil {
-		err = fmt.Errorf("build: %w", err)
-		return
+		return nil, fmt.Errorf("build: %w", err)
 	}
 
 	// Env
@@ -108,6 +115,52 @@ func Read(p string, overrides Overrides) (job *proto.Job, err error) {
 	return
 }
 
+type TemplateData struct {
+	Env    map[string]string
+	Args   []string
+	Params map[string]string
+}
+
+func evaluateTemplate(source string, dir string, options ReadOptions) (string, error) {
+	tmpl, err := template.New("jobfile").Funcs(template.FuncMap{
+		"base64": func(s string) string {
+			return base64.StdEncoding.EncodeToString([]byte(s))
+		},
+		"env": func(key string) string {
+			return os.Getenv(key)
+		},
+		"json": func(v any) (string, error) {
+			buf, err := json.Marshal(v)
+			return string(buf), err
+		},
+		"lines": func(s string) []string {
+			return strings.Split(s, "\n")
+		},
+		"shell": func(script string) (string, error) {
+			return shell(script, dir)
+		},
+		"split": func(sep string, s string) []string {
+			return strings.Split(s, sep)
+		},
+	}).Parse(source)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse template: %w", err)
+	}
+
+	data := TemplateData{
+		Env:    lo.SliceToMap(os.Environ(), func(env string) (key, val string) { key, val, _ = strings.Cut(env, "="); return }),
+		Args:   options.Args,
+		Params: options.Params,
+	}
+
+	var output strings.Builder
+	if err := tmpl.Execute(&output, data); err != nil {
+		return "", fmt.Errorf("failed to execute template: %w", err)
+	}
+
+	return output.String(), nil
+}
+
 func shell(script string, dir string) (string, error) {
 	var shell, arg string
 	if strings.HasPrefix(script, "#!") {
@@ -126,10 +179,12 @@ func shell(script string, dir string) (string, error) {
 	return string(output), err
 }
 
-func buildImage(dockerfile string, dir string, options []string) (string, error) {
+// buildImage builds the main Docker image for the job and returns its ID.
+func buildImage(dockerfile string, dir string, buildOptions []string, readOptions ReadOptions) (string, error) {
 	args := []string{"build", ".", "-f", dockerfile}
-	args = append(args, options...)
+	args = append(args, buildOptions...)
 
+	// Create a temporary file to store the image ID (@see --iidfile flag).
 	tmp, err := os.CreateTemp("", "alfred-image-id-")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
@@ -144,8 +199,16 @@ func buildImage(dockerfile string, dir string, options []string) (string, error)
 
 	cmd.Dir = dir
 
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%w\n%s", err, strings.TrimSpace(string(output)))
+	if readOptions.Verbose {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	} else {
+		cmd.Stdout = nil
+		cmd.Stderr = nil
+	}
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w", err)
 	}
 
 	imageId, err := os.ReadFile(tmp.Name())

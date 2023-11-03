@@ -1,4 +1,4 @@
-package job
+package jobfile
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ type Jobfile struct {
 	Image    JobfileImage
 	Env      map[string]string
 	Services map[string]JobfileService
-	Tasks    string
+	Tasks    []string
 }
 
 type JobfileImage struct {

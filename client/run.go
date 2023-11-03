@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 
 	"github.com/fatih/color"
-	"github.com/gammadia/alfred/client/job"
+	"github.com/gammadia/alfred/client/jobfile"
 	"github.com/gammadia/alfred/client/ui"
 	"github.com/gammadia/alfred/proto"
 	"github.com/samber/lo"
@@ -15,27 +16,35 @@ import (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [JOB FILE]",
+	Use:   "run [JOBFILE] [ARGS...]",
 	Short: "Runs a job",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MinimumNArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		overrides := job.Overrides{
-			Name:      lo.Must(cmd.Flags().GetString("name")),
-			Tasks:     lo.Must(cmd.Flags().GetStringSlice("tasks")),
-			SkipTasks: lo.Must(cmd.Flags().GetStringSlice("skip-tasks")),
+		var spinner *ui.Spinner
+		if !verbose {
+			spinner = ui.NewSpinner("Preparing job")
+		} else {
+			cmd.PrintErrln(ui.SectionHeaderColor.Sprint("  Preparing job  "))
 		}
-
-		spinner := ui.NewSpinner("Preparing job")
-		j, err := job.Read(args[0], overrides)
+		j, err := jobfile.Read(args[0], jobfile.ReadOptions{
+			Verbose: verbose,
+			Args:    args[1:],
+			Params:  lo.SliceToMap(lo.Must(cmd.Flags().GetStringArray("param")), func(item string) (key, value string) { key, value, _ = strings.Cut(item, "="); return }),
+		})
 		if err != nil {
 			spinner.Fail()
+			if e, ok := err.(jobfile.UnmarshalError); ok && verbose {
+				cmd.PrintErrln(e.Source)
+			}
 			return fmt.Errorf("failed to read job from '%s': %w", args[0], err)
 		} else {
 			spinner.Success()
 		}
 
 		if lo.Must(cmd.Flags().GetBool("dry-run")) {
+			cmd.Println()
+			cmd.Println(ui.SectionHeaderColor.Sprint("  Jobfile  "))
 			return yaml.NewEncoder(cmd.OutOrStdout()).Encode(j)
 		}
 
@@ -70,11 +79,8 @@ var runCmd = &cobra.Command{
 
 func init() {
 	runCmd.Flags().Bool("async", false, "run the job asynchronously")
-	runCmd.Flags().StringP("name", "n", "", "name of the job")
-	runCmd.Flags().StringSliceP("tasks", "t", nil, "list of tasks to run, overrides the jobfile")
-	runCmd.Flags().StringSlice("skip-tasks", nil, "skips the given tasks")
-
-	runCmd.Flags().Bool("dry-run", false, "build then show the job without running it")
+	runCmd.Flags().BoolP("dry-run", "n", false, "build then show the job without running it")
+	runCmd.Flags().StringArrayP("param", "p", nil, "jobfile parameters to set")
 }
 
 func sendImageToServer(cmd *cobra.Command, image string) error {

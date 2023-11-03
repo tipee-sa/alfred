@@ -14,6 +14,7 @@ type Spinner struct {
 	msg string
 }
 
+// NewSpinner creates a new spinner with the given message.
 func NewSpinner(msg string) *Spinner {
 	s := &Spinner{
 		spinner.New(
@@ -29,12 +30,22 @@ func NewSpinner(msg string) *Spinner {
 	return s
 }
 
+// UpdateMessage updates the spinner message.
+// This function is safe to call on a nil Spinner.
 func (s *Spinner) UpdateMessage(msg string) {
+	if s == nil {
+		return
+	}
 	s.Spinner.Suffix = " " + msg
 	s.msg = msg
 }
 
+// Success stops the spinner and prints a success message.
+// This function is safe to call on a nil Spinner.
 func (s *Spinner) Success(msg ...string) {
+	if s == nil {
+		return
+	}
 	if len(msg) == 0 {
 		msg = []string{s.msg}
 	}
@@ -42,7 +53,12 @@ func (s *Spinner) Success(msg ...string) {
 	s.Stop()
 }
 
+// Warn stops the spinner and prints a warning message.
+// This function is safe to call on a nil Spinner.
 func (s *Spinner) Warn(msg ...string) {
+	if s == nil {
+		return
+	}
 	if len(msg) == 0 {
 		msg = []string{s.msg}
 	}
@@ -50,7 +66,12 @@ func (s *Spinner) Warn(msg ...string) {
 	s.Stop()
 }
 
+// Fail stops the spinner and prints a failure message.
+// This function is safe to call on a nil Spinner.
 func (s *Spinner) Fail(msg ...string) {
+	if s == nil {
+		return
+	}
 	if len(msg) == 0 {
 		msg = []string{s.msg}
 	}

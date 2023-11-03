@@ -20,5 +20,6 @@ services:
       timeout: "10s"
       interval: "2s"
       retries: 20
-tasks: |
-  sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 1
+tasks:
+  - one
+  - two
