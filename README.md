@@ -2,6 +2,14 @@
 
 Is your favorite butler, who's able to run and monitor jobs to be executed on virtual machines in the cloud.
 
+## First use
+
+You need to add the Alfred host key to your known_hosts:
+
+```
+ssh-keyscan -H alfred.tipee.dev >> ~/.ssh/known_hosts
+```
+
 ## Deploy
 
 Done manually from Github Actions. **Beware that jobs are stopped during the deployment.**

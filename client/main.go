@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 
-	dockerclient "github.com/docker/docker/client"
 	"github.com/fatih/color"
+	"github.com/gammadia/alfred/client/sossh"
 	"github.com/gammadia/alfred/proto"
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
@@ -19,8 +22,6 @@ var version, commit = "dev", "n/a"
 
 var clientConn *grpc.ClientConn
 var client proto.AlfredClient
-
-var docker = lo.Must(dockerclient.NewClientWithOpts())
 
 var verbose bool
 
@@ -40,10 +41,33 @@ var alfredCmd = &cobra.Command{
 
 		remote := lo.Must(cmd.Flags().GetString("remote"))
 
+		host, port, _ := strings.Cut(remote, ":")
+		if port == "" {
+			port = "25373"
+		}
+		sshTunneling := lo.Must(cmd.Flags().GetBool("ssh-tunneling"))
+		if host == "127.0.0.1" && !cmd.Flags().Changed("ssh-tunneling") {
+			sshTunneling = false
+		}
+
 		clientConn, err = grpc.Dial(
-			remote,
+			fmt.Sprintf("%s:%s", host, port),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithDefaultCallOptions(grpc.UseCompressor(gzip.Name)),
+			grpc.WithContextDialer(func(ctx context.Context, remote string) (net.Conn, error) {
+				if !sshTunneling {
+					return net.Dial("tcp", remote)
+				}
+
+				sshPort := lo.Must(cmd.Flags().GetInt("ssh-port"))
+				return sossh.DialContext(
+					cmd.Context(),
+					"tcp",
+					fmt.Sprintf("%s:%d", host, sshPort),
+					lo.Must(cmd.Flags().GetString("ssh-username")),
+					fmt.Sprintf("127.0.0.1:%s", port),
+				)
+			}),
 		)
 		if err != nil {
 			return fmt.Errorf("dial: %w", err)
@@ -71,6 +95,10 @@ func init() {
 
 	alfredCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	alfredCmd.PersistentFlags().String("remote", lo.Must(lo.Coalesce(os.Getenv("ALFRED_REMOTE"), "alfred.tipee.dev:25373")), "the server remote address")
+	alfredCmd.PersistentFlags().Bool("ssh-tunneling", true, "use ssh tunneling to connect to the server")
+	alfredCmd.PersistentFlags().String("ssh-username", "alfred-user", "username to use for ssh tunneling")
+	alfredCmd.PersistentFlags().Int("ssh-port", 22, "port to use for ssh tunneling")
+	alfredCmd.PersistentFlags().String("ssh-host-key", "", "host key to use for ssh tunneling verification")
 }
 
 func main() {
