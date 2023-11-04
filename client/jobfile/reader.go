@@ -126,8 +126,19 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 		"base64": func(s string) string {
 			return base64.StdEncoding.EncodeToString([]byte(s))
 		},
-		"env": func(key string) string {
-			return os.Getenv(key)
+		"error": func(err error) error {
+			return err
+		},
+		"exec": func(args ...string) (string, error) {
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.Dir = dir
+			cmd.Stdin = os.Stdin
+			cmd.Stderr = os.Stderr
+			output, err := cmd.Output()
+			return string(output), err
+		},
+		"join": func(sep string, s []string) string {
+			return strings.Join(s, sep)
 		},
 		"json": func(v any) (string, error) {
 			buf, err := json.Marshal(v)
@@ -137,7 +148,12 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			return strings.Split(s, "\n")
 		},
 		"shell": func(script string) (string, error) {
-			return shell(script, dir)
+			cmd := exec.Command("/bin/sh", "-c", script)
+			cmd.Dir = dir
+			cmd.Stdin = os.Stdin
+			cmd.Stderr = os.Stderr
+			output, err := cmd.Output()
+			return string(output), err
 		},
 		"split": func(sep string, s string) []string {
 			return strings.Split(s, sep)
@@ -159,24 +175,6 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 	}
 
 	return output.String(), nil
-}
-
-func shell(script string, dir string) (string, error) {
-	var shell, arg string
-	if strings.HasPrefix(script, "#!") {
-		shell, script, _ = strings.Cut(script, "\n")
-		shell, arg, _ = strings.Cut(strings.TrimPrefix(shell, "#!"), " ")
-	} else {
-		shell = lo.Must(lo.Coalesce(os.Getenv("SHELL"), "sh"))
-	}
-
-	cmd := exec.Command(shell, lo.Ternary(arg != "", []string{arg}, []string{})...)
-	cmd.Stdin = strings.NewReader(script)
-	cmd.Stderr = os.Stderr
-	cmd.Dir = dir
-
-	output, err := cmd.Output()
-	return string(output), err
 }
 
 // buildImage builds the main Docker image for the job and returns its ID.

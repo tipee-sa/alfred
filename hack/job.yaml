@@ -23,5 +23,5 @@ services:
 tasks:
   {{range (lines (shell "sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 2"))}}
   - {{.}}
-  {{end }}
+  {{end}}
 
