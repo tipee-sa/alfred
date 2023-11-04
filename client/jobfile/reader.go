@@ -3,6 +3,7 @@ package jobfile
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -126,8 +127,8 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 		"base64": func(s string) string {
 			return base64.StdEncoding.EncodeToString([]byte(s))
 		},
-		"error": func(err error) error {
-			return err
+		"error": func(err string) error {
+			return errors.New(err)
 		},
 		"exec": func(args ...string) (string, error) {
 			cmd := exec.Command(args[0], args[1:]...)
