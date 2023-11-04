@@ -25,18 +25,23 @@ func createScheduler() error {
 		return fmt.Errorf("unable to create provisioner '%s': %w", viper.GetString(flags.Provisioner), err)
 	}
 
-	scheduler = schedulerpkg.New(provisioner, schedulerpkg.Config{
+	config := schedulerpkg.Config{
 		ArtifactPreserver:           preserveArtifacts,
 		Logger:                      log.Base.With("component", "scheduler"),
 		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
 		TasksPerNode:                viper.GetInt(flags.TasksPerNode),
-	})
+	}
+	if err := schedulerpkg.Validate(config); err != nil {
+		return fmt.Errorf("invalid scheduler config: %w", err)
+	}
+
+	scheduler = schedulerpkg.New(provisioner, config)
 
 	serverStatus.Scheduler.Provisioner = viper.GetString(flags.Provisioner)
 	serverStatus.Scheduler.MaxNodes = uint32(viper.GetInt(flags.MaxNodes))
-	serverStatus.Scheduler.TasksPerNodes = uint32(viper.GetDuration(flags.TasksPerNode))
+	serverStatus.Scheduler.TasksPerNodes = uint32(viper.GetInt(flags.TasksPerNode))
 
 	return nil
 }

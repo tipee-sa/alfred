@@ -2,7 +2,6 @@ package local
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"github.com/docker/docker/client"
@@ -11,21 +10,22 @@ import (
 )
 
 type Node struct {
+	name string
+
 	provisioner *Provisioner
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	docker *client.Client
 
-	nodeNumber int
-	log        *slog.Logger
+	log *slog.Logger
 }
 
 // Node implements scheduler.Node
 var _ scheduler.Node = (*Node)(nil)
 
 func (n *Node) Name() string {
-	return fmt.Sprintf("local-%d", n.nodeNumber)
+	return n.name
 }
 
 func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {

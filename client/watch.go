@@ -66,7 +66,7 @@ var watchCmd = &cobra.Command{
 				statItems = append(statItems, fmt.Sprintf("⚙️ %d", running))
 			}
 			if aborted > 0 {
-				statItems = append(statItems, fmt.Sprintf("🚫 %d", aborted))
+				statItems = append(statItems, fmt.Sprintf("💥 %d", aborted))
 			}
 			if failed > 0 {
 				statItems = append(statItems, fmt.Sprintf("❌ %d", failed))

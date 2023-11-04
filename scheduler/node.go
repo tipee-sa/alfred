@@ -10,11 +10,14 @@ import (
 type NodeStatus proto.NodeStatus_Status
 
 const (
-	NodeStatusPending      NodeStatus = NodeStatus(proto.NodeStatus_PENDING)
-	NodeStatusProvisioning NodeStatus = NodeStatus(proto.NodeStatus_PROVISIONING)
-	NodeStatusFailed       NodeStatus = NodeStatus(proto.NodeStatus_FAILED)
-	NodeStatusOnline       NodeStatus = NodeStatus(proto.NodeStatus_ONLINE)
-	NodeStatusTerminating  NodeStatus = NodeStatus(proto.NodeStatus_TERMINATING)
+	NodeStatusQueued             = NodeStatus(proto.NodeStatus_QUEUED)
+	NodeStatusProvisioning       = NodeStatus(proto.NodeStatus_PROVISIONING)
+	NodeStatusFailedProvisioning = NodeStatus(proto.NodeStatus_FAILED_PROVISIONING)
+	NodeStatusDiscarded          = NodeStatus(proto.NodeStatus_DISCARDED)
+	NodeStatusOnline             = NodeStatus(proto.NodeStatus_ONLINE)
+	NodeStatusTerminating        = NodeStatus(proto.NodeStatus_TERMINATING)
+	NodeStatusFailedTerminating  = NodeStatus(proto.NodeStatus_FAILED_TERMINATING)
+	NodeStatusTerminated         = NodeStatus(proto.NodeStatus_TERMINATED)
 )
 
 func (ns NodeStatus) AsProto() proto.NodeStatus_Status {
@@ -44,6 +47,8 @@ type nodeState struct {
 }
 
 func (ns *nodeState) UpdateStatus(status NodeStatus) {
-	ns.status = status
-	ns.scheduler.broadcast(EventNodeStatusUpdated{Node: ns.nodeName, Status: status})
+	if ns.status != status {
+		ns.status = status
+		ns.scheduler.broadcast(EventNodeStatusUpdated{Node: ns.nodeName, Status: status})
+	}
 }
