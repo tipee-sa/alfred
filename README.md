@@ -2,6 +2,10 @@
 
 Is your favorite butler, who's able to run and monitor jobs to be executed on virtual machines in the cloud.
 
+## Deploy
+
+Done manually from Github Actions. **Beware that jobs are stopped during the deployment.**
+
 ## Setup dev environment
 
 ### Required tools

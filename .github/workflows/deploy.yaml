@@ -1,0 +1,47 @@
+name: Deploy
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21.x'
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GO111MODULE: "on"
+          GOOS: "linux"
+          GOARCH: "amd64"
+        run: |
+          go build -trimpath -ldflags="-s -w -X main.version=$(date +'%Y%m%d.%H%M') -X main.commit=${{ github.sha }}" \
+            -o alfred-server ./server
+
+      - run: chmod +x alfred-server
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          name: id_ed25519
+          known_hosts: |
+            # $ ssh-keyscan alfred.tipee.dev
+            alfred.tipee.dev ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC2NWvqrDNbsc8K4+sOJpZ2b/wQqBR/Wpk9pG5oIT/P64E8hsaH1gd+5j/b07D3lBfbDoiTJVDarFcqypoU71ZDRw0Jy6uhOGcfo+ATeXP7+dgaxP8m9VkTezhjimm539a1Fs8AbBXChrBcJtRG6rGztpsfOIAHNyyjdTzpKoU2sKCU2OJPO/Z2LIKe+M1sA1IRaSyCV4sjuhqhfUgsgmWy7RBEhSJpSyvoz/MH5VHkxDNSOf2zVZbmtdmUpbMnFS+Bhx0rsoD+gESF9gz6UXhb+S+Q+1fV1gTlpd3EoHxNDzviaJ9J3r/7ThXCtZcERRM6etOGAX4a0r09XGplUUDB5fipL3fG0fCFJJkIYxVbjdVne9qZBhpj2VZ3pyLaMIroc2QYIOO98cwMYILWMDt0PfWrIDbaWmm57b19QJda5ZNfitilyrv24/U5sQKofD41oQxGBZXFF7fEhHMKHgII0VZerqfxg4ObqtbrGhRVtZEBMe6QqFyG9DfuJolVPAk=
+            alfred.tipee.dev ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKNo/rVEfhqVMXItUUmp+UId3f9LBBWX1ErzlDgQPTwgUhwTqa8QJM0InMlEOSlnzrXP+WhRh92Qb9eSBmuQJmI=
+            alfred.tipee.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE+qt8azC4omaAg1rTLQQxqzNUQ5FRUsoC3NF9JS2NrR
+
+      - name: Deploy
+        run: |
+          scp alfred-server alfred@alfred.tipee.dev:/opt/alfred/alfred-server.new
+
+      - name: Restart
+        run: |
+          ssh alfred@alfred.tipee.dev "mv /opt/alfred/alfred-server{.new,} && sudo systemctl restart alfred.service"
