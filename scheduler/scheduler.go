@@ -17,7 +17,7 @@ type Scheduler struct {
 	config      Config
 	log         *slog.Logger
 
-	input        chan *Task
+	input        chan *Job
 	tickRequests chan any
 	deferred     chan func()
 
@@ -34,8 +34,8 @@ type Scheduler struct {
 	shutdown bool
 	stop     chan any
 
-	wgRunningTasks    sync.WaitGroup
-	wgJobsTasksQueued map[string]*sync.WaitGroup
+	// WaitGroup tracking all running tasks
+	wg sync.WaitGroup
 }
 
 func New(provisioner Provisioner, config Config) *Scheduler {
@@ -44,20 +44,14 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		config:      config,
 		log:         config.Logger,
 
-		input:        make(chan *Task),
+		input:        make(chan *Job),
 		tickRequests: make(chan any, 1),
 		deferred:     make(chan func()),
-
-		tasksQueue: nil,
-		nodesQueue: nil,
 
 		events:    make(chan Event, 64),
 		listeners: make(map[chan Event]bool),
 
 		stop: make(chan any),
-
-		wgRunningTasks:    sync.WaitGroup{},
-		wgJobsTasksQueued: make(map[string]*sync.WaitGroup),
 	}
 
 	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
@@ -114,30 +108,14 @@ func (s *Scheduler) Schedule(job *Job) (string, error) {
 	s.log.Info("Scheduling job", "name", job.FQN(), "tasks", nbTasks)
 	s.broadcast(EventJobScheduled{Job: job.FQN(), About: job.About, Tasks: job.Tasks})
 
-	s.wgJobsTasksQueued[job.FQN()] = &sync.WaitGroup{}
-	s.wgJobsTasksQueued[job.FQN()].Add(nbTasks)
-	go func() {
-		s.wgJobsTasksQueued[job.FQN()].Wait()
-		s.requestTick("all tasks from a job are ready to be scheduled")
-	}()
-
-	s.wgRunningTasks.Add(nbTasks)
-	for _, name := range job.Tasks {
-		task := Task{
-			Job:  job,
-			Name: name,
-
-			log: s.log.With(slog.Group("task", "job", job.FQN(), "name", name)),
-		}
-
-		s.input <- &task
-	}
+	s.wg.Add(nbTasks)
+	s.input <- job
 
 	return job.FQN(), nil
 }
 
 func (s *Scheduler) Wait() {
-	s.wgRunningTasks.Wait()
+	s.wg.Wait()
 	s.provisioner.Wait()
 }
 
@@ -153,11 +131,20 @@ func (s *Scheduler) Run() {
 	s.log.Info("Scheduler is running")
 	for {
 		select {
-		case task := <-s.input:
-			task.log.Debug("Queuing task")
-			s.broadcast(EventTaskQueued{Job: task.Job.FQN(), Task: task.Name})
-			s.tasksQueue = append(s.tasksQueue, task)
-			s.wgJobsTasksQueued[task.Job.FQN()].Done()
+		case job := <-s.input:
+			for _, name := range job.Tasks {
+				task := &Task{
+					Job:  job,
+					Name: name,
+
+					log: s.log.With(slog.Group("task", "job", job.FQN(), "name", name)),
+				}
+
+				task.log.Debug("Queuing task")
+				s.broadcast(EventTaskQueued{Job: task.Job.FQN(), Task: task.Name})
+				s.tasksQueue = append(s.tasksQueue, task)
+			}
+			s.requestTick("job tasks should be scheduled")
 
 		case <-s.tickRequests:
 			// Attempt to schedule as many tasks as possible
@@ -175,10 +162,6 @@ func (s *Scheduler) Run() {
 			s.log.Info("Shutting down scheduler")
 			s.shutdown = true
 			s.provisioner.Shutdown()
-
-			s.log.Info("Emptying queues")
-			s.tasksQueue = nil
-			s.emptyNodesQueue()
 
 			s.log.Info("Terminating online nodes")
 			for _, nodeState := range s.nodes {
@@ -215,7 +198,6 @@ func (s *Scheduler) after(d time.Duration, f func()) {
 
 func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 	nextTask := s.tasksQueue[0]
-	queueLength := len(s.tasksQueue)
 
 	for _, nodeState := range s.nodes {
 		if nodeState.status != NodeStatusOnline {
@@ -226,9 +208,8 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 			if runningTask == nil {
 				nodeState.tasks[slot] = nextTask
 				s.tasksQueue = s.tasksQueue[1:]
-				queueLength -= 1
 
-				nextTask.log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", queueLength)
+				nextTask.log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
 				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: &NodeSlotTask{nextTask.Job.Name, nextTask.Name}})
 
 				go s.watchTaskExecution(nodeState, slot, nextTask)
@@ -305,7 +286,6 @@ func (s *Scheduler) resizePool() {
 				"provisioningQueueNodes", provisioningQueueNodes,
 			)
 			s.emptyNodesQueue()
-			queuedNodes = 0
 			return
 		}
 	}
@@ -334,16 +314,16 @@ func (s *Scheduler) resizePool() {
 	)
 
 	var delay, wait time.Duration
-	var now time.Time
+
 	for i := 0; i < nodesToCreate; i++ {
 		// Skip the delay for the first node ever we create
 		if len(s.nodes) > 0 || i > 0 {
 			delay = s.config.ProvisioningDelay
 		}
-		now = time.Now()
-		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, now)).Add(delay)
-		queueNode := now.Before(s.earliestNextNodeProvisioning)
-		wait = s.earliestNextNodeProvisioning.Sub(now)
+
+		s.earliestNextNodeProvisioning = s.earliestNextNodeProvisioning.Add(delay)
+		queueNode := time.Now().Before(s.earliestNextNodeProvisioning)
+		wait = time.Until(s.earliestNextNodeProvisioning)
 
 		nodeName := namegen.Get()
 		nodeState := &nodeState{
@@ -358,7 +338,7 @@ func (s *Scheduler) resizePool() {
 			earliestStart: s.earliestNextNodeProvisioning,
 		}
 
-		nodeState.log.Debug("Creating node", "now", now, "wait", wait, "earliestStart", s.earliestNextNodeProvisioning, "queued", queueNode)
+		nodeState.log.Debug("Creating node", "wait", wait, "earliestStart", s.earliestNextNodeProvisioning, "queued", queueNode)
 		s.broadcast(EventNodeCreated{Node: nodeName, Status: nodeState.status})
 
 		if queueNode {
@@ -420,7 +400,7 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
 	nodeState.tasks[slot] = nil
 
-	s.wgRunningTasks.Done()
+	s.wg.Done()
 	s.requestTick("executed task should give its slot to another task")
 }
 
