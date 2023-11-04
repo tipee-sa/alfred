@@ -30,7 +30,10 @@ var runCmd = &cobra.Command{
 		j, err := jobfile.Read(args[0], jobfile.ReadOptions{
 			Verbose: verbose,
 			Args:    args[1:],
-			Params:  lo.SliceToMap(lo.Must(cmd.Flags().GetStringArray("param")), func(item string) (key, value string) { key, value, _ = strings.Cut(item, "="); return }),
+			Params: lo.SliceToMap(
+				lo.Must(cmd.Flags().GetStringArray("param")),
+				func(item string) (key, value string) { key, value, _ = strings.Cut(item, "="); return },
+			),
 		})
 		if err != nil {
 			spinner.Fail()

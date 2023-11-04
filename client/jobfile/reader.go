@@ -164,7 +164,10 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 	}
 
 	data := TemplateData{
-		Env:    lo.SliceToMap(os.Environ(), func(env string) (key, val string) { key, val, _ = strings.Cut(env, "="); return }),
+		Env: lo.SliceToMap(
+			os.Environ(),
+			func(env string) (key, val string) { key, val, _ = strings.Cut(env, "="); return },
+		),
 		Args:   options.Args,
 		Params: options.Params,
 	}
@@ -196,14 +199,8 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	cmd := exec.Command("docker", args...)
 
 	cmd.Dir = dir
-
-	if readOptions.Verbose {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-	} else {
-		cmd.Stdout = nil
-		cmd.Stderr = nil
-	}
+	cmd.Stdout = lo.Ternary(readOptions.Verbose, os.Stdout, nil)
+	cmd.Stderr = lo.Ternary(readOptions.Verbose, os.Stderr, nil)
 
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("%w", err)
