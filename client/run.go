@@ -52,13 +52,14 @@ var runCmd = &cobra.Command{
 			return yaml.NewEncoder(cmd.OutOrStdout()).Encode(j)
 		}
 
-		spinner = ui.NewSpinner("Uploading image to server")
-		if err = sendImageToServer(cmd, j.Image); err != nil {
-			spinner.Fail()
-			return fmt.Errorf("failed to send image to server: %w", err)
-		} else {
-			spinner.Success()
+		spinner = ui.NewSpinner("Uploading images to server")
+		for _, image := range j.Steps {
+			if err = sendImageToServer(cmd, image); err != nil {
+				spinner.Fail()
+				return fmt.Errorf("failed to send image '%s' to server: %w", image, err)
+			}
 		}
+		spinner.Success()
 
 		spinner = ui.NewSpinner("Scheduling job")
 		job, err := client.ScheduleJob(cmd.Context(), &proto.ScheduleJobRequest{Job: j})

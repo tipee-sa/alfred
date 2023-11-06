@@ -1,8 +1,5 @@
 version: "1"
 name: "test"
-image:
-  dockerfile: "job.dockerfile"
-  context: "."
 services:
 #  redis:
 #    image: "redis:7.0.5-alpine"
@@ -20,8 +17,13 @@ services:
 #      timeout: "10s"
 #      interval: "2s"
 #      retries: 20
+steps:
+  - dockerfile: "job.dockerfile"
+    context: "."
+  - dockerfile: "job.dockerfile"
+    context: "."
 tasks:
-  {{range (lines (shell "sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 2"))}}
+  {{range (lines (shell "sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 1"))}}
   - {{.}}
   {{end}}
 

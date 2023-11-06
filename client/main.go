@@ -46,7 +46,7 @@ var alfredCmd = &cobra.Command{
 			port = "25373"
 		}
 		sshTunneling := lo.Must(cmd.Flags().GetBool("ssh-tunneling"))
-		if host == "127.0.0.1" && !cmd.Flags().Changed("ssh-tunneling") {
+		if (host == "127.0.0.1" || host == "localhost") && !cmd.Flags().Changed("ssh-tunneling") {
 			sshTunneling = false
 		}
 
