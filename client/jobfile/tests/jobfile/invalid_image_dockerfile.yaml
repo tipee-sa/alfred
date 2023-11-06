@@ -1,5 +1,5 @@
 version: "1"
 name: "test"
-image:
-  dockerfile: "toto.dockerfile"
-  context: "."
+steps:
+  - dockerfile: "toto.dockerfile"
+    context: "."

@@ -56,23 +56,20 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 		return nil, UnmarshalError{fmt.Errorf("validate: %w", err), source}
 	}
 
-	// Name
 	job.Name = jobfile.Name
-
-	// Tasks
 	job.Tasks = jobfile.Tasks
-
-	// Image
-	if job.Image, err = buildImage(
-		path.Join(workDir, jobfile.Image.Dockerfile),
-		path.Join(workDir, jobfile.Image.Context),
-		jobfile.Image.Options,
-		options,
-	); err != nil {
-		return nil, fmt.Errorf("build: %w", err)
+	job.Steps = make([]string, len(jobfile.Steps))
+	for i, step := range jobfile.Steps {
+		if job.Steps[i], err = buildImage(
+			path.Join(workDir, step.Dockerfile),
+			path.Join(workDir, step.Context),
+			step.Options,
+			options,
+		); err != nil {
+			return nil, fmt.Errorf("build (%d): %w", i+1, err)
+		}
 	}
 
-	// Env
 	if len(jobfile.Env) > 0 {
 		job.Env = lo.MapToSlice(jobfile.Env, func(key string, value string) *proto.Job_Env {
 			return &proto.Job_Env{
@@ -82,7 +79,6 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 		})
 	}
 
-	// Services
 	for name, service := range jobfile.Services {
 		jobService := &proto.Job_Service{
 			Name:  name,
@@ -123,20 +119,25 @@ type TemplateData struct {
 }
 
 func evaluateTemplate(source string, dir string, options ReadOptions) (string, error) {
+	var userError error
 	tmpl, err := template.New("jobfile").Funcs(template.FuncMap{
 		"base64": func(s string) string {
 			return base64.StdEncoding.EncodeToString([]byte(s))
 		},
-		"error": func(err string) error {
-			return errors.New(err)
+		"error": func(err string) any {
+			userError = errors.New(err)
+			panic(nil)
 		},
-		"exec": func(args ...string) (string, error) {
+		"exec": func(args ...string) string {
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.Dir = dir
 			cmd.Stdin = os.Stdin
 			cmd.Stderr = os.Stderr
-			output, err := cmd.Output()
-			return strings.TrimRight(string(output), "\n\r"), err
+			if output, err := cmd.Output(); err != nil {
+				panic(err)
+			} else {
+				return strings.TrimRight(string(output), "\n\r")
+			}
 		},
 		"join": func(sep string, s []string) string {
 			return strings.Join(s, sep)
@@ -148,13 +149,16 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 		"lines": func(s string) []string {
 			return strings.Split(s, "\n")
 		},
-		"shell": func(script string) (string, error) {
+		"shell": func(script string) string {
 			cmd := exec.Command("/bin/sh", "-c", script)
 			cmd.Dir = dir
 			cmd.Stdin = os.Stdin
 			cmd.Stderr = os.Stderr
-			output, err := cmd.Output()
-			return strings.TrimRight(string(output), "\n\r"), err
+			if output, err := cmd.Output(); err != nil {
+				panic(err)
+			} else {
+				return strings.TrimRight(string(output), "\n\r")
+			}
 		},
 		"split": func(sep string, s string) []string {
 			return strings.Split(s, sep)
@@ -178,7 +182,7 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 
 	var output strings.Builder
 	if err := tmpl.Execute(&output, data); err != nil {
-		return "", fmt.Errorf("failed to execute template: %w", err)
+		return "", lo.Ternary(userError != nil, userError, err)
 	}
 
 	return output.String(), nil

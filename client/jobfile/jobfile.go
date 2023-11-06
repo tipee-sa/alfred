@@ -16,7 +16,7 @@ type Jobfile struct {
 
 	Version  string
 	Name     string
-	Image    JobfileImage
+	Steps    []JobfileImage
 	Env      map[string]string
 	Services map[string]JobfileService
 	Tasks    []string
@@ -53,18 +53,20 @@ func (jobfile Jobfile) Validate() error {
 		return fmt.Errorf("name must be a valid identifier")
 	}
 
-	if jobfile.Image.Dockerfile == "" {
-		return fmt.Errorf("image.dockerfile is required")
-	}
-	if _, err := os.Stat(path.Join(jobfile.path, jobfile.Image.Dockerfile)); os.IsNotExist(err) {
-		return fmt.Errorf("image.dockerfile must be an existing file on disk")
-	}
+	for _, step := range jobfile.Steps {
+		if step.Dockerfile == "" {
+			return fmt.Errorf("image.dockerfile is required")
+		}
+		if _, err := os.Stat(path.Join(jobfile.path, step.Dockerfile)); os.IsNotExist(err) {
+			return fmt.Errorf("image.dockerfile must be an existing file on disk")
+		}
 
-	if jobfile.Image.Context == "" {
-		return fmt.Errorf("image.context is required")
-	}
-	if _, err := os.Stat(path.Join(jobfile.path, jobfile.Image.Context)); os.IsNotExist(err) {
-		return fmt.Errorf("image.context must be an existing folder on disk")
+		if step.Context == "" {
+			return fmt.Errorf("image.context is required")
+		}
+		if _, err := os.Stat(path.Join(jobfile.path, step.Context)); os.IsNotExist(err) {
+			return fmt.Errorf("image.context must be an existing folder on disk")
+		}
 	}
 
 	for key := range jobfile.Env {

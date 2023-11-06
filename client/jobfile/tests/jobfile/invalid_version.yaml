@@ -1,5 +1,5 @@
 version: "42"
 name: "test"
-image:
-  dockerfile: "a.dockerfile"
-  context: "."
+steps:
+  - dockerfile: "a.dockerfile"
+    context: "."

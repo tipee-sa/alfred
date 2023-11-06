@@ -60,57 +60,11 @@ func RunContainer(
 		func() error { return taskFs.Delete("/") },
 	)
 
-	for _, dir := range []string{"output"} {
+	for _, dir := range []string{"output", "shared"} {
 		if err := taskFs.MkDir("/" + dir); err != nil {
 			return -1, fmt.Errorf("failed to create workspace directory '%s': %w", dir, err)
 		}
 	}
-
-	// Create main container
-	resp, err := docker.ContainerCreate(
-		ctx,
-		&container.Config{
-			Image: task.Job.Image,
-			Env: append(
-				lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
-					return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
-				}),
-				[]string{
-					fmt.Sprintf("ALFRED_TASK=%s", task.Name),
-					"ALFRED_OUTPUT=/alfred/output",
-				}...,
-			),
-		},
-		&container.HostConfig{
-			AutoRemove: false, // Otherwise this will remove the container before we can get the logs
-			Mounts: []mount.Mount{
-				{
-					Type:   mount.TypeBind,
-					Source: taskFs.HostPath("/"),
-					Target: "/alfred",
-				},
-			},
-		},
-		&network.NetworkingConfig{
-			EndpointsConfig: map[string]*network.EndpointSettings{
-				networkName: {
-					NetworkID: networkId,
-				},
-			},
-		},
-		nil,
-		fmt.Sprintf("alfred-%s", task.FQN()),
-	)
-	if err != nil {
-		return -1, fmt.Errorf("failed to create container: %w", err)
-	}
-	defer cleanup(
-		"main container",
-		func() error {
-			return docker.ContainerRemove(context.Background(), resp.ID,
-				types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
-		},
-	)
 
 	// Environment variables for each service
 	serviceEnv := map[string][]string{}
@@ -274,28 +228,87 @@ func RunContainer(
 		return -1, fmt.Errorf("service: %w", err)
 	}
 
-	// Start main container
-	wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
-	err = docker.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
-	if err != nil {
-		return -1, fmt.Errorf("failed to start container: %w", err)
-	}
-
-	out, err := docker.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: true, Details: true})
-	if err != nil {
-		return -1, fmt.Errorf("failed to get container logs: %w", err)
-	}
-	defer out.Close()
-
-	_, _ = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
-
-	// Wait for the container to finish
+	// Create and execute steps containers
 	var status container.WaitResponse
-	select {
-	case status = <-wait:
-		// Container is done
-	case err := <-errChan:
-		return -1, fmt.Errorf("failed to wait for container: %w", err)
+	for i, image := range task.Job.Steps {
+		// Using a func here so that defer are called between each iteration
+		if err := func(stepIndex int) error {
+			resp, err := docker.ContainerCreate(
+				ctx,
+				&container.Config{
+					Image: image,
+					Env: append(
+						lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
+							return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
+						}),
+						[]string{
+							fmt.Sprintf("ALFRED_TASK=%s", task.Name),
+							"ALFRED_SHARED=/alfred/shared",
+							"ALFRED_OUTPUT=/alfred/output",
+						}...,
+					),
+				},
+				&container.HostConfig{
+					AutoRemove: false, // Otherwise this will remove the container before we can get the logs
+					Mounts: []mount.Mount{
+						{
+							Type:   mount.TypeBind,
+							Source: taskFs.HostPath("/"),
+							Target: "/alfred",
+						},
+					},
+				},
+				&network.NetworkingConfig{
+					EndpointsConfig: map[string]*network.EndpointSettings{
+						networkName: {
+							NetworkID: networkId,
+						},
+					},
+				},
+				nil,
+				fmt.Sprintf("alfred-%s-%d", task.FQN(), stepIndex),
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create step %d container: %w", stepIndex, err)
+			}
+			defer cleanup(
+				"step container",
+				func() error {
+					return docker.ContainerRemove(context.Background(), resp.ID,
+						types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
+				},
+			)
+
+			// Start main container
+			wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
+			err = docker.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to start step %d container: %w", stepIndex, err)
+			}
+
+			out, err := docker.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: true, Details: true})
+			if err != nil {
+				return fmt.Errorf("failed to get container step %d logs: %w", stepIndex, err)
+			}
+			defer out.Close()
+
+			_, _ = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
+
+			// Wait for the container to finish
+			select {
+			case status = <-wait:
+				// Container is done
+				if status.StatusCode != 0 {
+					break
+				}
+			case err := <-errChan:
+				return fmt.Errorf("failed to wait for step %d container: %w", stepIndex, err)
+			}
+
+			return nil
+		}(i + 1); err != nil {
+			return -1, err
+		}
 	}
 
 	// Preserve artifacts

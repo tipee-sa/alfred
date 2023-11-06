@@ -1,8 +1,8 @@
 version: "1"
 name: "test"
-image:
-  dockerfile: "a.dockerfile"
-  context: "."
+steps:
+  - dockerfile: "a.dockerfile"
+    context: "."
 services:
   0/2:
     image: "mysql"
