@@ -136,7 +136,7 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			cmd.Stdin = os.Stdin
 			cmd.Stderr = os.Stderr
 			output, err := cmd.Output()
-			return string(output), err
+			return strings.TrimRight(string(output), "\n\r"), err
 		},
 		"join": func(sep string, s []string) string {
 			return strings.Join(s, sep)
@@ -154,10 +154,13 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			cmd.Stdin = os.Stdin
 			cmd.Stderr = os.Stderr
 			output, err := cmd.Output()
-			return string(output), err
+			return strings.TrimRight(string(output), "\n\r"), err
 		},
 		"split": func(sep string, s string) []string {
 			return strings.Split(s, sep)
+		},
+		"trim": func(s string) string {
+			return strings.TrimSpace(s)
 		},
 	}).Parse(source)
 	if err != nil {
