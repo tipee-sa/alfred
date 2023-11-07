@@ -379,6 +379,7 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 
 	runConfig := RunTaskConfig{
 		ArtifactPreserver: s.config.ArtifactPreserver,
+		SecretLoader:      s.config.SecretLoader,
 	}
 
 	task.log.Info("Running task")

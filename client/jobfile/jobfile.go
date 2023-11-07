@@ -18,6 +18,7 @@ type Jobfile struct {
 	Name     string
 	Steps    []JobfileImage
 	Env      map[string]string
+	Secrets  map[string]string
 	Services map[string]JobfileService
 	Tasks    []string
 }
