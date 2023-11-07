@@ -10,11 +10,11 @@ import (
 	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/sossh"
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/config"
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/encoding/gzip"
 )
 
 // Versioning information set at build time
@@ -53,7 +53,7 @@ var alfredCmd = &cobra.Command{
 		clientConn, err = grpc.Dial(
 			fmt.Sprintf("%s:%s", host, port),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.UseCompressor(gzip.Name)),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(config.MaxPacketSize)),
 			grpc.WithContextDialer(func(ctx context.Context, remote string) (net.Conn, error) {
 				if !sshTunneling {
 					return net.Dial("tcp", remote)

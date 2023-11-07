@@ -116,7 +116,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 		return nil
 	case proto.LoadImageResponse_CONTINUE:
 		// The image does not exist on the server, send it
-		cmd := exec.Command("docker", "save", image)
+		cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt --min=5 --max=15", image))
 		reader := lo.Must(cmd.StdoutPipe())
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("docker save: %w", err)

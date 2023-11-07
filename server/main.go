@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/config"
 	"github.com/gammadia/alfred/server/flags"
 	"github.com/gammadia/alfred/server/log"
 
@@ -16,8 +17,6 @@ import (
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
-	_ "google.golang.org/grpc/encoding/gzip"
 )
 
 // Versioning information set at build time
@@ -60,7 +59,7 @@ func main() {
 	setupInterrupts()
 
 	// Setup gRPC server
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.MaxRecvMsgSize(config.MaxPacketSize))
 	proto.RegisterAlfredServer(s, &server{})
 
 	// Setup scheduler

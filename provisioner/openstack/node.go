@@ -173,7 +173,7 @@ func (n *Node) ensureNodeHasImage(image string) error {
 	}
 	defer session.Close()
 
-	saveCmd := exec.Command("docker", "save", image)
+	saveCmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt --min=5 --max=15", image))
 	saveOut := lo.Must(saveCmd.StdoutPipe())
 	session.Stdin = saveOut
 
@@ -181,7 +181,7 @@ func (n *Node) ensureNodeHasImage(image string) error {
 		return fmt.Errorf("failed to start docker save: %w", err)
 	}
 
-	if err := session.Run("docker load"); err != nil {
+	if err := session.Run("zstd --decompress | docker load"); err != nil {
 		return fmt.Errorf("failed docker load: %w", err)
 	}
 

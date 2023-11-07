@@ -6,6 +6,7 @@ import (
 
 	"github.com/docker/docker/client"
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/config"
 	"github.com/gammadia/alfred/server/log"
 	"github.com/samber/lo"
 	"google.golang.org/grpc/codes"
@@ -31,7 +32,7 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 				log.Debug("Image not found, sending continue")
 				if err = srv.Send(&proto.LoadImageResponse{
 					Status:    proto.LoadImageResponse_CONTINUE,
-					ChunkSize: lo.ToPtr(uint32(2 * 1024 * 1024)), // 2MB chunks
+					ChunkSize: lo.ToPtr(uint32(config.MaxPacketSize - 1024*1024 /* leave 1MB of margin */)),
 				}); err != nil {
 					return
 				}
@@ -53,7 +54,7 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 	}
 
 	// Main load loop
-	cmd := exec.Command("docker", "load")
+	cmd := exec.Command("/bin/sh", "-c", "zstd --decompress | docker load")
 	cmd.WaitDelay = 10 * time.Second
 
 	writer := lo.Must(cmd.StdinPipe())

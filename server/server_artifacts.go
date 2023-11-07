@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/gammadia/alfred/server/config"
 	"io"
 	"os"
 	"path"
@@ -24,7 +25,7 @@ func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.
 		return fmt.Errorf("failed to open artifact file: %w", err)
 	}
 
-	chunk := make([]byte, 2*1024*1024) // 2MB
+	chunk := make([]byte, config.MaxPacketSize-1024*1024 /* leave 1MB margin */)
 	for {
 		n, err := io.ReadFull(file, chunk)
 		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
