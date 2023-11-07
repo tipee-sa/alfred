@@ -10,6 +10,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/sossh"
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/config"
 	"github.com/klauspost/compress/zstd"
 	grpcZstd "github.com/mostynb/go-grpc-compression/zstd"
 	"github.com/samber/lo"
@@ -56,6 +57,7 @@ var alfredCmd = &cobra.Command{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithDefaultCallOptions(
 				grpc.UseCompressor(grpcZstd.Name),
+				grpc.MaxCallRecvMsgSize(config.MaxPacketSize),
 			),
 			grpc.WithContextDialer(func(ctx context.Context, remote string) (net.Conn, error) {
 				if !sshTunneling {
