@@ -17,7 +17,7 @@ var versionCmd = &cobra.Command{
 		if response, err := client.Ping(cmd.Context(), &proto.PingRequest{}); err != nil {
 			return err
 		} else {
-			cmd.Printf("server version %s (%s)\n", response.Version, response.Commit[:int(math.Min(float64(len(commit)), 7))])
+			cmd.Printf("server version %s (%s)\n", response.Version, response.Commit[:int(math.Min(float64(len(response.Commit)), 7))])
 			return nil
 		}
 	},
