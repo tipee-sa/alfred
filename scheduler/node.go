@@ -26,6 +26,7 @@ func (ns NodeStatus) AsProto() proto.NodeStatus_Status {
 
 type RunTaskConfig struct {
 	ArtifactPreserver ArtifactPreserver
+	SecretLoader      SecretLoader
 }
 
 type Node interface {

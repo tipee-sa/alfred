@@ -31,6 +31,7 @@ func createScheduler() error {
 		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
+		SecretLoader:                loadSecret,
 		TasksPerNode:                viper.GetInt(flags.TasksPerNode),
 	}
 	if err := schedulerpkg.Validate(config); err != nil {
@@ -63,6 +64,10 @@ func preserveArtifacts(reader io.Reader, task *schedulerpkg.Task) error {
 	}
 
 	return nil
+}
+
+func loadSecret(secret string) ([]byte, error) {
+	return os.ReadFile(path.Join(dataRoot, "secrets", secret))
 }
 
 func createProvisioner() (schedulerpkg.Provisioner, error) {

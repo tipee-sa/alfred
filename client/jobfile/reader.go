@@ -78,6 +78,14 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 			}
 		})
 	}
+	if len(jobfile.Secrets) > 0 {
+		job.Secrets = lo.MapToSlice(jobfile.Secrets, func(key string, value string) *proto.Job_Env {
+			return &proto.Job_Env{
+				Key:   key,
+				Value: value,
+			}
+		})
+	}
 
 	for name, service := range jobfile.Services {
 		jobService := &proto.Job_Service{

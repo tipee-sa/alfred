@@ -8,6 +8,7 @@ import (
 )
 
 type ArtifactPreserver func(io.Reader, *Task) error
+type SecretLoader func(string) ([]byte, error)
 
 type Config struct {
 	ArtifactPreserver           ArtifactPreserver `json:"-"`
@@ -15,6 +16,7 @@ type Config struct {
 	MaxNodes                    int               `json:"max-nodes"`
 	ProvisioningDelay           time.Duration     `json:"provisioning-delay"`
 	ProvisioningFailureCooldown time.Duration     `json:"provisioning-failure-cooldown"`
+	SecretLoader                SecretLoader      `json:"-"`
 	TasksPerNode                int               `json:"tasks-per-node"`
 }
 

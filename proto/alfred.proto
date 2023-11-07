@@ -21,8 +21,9 @@ message Job {
     string about = 2;
     repeated string steps = 3;
     repeated Env env = 4;
-    repeated Service services = 5;
-    repeated string tasks = 6;
+    repeated Env secrets = 5;
+    repeated Service services = 6;
+    repeated string tasks = 7;
 
     message Service {
         string name = 1;

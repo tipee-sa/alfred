@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -233,14 +234,29 @@ func RunContainer(
 	for i, image := range task.Job.Steps {
 		// Using a func here so that defer are called between each iteration
 		if err := func(stepIndex int) error {
+			secretEnv := []string{}
+			for _, secret := range task.Job.Secrets {
+				if runConfig.SecretLoader == nil {
+					return fmt.Errorf("no secret loader available")
+				}
+				secretData, err := runConfig.SecretLoader(secret.Value)
+				if err != nil {
+					return fmt.Errorf("failed to load secret '%s': %w", secret.Key, err)
+				}
+				secretEnv = append(secretEnv, fmt.Sprintf("%s=%s", secret.Key, base64.StdEncoding.EncodeToString(secretData)))
+			}
+
 			resp, err := docker.ContainerCreate(
 				ctx,
 				&container.Config{
 					Image: image,
 					Env: append(
-						lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
-							return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
-						}),
+						append(
+							lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
+								return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
+							}),
+							secretEnv...,
+						),
 						[]string{
 							fmt.Sprintf("ALFRED_TASK=%s", task.Name),
 							"ALFRED_SHARED=/alfred/shared",
