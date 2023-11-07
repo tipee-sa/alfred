@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"time"
 
@@ -54,8 +55,9 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 	}
 
 	// Main load loop
-	cmd := exec.Command("/bin/sh", "-c", "zstd --decompress | docker load")
+	cmd := exec.Command("/bin/bash", "-euo", "pipefail", "-c", "zstd --decompress | docker load")
 	cmd.WaitDelay = 10 * time.Second
+	cmd.Stderr = os.Stderr
 
 	writer := lo.Must(cmd.StdinPipe())
 	if err := cmd.Start(); err != nil {
