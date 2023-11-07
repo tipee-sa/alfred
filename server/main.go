@@ -17,8 +17,6 @@ import (
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
-
-	_ "github.com/mostynb/go-grpc-compression/zstd"
 )
 
 // Versioning information set at build time

@@ -11,8 +11,6 @@ import (
 	"github.com/gammadia/alfred/client/sossh"
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/config"
-	"github.com/klauspost/compress/zstd"
-	grpcZstd "github.com/mostynb/go-grpc-compression/zstd"
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -55,10 +53,7 @@ var alfredCmd = &cobra.Command{
 		clientConn, err = grpc.Dial(
 			fmt.Sprintf("%s:%s", host, port),
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(
-				grpc.UseCompressor(grpcZstd.Name),
-				grpc.MaxCallRecvMsgSize(config.MaxPacketSize),
-			),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(config.MaxPacketSize)),
 			grpc.WithContextDialer(func(ctx context.Context, remote string) (net.Conn, error) {
 				if !sshTunneling {
 					return net.Dial("tcp", remote)
@@ -91,8 +86,6 @@ var alfredCmd = &cobra.Command{
 }
 
 func init() {
-	lo.Must0(grpcZstd.SetLevel(zstd.SpeedBetterCompression))
-
 	alfredCmd.AddCommand(artifactCmd)
 	alfredCmd.AddCommand(psCmd)
 	alfredCmd.AddCommand(runCmd)
