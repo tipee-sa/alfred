@@ -9,6 +9,8 @@ require (
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/fatih/color v1.15.0
 	github.com/gophercloud/gophercloud v1.7.0
+	github.com/klauspost/compress v1.17.2
+	github.com/mostynb/go-grpc-compression v1.2.2
 	github.com/rivo/tview v0.0.0-20231102183219-1b91b8131c43
 	github.com/samber/lo v1.38.1
 	github.com/spf13/cobra v1.7.0

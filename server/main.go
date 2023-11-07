@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	_ "google.golang.org/grpc/encoding/gzip"
+	_ "github.com/mostynb/go-grpc-compression/zstd"
 )
 
 // Versioning information set at build time
