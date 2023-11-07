@@ -54,7 +54,7 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 	}
 
 	// Main load loop
-	cmd := exec.Command("docker", "load")
+	cmd := exec.Command("/bin/sh", "-c", "zstd --decompress | docker load")
 	cmd.WaitDelay = 10 * time.Second
 
 	writer := lo.Must(cmd.StdinPipe())

@@ -173,7 +173,7 @@ func (n *Node) ensureNodeHasImage(image string) error {
 	}
 	defer session.Close()
 
-	saveCmd := exec.Command("/bin/bash", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt --min=5 --max=10", image))
+	saveCmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt --min=5 --max=15", image))
 	saveOut := lo.Must(saveCmd.StdoutPipe())
 	session.Stdin = saveOut
 
