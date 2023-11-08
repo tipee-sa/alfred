@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/gammadia/alfred/proto"
@@ -45,10 +46,15 @@ type nodeState struct {
 
 	nodeName      string
 	earliestStart time.Time
+
+	mutex sync.Mutex
 }
 
 func (ns *nodeState) UpdateStatus(status NodeStatus) {
 	if ns.status != status {
+		ns.mutex.Lock()
+		defer ns.mutex.Unlock()
+
 		ns.status = status
 		ns.scheduler.broadcast(EventNodeStatusUpdated{Node: ns.nodeName, Status: status})
 	}

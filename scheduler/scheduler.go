@@ -238,6 +238,7 @@ func (s *Scheduler) resizePool() {
 
 	// Make sure we need more nodes
 	if len(s.tasksQueue) < 1 || len(s.nodes) >= s.config.MaxNodes {
+		s.emptyNodesQueue()
 		return
 	}
 	s.log.Debug("Need more nodes",
@@ -247,15 +248,14 @@ func (s *Scheduler) resizePool() {
 		"nodes", len(s.nodes),
 	)
 	nodesToCreate := 0
-	incomingNodes := 0
 
 	// First, we check if provisioning nodes cover our needs
 	provisioningNodes := lo.Reduce(s.nodes, func(acc int, nodeState *nodeState, _ int) int {
 		return lo.Ternary(nodeState.status == NodeStatusProvisioning, acc+1, acc)
 	}, 0)
-	incomingNodes = provisioningNodes
-	if nodesToCreate = s.nbNodesToCreate(incomingNodes); nodesToCreate < 1 {
+	if nodesToCreate = s.nbNodesToCreate(provisioningNodes); nodesToCreate < 1 {
 		s.log.Debug("Provisioning nodes cover our needs", "needed", nodesToCreate, "provisioningNodes", provisioningNodes)
+		// TODO: terminate/discard extra provisioning nodes if nodesToCreate < 0 ?
 		s.emptyNodesQueue()
 		return
 	}
@@ -265,8 +265,8 @@ func (s *Scheduler) resizePool() {
 	queuedNodes := 0
 	provisioningQueueNodes := 0
 	for _, nodeState := range s.nodesQueue {
-		if s.config.MaxNodes-len(s.nodes) > 0 && time.Now().After(nodeState.earliestStart) {
-			nodeState.log.Info("Provisioning queued node")
+		if time.Now().After(nodeState.earliestStart) {
+			nodeState.log.Info("Provisioning node from the queue")
 			nodeState.UpdateStatus(NodeStatusProvisioning)
 
 			s.nodesQueue = lo.Without(s.nodesQueue, nodeState)
@@ -274,36 +274,39 @@ func (s *Scheduler) resizePool() {
 			go s.watchNodeProvisioning(nodeState)
 
 			provisioningQueueNodes += 1
+
+			if nodesToCreate = s.nbNodesToCreate(provisioningNodes + provisioningQueueNodes); nodesToCreate < 1 {
+				s.log.Debug("Provisioning nodes from the queue cover our needs",
+					"needed", nodesToCreate,
+					"provisioningNodes", provisioningNodes,
+					"provisioningQueueNodes", provisioningQueueNodes,
+				)
+				s.emptyNodesQueue()
+				return
+			} else {
+				s.log.Debug("Provisioning nodes from the queue are not enough",
+					"needed", nodesToCreate,
+					"provisioningNodes", provisioningNodes,
+					"provisioningQueueNodes", provisioningQueueNodes,
+				)
+			}
 		} else {
 			queuedNodes += 1
 		}
-
-		incomingNodes = provisioningNodes + provisioningQueueNodes
-		if nodesToCreate = s.nbNodesToCreate(incomingNodes); nodesToCreate < 1 {
-			s.log.Debug("Provisioning nodes from the queue cover our needs",
-				"needed", nodesToCreate,
-				"provisioningNodes", provisioningNodes,
-				"provisioningQueueNodes", provisioningQueueNodes,
-			)
-			s.emptyNodesQueue()
-			return
-		}
 	}
-	s.log.Debug("Provisioning nodes from the queue are not enough",
-		"needed", nodesToCreate,
-		"provisioningNodes", provisioningNodes,
-		"provisioningQueueNodes", provisioningQueueNodes,
-	)
 
 	// Finally, we check if nodes queued in the future cover our needs
-	incomingNodes = provisioningNodes + provisioningQueueNodes + queuedNodes
-	if nodesToCreate = s.nbNodesToCreate(incomingNodes); nodesToCreate < 1 {
+	if nodesToCreate = s.nbNodesToCreate(provisioningNodes + provisioningQueueNodes + queuedNodes); nodesToCreate < 1 {
 		s.log.Debug("Provisioning nodes and queued nodes cover our needs",
 			"needed", nodesToCreate,
 			"provisioningNodes", provisioningNodes,
 			"provisioningQueueNodes", provisioningQueueNodes,
 			"queuedNodes", queuedNodes,
 		)
+		if nodesToCreate < 0 {
+			s.log.Debug("Remove extra nodes from the queue", "nodesToRemove", -nodesToCreate)
+			s.nodesQueue = s.nodesQueue[:nodesToCreate]
+		}
 		return
 	}
 	s.log.Debug("Provisioning nodes and queued nodes are not enough",
@@ -322,10 +325,10 @@ func (s *Scheduler) resizePool() {
 			delay = s.config.ProvisioningDelay
 		}
 
-		now = time.Now()
-		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, now)).Add(delay)
+		now = time.Now().Truncate(time.Second)
+		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, now)).Truncate(time.Second).Add(delay)
 		queueNode := now.Before(s.earliestNextNodeProvisioning)
-		wait = s.earliestNextNodeProvisioning.Sub(now)
+		wait = s.earliestNextNodeProvisioning.Sub(now) + (2 * time.Second)
 
 		nodeName := namegen.Get()
 		nodeState := &nodeState{
@@ -340,7 +343,7 @@ func (s *Scheduler) resizePool() {
 			earliestStart: s.earliestNextNodeProvisioning,
 		}
 
-		nodeState.log.Debug("Creating node", "wait", wait, "earliestStart", s.earliestNextNodeProvisioning, "queued", queueNode)
+		nodeState.log.Debug("Creating node", "wait", wait, "earliestStart", s.earliestNextNodeProvisioning, "status", nodeState.status)
 		s.broadcast(EventNodeCreated{Node: nodeName, Status: nodeState.status})
 
 		if queueNode {
