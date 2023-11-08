@@ -39,21 +39,21 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 
 	var buf []byte
 	if buf, err = os.ReadFile(file); err != nil {
-		return nil, fmt.Errorf("read file: %w", err)
+		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
 
 	source, err := evaluateTemplate(string(buf), workDir, options)
 	if err != nil {
-		return nil, fmt.Errorf("evaluate template: %w", err)
+		return nil, fmt.Errorf("failed to evaluate template: %w", err)
 	}
 
 	var jobfile Jobfile
 	if err = yaml.Unmarshal([]byte(source), &jobfile); err != nil {
-		return nil, UnmarshalError{fmt.Errorf("unmarshal: %w", err), source}
+		return nil, UnmarshalError{fmt.Errorf("failed to unmarshal jobfile: %w", err), source}
 	}
 	jobfile.path = workDir
 	if err = jobfile.Validate(); err != nil {
-		return nil, UnmarshalError{fmt.Errorf("validate: %w", err), source}
+		return nil, UnmarshalError{fmt.Errorf("failed to validate jobfile: %w", err), source}
 	}
 
 	job.Name = jobfile.Name
@@ -66,7 +66,7 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 			step.Options,
 			options,
 		); err != nil {
-			return nil, fmt.Errorf("build (%d): %w", i+1, err)
+			return nil, fmt.Errorf("failed to build image for jobfile step (%d): %w", i+1, err)
 		}
 	}
 
@@ -204,7 +204,7 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	// Create a temporary file to store the image ID (@see --iidfile flag).
 	tmp, err := os.CreateTemp("", "alfred-image-id-")
 	if err != nil {
-		return "", fmt.Errorf("create temp file: %w", err)
+		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 
 	// We can close the file descriptor because Docker will override the file anyway.
@@ -219,12 +219,12 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	cmd.Stderr = lo.Ternary(readOptions.Verbose, os.Stderr, nil)
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%w", err)
+		return "", fmt.Errorf("failed to build image: %w", err)
 	}
 
 	imageId, err := os.ReadFile(tmp.Name())
 	if err != nil {
-		return "", fmt.Errorf("read image id: %w", err)
+		return "", fmt.Errorf("failed to read image id: %w", err)
 	}
 
 	return string(imageId), nil

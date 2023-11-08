@@ -121,7 +121,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 		cmd.Stderr = os.Stderr
 		reader := lo.Must(cmd.StdoutPipe())
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("docker save: %w", err)
+			return fmt.Errorf("failed to 'docker save' image '%s' locally: %w", image, err)
 		}
 		chunk := make([]byte, *resp.ChunkSize)
 		for {
@@ -134,7 +134,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 						},
 					})
 				} else {
-					return fmt.Errorf("read: %w", err)
+					return fmt.Errorf("failed to read docker image chunk: %w", err)
 				}
 			} else {
 				if err = c.Send(&proto.LoadImageMessage{
@@ -145,7 +145,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 						},
 					},
 				}); err != nil {
-					return fmt.Errorf("send: %w", err)
+					return fmt.Errorf("failed to send docker image chunk to server: %w", err)
 				}
 			}
 		}

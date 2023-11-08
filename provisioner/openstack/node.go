@@ -57,12 +57,12 @@ func (n *Node) connect(server *servers.Server) (err error) {
 
 	pages, err := servers.ListAddresses(openstackClient, server.ID).AllPages()
 	if err != nil {
-		return fmt.Errorf("failed to get server '%s' addresses: %w", n.name, err)
+		return fmt.Errorf("failed to get server addresses for '%s': %w", n.name, err)
 	}
 
 	allAddresses, err := servers.ExtractAddresses(pages)
 	if err != nil {
-		return fmt.Errorf("failed to extract server '%s' addresses: %w", n.name, err)
+		return fmt.Errorf("failed to extract server addresses for '%s': %w", n.name, err)
 	}
 
 	var nodeAddress string
@@ -133,7 +133,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		}),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to init docker client: %w", err)
+		return fmt.Errorf("failed to initialize docker client: %w", err)
 	}
 
 	// Initialize file system
@@ -145,7 +145,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
 	for _, image := range task.Job.Steps {
 		if err := n.ensureNodeHasImage(image); err != nil {
-			return -1, fmt.Errorf("failed to ensure node has image '%s': %w", image, err)
+			return -1, fmt.Errorf("failed to ensure node has docker image '%s': %w", image, err)
 		}
 	}
 
@@ -162,7 +162,7 @@ func (n *Node) ensureNodeHasImage(image string) error {
 		n.log.Debug("Image already on node", "image", image)
 		return nil
 	} else if !client.IsErrNotFound(err) {
-		return fmt.Errorf("inspect image: %w", err)
+		return fmt.Errorf("failed to inspect docker image '%s': %w", image, err)
 	}
 
 	n.log.Info("Image not on node, loading", "image", image)
@@ -179,15 +179,15 @@ func (n *Node) ensureNodeHasImage(image string) error {
 	session.Stderr = os.Stderr
 
 	if err := saveCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start docker save: %w", err)
+		return fmt.Errorf("failed to 'docker save' image '%s': %w", image, err)
 	}
 
 	if err := session.Run("zstd --decompress | docker load"); err != nil {
-		return fmt.Errorf("failed docker load: %w", err)
+		return fmt.Errorf("failed to 'docker load' image '%s': %w", image, err)
 	}
 
 	if err := saveCmd.Wait(); err != nil {
-		return fmt.Errorf("failed docker save: %w", err)
+		return fmt.Errorf("failed while waiting for 'docker save' of image '%s': %w", image, err)
 	}
 
 	n.log.Debug("Image loaded on node", "image", image)
@@ -196,7 +196,7 @@ func (n *Node) ensureNodeHasImage(image string) error {
 
 func (n *Node) Terminate() error {
 	if n.terminated {
-		return fmt.Errorf("node '%s' already terminated", n.name)
+		return nil
 	}
 	n.terminated = true
 

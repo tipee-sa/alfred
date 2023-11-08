@@ -35,7 +35,7 @@ var alfredCmd = &cobra.Command{
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) (err error) {
 		defer func() {
 			if err != nil {
-				err = fmt.Errorf("client connect: %w", err)
+				err = fmt.Errorf("failed to connect to gRPC client: %w", err)
 			}
 		}()
 
@@ -70,7 +70,7 @@ var alfredCmd = &cobra.Command{
 			}),
 		)
 		if err != nil {
-			return fmt.Errorf("dial: %w", err)
+			return fmt.Errorf("failed to dial gRPC: %w", err)
 		}
 
 		client = proto.NewAlfredClient(clientConn)
