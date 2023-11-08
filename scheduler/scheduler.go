@@ -314,6 +314,7 @@ func (s *Scheduler) resizePool() {
 	)
 
 	var delay, wait time.Duration
+	var now time.Time
 
 	for i := 0; i < nodesToCreate; i++ {
 		// Skip the delay for the first node ever we create
@@ -321,9 +322,10 @@ func (s *Scheduler) resizePool() {
 			delay = s.config.ProvisioningDelay
 		}
 
-		s.earliestNextNodeProvisioning = s.earliestNextNodeProvisioning.Add(delay)
-		queueNode := time.Now().Before(s.earliestNextNodeProvisioning)
-		wait = time.Until(s.earliestNextNodeProvisioning)
+		now = time.Now()
+		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, now)).Add(delay)
+		queueNode := now.Before(s.earliestNextNodeProvisioning)
+		wait = s.earliestNextNodeProvisioning.Sub(now)
 
 		nodeName := namegen.Get()
 		nodeState := &nodeState{
