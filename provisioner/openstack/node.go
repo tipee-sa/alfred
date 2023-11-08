@@ -58,12 +58,12 @@ func (n *Node) connect(server *servers.Server) (err error) {
 
 	pages, err := servers.ListAddresses(openstackClient, server.ID).AllPages()
 	if err != nil {
-		return fmt.Errorf("failed to get server '%s' addresses: %w", n.name, err)
+		return fmt.Errorf("failed to get server addresses for '%s': %w", n.name, err)
 	}
 
 	allAddresses, err := servers.ExtractAddresses(pages)
 	if err != nil {
-		return fmt.Errorf("failed to extract server '%s' addresses: %w", n.name, err)
+		return fmt.Errorf("failed to extract server addresses for '%s': %w", n.name, err)
 	}
 
 	var nodeAddress string
@@ -174,7 +174,7 @@ func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) 
 
 func (n *Node) Terminate() error {
 	if n.terminated.Load() == true {
-		return fmt.Errorf("node '%s' already terminated", n.name)
+		return nil
 	}
 	n.terminated.Store(true)
 

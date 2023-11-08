@@ -22,10 +22,10 @@ var _ net.Conn = (*SSHSocatConn)(nil)
 func (c *SSHSocatConn) Close() error {
 	c.cancel()
 	if err := c.ReadCloser.Close(); err != nil {
-		return fmt.Errorf("read close: %w", err)
+		return fmt.Errorf("failed to close ReadCloser: %w", err)
 	}
 	if err := c.WriteCloser.Close(); err != nil {
-		return fmt.Errorf("write close: %w", err)
+		return fmt.Errorf("failed to close WriteCloser: %w", err)
 	}
 	return nil
 }
@@ -84,7 +84,7 @@ func DialContext(ctx context.Context, network, addr, username, target string) (n
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("start: %w", err)
+		return nil, fmt.Errorf("failed to start socat: %w", err)
 	}
 
 	return &SSHSocatConn{

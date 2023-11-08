@@ -32,14 +32,14 @@ func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.
 			if err == io.EOF {
 				return nil
 			} else {
-				return fmt.Errorf("read: %w", err)
+				return fmt.Errorf("failed to read artifact chunk: %w", err)
 			}
 		} else {
 			if err = srv.Send(&proto.DownloadArtifactChunk{
 				Data:   chunk[:n],
 				Length: uint32(n),
 			}); err != nil {
-				return fmt.Errorf("send: %w", err)
+				return fmt.Errorf("failed to request for artifact chunk: %w", err)
 			}
 		}
 	}

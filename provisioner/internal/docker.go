@@ -51,7 +51,7 @@ func ensureNodeHasLocallyBuiltImage(log *slog.Logger, docker *client.Client, ssh
 		log.Debug("Image already on node")
 		return nil
 	} else if !client.IsErrNotFound(err) {
-		return fmt.Errorf("inspect image '%s': %w", image, err)
+		return fmt.Errorf("failed to inspect image '%s': %w", image, err)
 	}
 
 	log.Info("Image not on node, loading")
@@ -68,15 +68,15 @@ func ensureNodeHasLocallyBuiltImage(log *slog.Logger, docker *client.Client, ssh
 	session.Stderr = os.Stderr
 
 	if err := saveCmd.Start(); err != nil {
-		return fmt.Errorf("failed starting docker save for image '%s': %w", image, err)
+		return fmt.Errorf("failed to start saving docker image '%s': %w", image, err)
 	}
 
 	if err := session.Run("zstd --decompress | docker load"); err != nil {
-		return fmt.Errorf("failed docker load for image '%s': %w", image, err)
+		return fmt.Errorf("failed to load docker image '%s': %w", image, err)
 	}
 
 	if err := saveCmd.Wait(); err != nil {
-		return fmt.Errorf("failed docker save for iamge '%s': %w", image, err)
+		return fmt.Errorf("failed to save docker image '%s': %w", image, err)
 	}
 
 	log.Debug("Image loaded on node")
@@ -91,7 +91,7 @@ func ensureNodeHasImageFromRegistry(log *slog.Logger, docker *client.Client, ima
 		Filters: filters.NewArgs(filters.Arg("reference", image)),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to list images: %w", err)
+		return fmt.Errorf("failed to list docker images: %w", err)
 	}
 
 	// We only need to check that the list is non-empty, because we filtered by reference
@@ -99,7 +99,7 @@ func ensureNodeHasImageFromRegistry(log *slog.Logger, docker *client.Client, ima
 		log.Debug("Pulling image")
 		reader, err := docker.ImagePull(ctx, image, types.ImagePullOptions{})
 		if err != nil {
-			return fmt.Errorf("failed to pull image '%s': %w", image, err)
+			return fmt.Errorf("failed to pull docker image '%s': %w", image, err)
 		}
 		defer reader.Close()
 
@@ -132,7 +132,7 @@ func RunContainer(
 	networkName := fmt.Sprintf("alfred-%s", task.FQN())
 	netResp, err := docker.NetworkCreate(ctx, networkName, types.NetworkCreate{Driver: "bridge"})
 	if err != nil {
-		return -1, fmt.Errorf("failed to create network: %w", err)
+		return -1, fmt.Errorf("failed to create docker network: %w", err)
 	}
 	networkId := netResp.ID
 	defer cleanup(
@@ -187,7 +187,7 @@ func RunContainer(
 			fmt.Sprintf("alfred-%s-%s", task.FQN(), service.Name),
 		)
 		if err != nil {
-			return -1, fmt.Errorf("failed to create container for service '%s': %w", service.Name, err)
+			return -1, fmt.Errorf("failed to create docker container for service '%s': %w", service.Name, err)
 		}
 		defer cleanup(
 			"service container",
@@ -214,7 +214,7 @@ func RunContainer(
 			containerId := serviceContainers[service.Name]
 			err := docker.ContainerStart(ctx, containerId, types.ContainerStartOptions{})
 			if err != nil {
-				serviceErrors <- fmt.Errorf("%s: failed to start container: %w", service.Name, err)
+				serviceErrors <- fmt.Errorf("failed to start docker container for service '%s': %w", service.Name, err)
 				return
 			}
 
@@ -239,7 +239,7 @@ func RunContainer(
 					AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
 				})
 				if err != nil {
-					serviceErrors <- fmt.Errorf("%s: failed to create exec: %w", service.Name, err)
+					serviceErrors <- fmt.Errorf("failed to create docker exec for service '%s': %w", service.Name, err)
 					return
 				}
 
@@ -248,7 +248,7 @@ func RunContainer(
 				healthCheckLog.Debug("Running health check")
 				attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
 				if err != nil {
-					serviceErrors <- fmt.Errorf("%s: failed to attach to exec: %w", service.Name, err)
+					serviceErrors <- fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
 					return
 				}
 
@@ -260,14 +260,14 @@ func RunContainer(
 				}()
 
 				if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut {
-					serviceErrors <- fmt.Errorf("%s: failed during exec: %w", service.Name, err)
+					serviceErrors <- fmt.Errorf("failed during docker exec for service '%s': %w", service.Name, err)
 					return
 				}
 
 				if !healthCheckTimedOut {
 					inspect, err := docker.ContainerExecInspect(ctx, exec.ID)
 					if err != nil {
-						serviceErrors <- fmt.Errorf("%s: failed to inspect exec: %w", service.Name, err)
+						serviceErrors <- fmt.Errorf("failed to inspect docker exec for service '%s': %w", service.Name, err)
 						return
 					}
 					if inspect.ExitCode == 0 {
@@ -281,7 +281,7 @@ func RunContainer(
 				}
 			}
 
-			serviceErrors <- fmt.Errorf("%s: health check failed", service.Name)
+			serviceErrors <- fmt.Errorf("health check failed for service '%s'", service.Name)
 		}(service)
 	}
 
@@ -290,7 +290,7 @@ func RunContainer(
 	close(serviceErrors)
 
 	if err := <-serviceErrors; err != nil {
-		return -1, fmt.Errorf("service: %w", err)
+		return -1, fmt.Errorf("some service failed: %w", err)
 	}
 
 	// Create and execute steps containers
@@ -349,7 +349,7 @@ func RunContainer(
 				fmt.Sprintf("alfred-%s-%d", task.FQN(), stepIndex),
 			)
 			if err != nil {
-				return fmt.Errorf("failed to create step %d container: %w", stepIndex, err)
+				return fmt.Errorf("failed to create docker container for step %d: %w", stepIndex, err)
 			}
 			defer cleanup(
 				"step container",
@@ -363,12 +363,12 @@ func RunContainer(
 			wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
 			err = docker.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
 			if err != nil {
-				return fmt.Errorf("failed to start step %d container: %w", stepIndex, err)
+				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
 
 			out, err := docker.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: true, Details: true})
 			if err != nil {
-				return fmt.Errorf("failed to get container step %d logs: %w", stepIndex, err)
+				return fmt.Errorf("failed to get docker container logs for step %d: %w", stepIndex, err)
 			}
 			defer out.Close()
 
@@ -382,7 +382,7 @@ func RunContainer(
 					break
 				}
 			case err := <-errChan:
-				return fmt.Errorf("failed to wait for step %d container: %w", stepIndex, err)
+				return fmt.Errorf("failed while waiting for docker container for step %d: %w", stepIndex, err)
 			}
 
 			return nil
@@ -405,7 +405,7 @@ func RunContainer(
 	}
 
 	if status.StatusCode != 0 {
-		return int(status.StatusCode), fmt.Errorf("exited status: %d", status.StatusCode)
+		return int(status.StatusCode), fmt.Errorf("tasks execution ended with status: %d", status.StatusCode)
 	}
 
 	return 0, nil
