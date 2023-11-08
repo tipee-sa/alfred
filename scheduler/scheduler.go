@@ -325,8 +325,8 @@ func (s *Scheduler) resizePool() {
 			delay = s.config.ProvisioningDelay
 		}
 
-		now = time.Now().Truncate(time.Second)
-		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, now)).Truncate(time.Second).Add(delay)
+		now = time.Now()
+		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, now)).Add(delay)
 		queueNode := now.Before(s.earliestNextNodeProvisioning)
 		wait = s.earliestNextNodeProvisioning.Sub(now) + (2 * time.Second)
 
