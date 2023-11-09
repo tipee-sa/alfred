@@ -102,6 +102,8 @@ func RunContainer(
 
 			// We might not be handling pull error properly, but parsing the JSON response is a pain
 			// Let's just assume it worked, and if it didn't, the container create will fail
+		} else {
+			serviceLog.Debug("Service image already on node")
 		}
 
 		resp, err := docker.ContainerCreate(

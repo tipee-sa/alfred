@@ -1,6 +1,6 @@
 version: "1"
 name: "test"
-services:
+#services:
 #  redis:
 #    image: "redis:7.0.5-alpine"
 #    health:
@@ -20,10 +20,7 @@ services:
 steps:
   - dockerfile: "job.dockerfile"
     context: "."
-  - dockerfile: "job.dockerfile"
-    context: "."
 tasks:
   {{range (lines (shell "sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 1"))}}
   - {{.}}
   {{end}}
-

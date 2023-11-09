@@ -139,8 +139,9 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 		"exec": func(args ...string) string {
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.Dir = dir
-			cmd.Stdin = os.Stdin
-			cmd.Stderr = os.Stderr
+			if options.Verbose {
+				cmd.Stderr = os.Stderr
+			}
 			if output, err := cmd.Output(); err != nil {
 				panic(err)
 			} else {
@@ -160,8 +161,9 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 		"shell": func(script string) string {
 			cmd := exec.Command("/bin/bash", "-euo", "pipefail", "-c", script)
 			cmd.Dir = dir
-			cmd.Stdin = os.Stdin
-			cmd.Stderr = os.Stderr
+			if options.Verbose {
+				cmd.Stderr = os.Stderr
+			}
 			if output, err := cmd.Output(); err != nil {
 				panic(err)
 			} else {
