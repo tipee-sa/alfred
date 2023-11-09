@@ -24,8 +24,8 @@ type Scheduler struct {
 	tasksQueue []*Task
 	nodes      []*nodeState
 
-	nodesQueue                   []*nodeState
-	earliestNextNodeProvisioning time.Time
+	nodesQueue        []*nodeState
+	earliestNodeStart time.Time
 
 	events         chan Event
 	listeners      map[chan Event]bool
@@ -47,6 +47,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		input:        make(chan *Job),
 		tickRequests: make(chan any, 1),
 		deferred:     make(chan func()),
+
+		earliestNodeStart: time.Now(),
 
 		events:    make(chan Event, 64),
 		listeners: make(map[chan Event]bool),
@@ -129,9 +131,13 @@ func (s *Scheduler) Shutdown() {
 
 func (s *Scheduler) Run() {
 	s.log.Info("Scheduler is running")
+
 	for {
 		select {
 		case job := <-s.input:
+			// Reset the earliest node start (in case no jobs were running for a while)
+			s.earliestNodeStart = time.Now()
+
 			for _, name := range job.Tasks {
 				task := &Task{
 					Job:  job,
@@ -316,18 +322,13 @@ func (s *Scheduler) resizePool() {
 		"queuedNodes", queuedNodes,
 	)
 
-	var delay, wait time.Duration
-
 	for i := 0; i < nodesToCreate; i++ {
 		// Skip the delay for the first node ever we create
 		if len(s.nodes) > 0 || i > 0 {
-			delay = s.config.ProvisioningDelay
+			s.earliestNodeStart = s.earliestNodeStart.Add(s.config.ProvisioningDelay)
 		}
 
-		s.earliestNextNodeProvisioning = lo.Must(lo.Coalesce(s.earliestNextNodeProvisioning, time.Now())).Add(delay)
-		queueNode := time.Now().Before(s.earliestNextNodeProvisioning)
-		wait = s.earliestNextNodeProvisioning.Sub(time.Now()) + (2 * time.Second)
-
+		queueNode := time.Now().Before(s.earliestNodeStart)
 		nodeName := namegen.Get()
 		nodeState := &nodeState{
 			scheduler: s,
@@ -338,14 +339,17 @@ func (s *Scheduler) resizePool() {
 			log:    s.log.With("component", "node").With(slog.Group("node", "name", nodeName)),
 
 			nodeName:      nodeName,
-			earliestStart: s.earliestNextNodeProvisioning,
+			earliestStart: s.earliestNodeStart,
 		}
 
-		nodeState.log.Debug("Creating node", "wait", wait, "earliestStart", s.earliestNextNodeProvisioning, "status", nodeState.status)
+		nodeState.log.Debug("Creating node", "earliestStart", nodeState.earliestStart, "status", nodeState.status)
 		s.broadcast(EventNodeCreated{Node: nodeName, Status: nodeState.status})
 
 		if queueNode {
 			s.nodesQueue = append(s.nodesQueue, nodeState)
+
+			wait := time.Until(s.earliestNodeStart) + (2 * time.Second)
+			nodeState.log.Debug("Wait before provisioning node", "wait", wait)
 			s.after(wait, func() {
 				s.requestTick("queued node should be ready to be provisioned")
 			})
