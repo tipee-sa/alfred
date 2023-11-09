@@ -24,8 +24,8 @@ type Scheduler struct {
 	tasksQueue []*Task
 	nodes      []*nodeState
 
-	nodesQueue        []*nodeState
-	earliestNodeStart time.Time
+	nodesQueue            []*nodeState
+	earliestNextNodeStart time.Time
 
 	events         chan Event
 	listeners      map[chan Event]bool
@@ -48,7 +48,7 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		tickRequests: make(chan any, 1),
 		deferred:     make(chan func()),
 
-		earliestNodeStart: time.Now(),
+		earliestNextNodeStart: time.Now(),
 
 		events:    make(chan Event, 64),
 		listeners: make(map[chan Event]bool),
@@ -135,9 +135,6 @@ func (s *Scheduler) Run() {
 	for {
 		select {
 		case job := <-s.input:
-			// Reset the earliest node start (in case no jobs were running for a while)
-			s.earliestNodeStart = time.Now()
-
 			for _, name := range job.Tasks {
 				task := &Task{
 					Job:  job,
@@ -322,13 +319,16 @@ func (s *Scheduler) resizePool() {
 		"queuedNodes", queuedNodes,
 	)
 
-	for i := 0; i < nodesToCreate; i++ {
-		// Skip the delay for the first node ever we create
-		if len(s.nodes) > 0 || i > 0 {
-			s.earliestNodeStart = s.earliestNodeStart.Add(s.config.ProvisioningDelay)
-		}
+	// Prevent ever starting a node "right now" because the earliest start time has already passed
+	if s.earliestNextNodeStart.Before(time.Now()) {
+		s.earliestNextNodeStart = time.Now()
+	}
 
-		queueNode := time.Now().Before(s.earliestNodeStart)
+	for i := 0; i < nodesToCreate; i++ {
+		// Never queue the first node we create
+		queueNode := len(s.nodes) > 0 && time.Now().Before(s.earliestNextNodeStart)
+		s.earliestNextNodeStart = s.earliestNextNodeStart.Add(lo.Ternary(queueNode, s.config.ProvisioningDelay, 0))
+
 		nodeName := namegen.Get()
 		nodeState := &nodeState{
 			scheduler: s,
@@ -339,7 +339,7 @@ func (s *Scheduler) resizePool() {
 			log:    s.log.With("component", "node").With(slog.Group("node", "name", nodeName)),
 
 			nodeName:      nodeName,
-			earliestStart: s.earliestNodeStart,
+			earliestStart: s.earliestNextNodeStart,
 		}
 
 		nodeState.log.Debug("Creating node", "earliestStart", nodeState.earliestStart, "status", nodeState.status)
@@ -348,7 +348,7 @@ func (s *Scheduler) resizePool() {
 		if queueNode {
 			s.nodesQueue = append(s.nodesQueue, nodeState)
 
-			wait := time.Until(s.earliestNodeStart) + (2 * time.Second)
+			wait := time.Until(s.earliestNextNodeStart)
 			nodeState.log.Debug("Wait before provisioning node", "wait", wait)
 			s.after(wait, func() {
 				s.requestTick("queued node should be ready to be provisioned")
