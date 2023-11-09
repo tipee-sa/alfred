@@ -305,7 +305,7 @@ func (s *Scheduler) resizePool() {
 		)
 		if nodesToCreate < 0 {
 			s.log.Debug("Remove extra nodes from the queue", "nodesToRemove", -nodesToCreate)
-			s.nodesQueue = s.nodesQueue[:nodesToCreate]
+			s.nodesQueue = s.nodesQueue[:len(s.nodesQueue)+nodesToCreate]
 		}
 		return
 	}
