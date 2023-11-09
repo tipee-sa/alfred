@@ -258,8 +258,8 @@ func (s *Scheduler) resizePool() {
 	}, 0)
 	if nodesToCreate = s.nbNodesToCreate(provisioningNodes); nodesToCreate < 1 {
 		s.log.Debug("Provisioning nodes cover our needs", "needed", nodesToCreate, "provisioningNodes", provisioningNodes)
-		// TODO: terminate/discard extra provisioning nodes if nodesToCreate < 0 ?
 		s.emptyNodesQueue()
+		// Here we don't need to remove extra provisioning machines, as they will be discarded as soon as they are online
 		return
 	}
 	s.log.Debug("Provisioning nodes are not enough", "needed", nodesToCreate, "provisioningNodes", provisioningNodes)
