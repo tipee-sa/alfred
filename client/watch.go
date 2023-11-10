@@ -72,7 +72,8 @@ var watchCmd = &cobra.Command{
 			queued := []string{}
 			running := []string{}
 			aborted := []string{}
-			failed := []string{}
+			crashed := []string{}
+			failures := []string{}
 			completed := []string{}
 
 			tasks = lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return t.Name })
@@ -85,7 +86,11 @@ var watchCmd = &cobra.Command{
 				case proto.TaskStatus_ABORTED:
 					aborted = append(aborted, t.Name)
 				case proto.TaskStatus_FAILED:
-					failed = append(failed, t.Name)
+					if *t.ExitCode == 42 {
+						failures = append(failures, t.Name)
+					} else {
+						crashed = append(crashed, t.Name)
+					}
 				case proto.TaskStatus_COMPLETED:
 					completed = append(completed, t.Name)
 				}
@@ -99,10 +104,13 @@ var watchCmd = &cobra.Command{
 				statItems = append(statItems, fmt.Sprintf("⚙️  %s", itemsPrinter(running, false)))
 			}
 			if len(aborted) > 0 {
-				statItems = append(statItems, fmt.Sprintf("💥 %s", itemsPrinter(aborted, true)))
+				statItems = append(statItems, fmt.Sprintf("🛑 %s", itemsPrinter(aborted, true)))
 			}
-			if len(failed) > 0 {
-				statItems = append(statItems, fmt.Sprintf("❌ %s", itemsPrinter(failed, true)))
+			if len(crashed) > 0 {
+				statItems = append(statItems, fmt.Sprintf("💥 %s", itemsPrinter(crashed, true)))
+			}
+			if len(failures) > 0 {
+				statItems = append(statItems, fmt.Sprintf("⚠️  %s", itemsPrinter(failures, true)))
 			}
 			if len(completed) > 0 {
 				statItems = append(statItems, fmt.Sprintf("✅ %s", itemsPrinter(completed, true)))
