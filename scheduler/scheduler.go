@@ -326,11 +326,10 @@ func (s *Scheduler) resizePool() {
 
 	for i := 0; i < nodesToCreate; i++ {
 		// Never queue the first node we create
-		queueNode := len(s.nodes) > 0 && time.Now().Before(s.earliestNextNodeStart)
-		s.earliestNextNodeStart = s.earliestNextNodeStart.Add(lo.Ternary(queueNode, s.config.ProvisioningDelay, 0))
+		queueNode := (len(s.nodes) > 0 || len(s.nodesQueue) > 0 || i > 0) && time.Now().Before(s.earliestNextNodeStart)
 
 		nodeName := namegen.Get()
-		nodeState := &nodeState{
+		ns := &nodeState{
 			scheduler: s,
 
 			node:   nil,
@@ -342,21 +341,23 @@ func (s *Scheduler) resizePool() {
 			earliestStart: s.earliestNextNodeStart,
 		}
 
-		nodeState.log.Debug("Creating node", "earliestStart", nodeState.earliestStart, "status", nodeState.status)
-		s.broadcast(EventNodeCreated{Node: nodeName, Status: nodeState.status})
+		ns.log.Debug("Creating node", "earliestStart", ns.earliestStart, "status", ns.status)
+		s.broadcast(EventNodeCreated{Node: nodeName, Status: ns.status})
 
 		if queueNode {
-			s.nodesQueue = append(s.nodesQueue, nodeState)
+			s.nodesQueue = append(s.nodesQueue, ns)
 
 			wait := time.Until(s.earliestNextNodeStart)
-			nodeState.log.Debug("Wait before provisioning node", "wait", wait)
 			s.after(wait, func() {
 				s.requestTick("queued node should be ready to be provisioned")
 			})
 		} else {
-			s.nodes = append(s.nodes, nodeState)
-			go s.watchNodeProvisioning(nodeState)
+			s.nodes = append(s.nodes, ns)
+			go s.watchNodeProvisioning(ns)
 		}
+
+		// The next node should start with a delay
+		s.earliestNextNodeStart = s.earliestNextNodeStart.Add(s.config.ProvisioningDelay)
 	}
 }
 
