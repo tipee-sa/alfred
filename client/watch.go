@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -31,9 +32,14 @@ var watchCmd = &cobra.Command{
 				return ""
 			}
 
-			// Try to display the first or last 20 items, as long as displaying them doesn't exceed 180 characters
+			// Try to display the first or last 20 items, as long as displaying them doesn't exceed 180 characters...
+			// ... except in verbose mode, where we go a bit crazier.
 			displayItems := 20
 			lineLength := 180
+			if verbose {
+				displayItems = 250
+				lineLength = math.MaxInt32
+			}
 			partial := nbItems > displayItems
 			var nItems []string
 			for displayItems > 0 {
