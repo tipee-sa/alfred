@@ -56,9 +56,9 @@ var watchCmd = &cobra.Command{
 			}
 
 			if last {
-				return fmt.Sprintf("%s%s (🧮 %d)", lo.Ternary(partial, "… ", ""), strings.Join(nItems, " "), nbItems)
+				return fmt.Sprintf("%s%s (📝 %d)", lo.Ternary(partial, "… ", ""), strings.Join(nItems, " "), nbItems)
 			}
-			return fmt.Sprintf("%s%s (🧮 %d)", strings.Join(nItems, " "), lo.Ternary(partial, " …", ""), nbItems)
+			return fmt.Sprintf("%s%s (📝 %d)", strings.Join(nItems, " "), lo.Ternary(partial, " …", ""), nbItems)
 		}
 
 		var stats, timestamp string
@@ -68,7 +68,7 @@ var watchCmd = &cobra.Command{
 			msg, err := c.Recv()
 			if err != nil {
 				if err == io.EOF {
-					spinner.Success(fmt.Sprintf("Job '%s' completed (🧮 %d, %s)\n%s", args[0], len(tasks), timestamp, stats))
+					spinner.Success(fmt.Sprintf("Job '%s' completed (📝 %d, %s)\n%s", args[0], len(tasks), timestamp, stats))
 					return nil
 				}
 				spinner.Fail()
@@ -130,7 +130,7 @@ var watchCmd = &cobra.Command{
 				timestamp = fmt.Sprintf("⏱️  %s", time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second))
 			}
 
-			spinner.UpdateMessage(fmt.Sprintf("Job '%s' running (🧮 %d, %s)\n%s", args[0], len(tasks), timestamp, stats))
+			spinner.UpdateMessage(fmt.Sprintf("Job '%s' running (📝 %d, %s)\n%s", args[0], len(tasks), timestamp, stats))
 		}
 	},
 }
