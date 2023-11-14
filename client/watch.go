@@ -98,16 +98,16 @@ var watchCmd = &cobra.Command{
 
 				if t.StartedAt != nil {
 					var taskRunningFor time.Duration
-					if t.CompletedAt != nil {
-						taskRunningFor = t.CompletedAt.AsTime().Sub(t.StartedAt.AsTime()).Truncate(time.Second)
+					if t.EndedAt != nil {
+						taskRunningFor = t.EndedAt.AsTime().Sub(t.StartedAt.AsTime()).Truncate(time.Minute)
 					} else {
-						taskRunningFor = time.Since(t.StartedAt.AsTime()).Truncate(time.Second)
+						taskRunningFor = time.Since(t.StartedAt.AsTime()).Truncate(time.Minute)
 					}
 					if taskRunningFor >= someTime {
 						label += fmt.Sprintf(" (%s%s)", emoji(lo.Ternary(taskRunningFor >= aLongTime, "🧟", "🐢")), taskRunningFor)
 					}
 				} else {
-					taskQueuedFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second)
+					taskQueuedFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Minute)
 					if taskQueuedFor >= aVeryLongTime {
 						label += fmt.Sprintf(" (%s%s)", emoji("😴"), taskQueuedFor)
 					}
