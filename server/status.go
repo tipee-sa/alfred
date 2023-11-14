@@ -102,6 +102,7 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 					for _, task := range job.Tasks {
 						if task.Name == event.Task {
 							task.Status = proto.TaskStatus_RUNNING
+							task.StartedAt = timestamppb.Now()
 							break
 						}
 					}
@@ -127,6 +128,9 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 						if task.Name == event.Task {
 							task.Status = proto.TaskStatus_FAILED
 							task.ExitCode = lo.ToPtr(int32(event.ExitCode))
+							if event.ExitCode == 42 {
+								task.CompletedAt = timestamppb.Now()
+							}
 							break
 						}
 					}
@@ -140,6 +144,7 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 						if task.Name == event.Task {
 							task.Status = proto.TaskStatus_COMPLETED
 							task.ExitCode = lo.ToPtr(int32(0))
+							task.CompletedAt = timestamppb.Now()
 							break
 						}
 					}
