@@ -127,7 +127,7 @@ func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 		log:         p.log.With(slog.Group("node", "name", name)),
 	}
 
-	node.log.Info("Created server, waiting for it to become ready")
+	node.log.Info("Node created")
 	return node, node.connect(server)
 }
 

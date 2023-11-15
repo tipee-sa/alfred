@@ -2,14 +2,12 @@ package openstack
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -50,9 +48,11 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	}()
 
 	openstackClient := n.provisioner.client
+
+	n.log.Debug("Wait for server to become ready", "wait", 1*time.Minute)
 	err = servers.WaitForStatus(openstackClient, server.ID, "ACTIVE", 60)
 	if err != nil {
-		return fmt.Errorf("failed while waiting for server '%s' to become ready: %w", n.name, err)
+		return fmt.Errorf("failed while waiting for server '%s' to become ready after %s: %w", n.name, 1*time.Minute, err)
 	}
 
 	pages, err := servers.ListAddresses(openstackClient, server.ID).AllPages()
@@ -77,56 +77,60 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		return fmt.Errorf("failed to find IPv4 address for server '%s'", n.name)
 	}
 
+	initialWait, cmdTimeout, retryInterval, timeout := 5*time.Second, 5*time.Second, 2*time.Second, 1*time.Minute
+
 	// Initialize SSH connection
-	ctx, cancel := context.WithTimeout(context.TODO(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
 	defer cancel()
 
+	n.log.Debug("Wait for SSH daemon to start", "wait", initialWait)
+	time.Sleep(initialWait)
+
+	connectionAttempts := 1
 	for n.ssh == nil {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("failed to connect to server '%s' after 1 minute", n.name)
+			return fmt.Errorf("failed to connect to server '%s' after %s and %d attempts: %w", n.name, timeout, connectionAttempts, err)
 
 		default:
-			time.Sleep(5 * time.Second)
 			n.ssh, err = ssh.Dial("tcp", fmt.Sprintf("%s:22", nodeAddress), &ssh.ClientConfig{
 				User:            n.provisioner.config.SshUsername,
-				Timeout:         10 * time.Second,
+				Timeout:         cmdTimeout,
 				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 				Auth: []ssh.AuthMethod{
 					ssh.PublicKeys(n.provisioner.privateKey),
 				},
 			})
 			if err != nil {
-				switch {
-				case errors.Is(err, syscall.ECONNREFUSED),
-					errors.Is(err, syscall.ETIMEDOUT),
-					errors.Is(err, os.ErrDeadlineExceeded):
-					n.log.Debug("SSH connection to server refused, retrying in 5 seconds")
-
-				default:
-					return fmt.Errorf("failed to connect to server '%s': %w", n.name, err)
-				}
+				n.log.Debug(fmt.Errorf("Connection to node refused (attempt %d), retrying in %s: %w", connectionAttempts, retryInterval, err).Error())
+				time.Sleep(retryInterval)
+				connectionAttempts += 1
 			}
 		}
 	}
 
+	n.log.Debug("Wait for Docker daemon to start", "wait", initialWait)
+	time.Sleep(initialWait)
+
 	// Initialize Docker client
+	connectionAttempts = 1
 	n.docker, err = client.NewClientWithOpts(
 		client.WithHost(n.provisioner.config.DockerHost),
 		client.WithDialContext(func(ctx context.Context, network, addr string) (conn net.Conn, err error) {
-			ctx, cancel := context.WithDeadline(ctx, time.Now().Add(2*time.Minute))
+			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 			for {
 				select {
 				case <-ctx.Done():
-					return nil, fmt.Errorf("failed to dial docker: %w", ctx.Err())
+					return nil, fmt.Errorf("failed to connect to Docker daemon after %s and %d attempts: %w", timeout, connectionAttempts, ctx.Err())
 
 				default:
 					if conn, err = n.ssh.Dial(network, addr); err == nil {
 						return
 					} else {
-						n.log.Debug("Connection to Docker daemon refused, retrying in 5 seconds")
-						time.Sleep(5 * time.Second)
+						n.log.Debug(fmt.Errorf("Connection to Docker daemon refused (attempt %d), retrying in %s: %w", connectionAttempts, retryInterval, err).Error())
+						time.Sleep(retryInterval)
+						connectionAttempts += 1
 					}
 				}
 			}
