@@ -169,10 +169,10 @@ func RunContainer(
 				// Always wait 1 second before running the health check, and potentially more between retries
 				time.Sleep(lo.Ternary(i > 0, interval, 1*time.Second))
 
-				healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
+				healthCheckCmd := append([]string{service.Health.Cmd}, service.Health.Args...)
 
 				exec, err := docker.ContainerExecCreate(ctx, containerId, types.ExecConfig{
-					Cmd:          append([]string{service.Health.Cmd}, service.Health.Args...),
+					Cmd:          healthCheckCmd,
 					Env:          serviceEnv[service.Name],
 					AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
 				})
@@ -183,7 +183,7 @@ func RunContainer(
 
 				execCtx, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
-				healthCheckLog.Debug("Running health check")
+				serviceLog.Debug("Running health check", "cmd", healthCheckCmd, "attempt", i+1, "interval", interval)
 				attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
 				if err != nil {
 					serviceErrors <- fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
@@ -209,13 +209,13 @@ func RunContainer(
 						return
 					}
 					if inspect.ExitCode == 0 {
-						healthCheckLog.Debug("Service is ready")
+						serviceLog.Debug("Service is ready")
 						return
 					}
 
-					healthCheckLog.Debug("Service health check failed, retrying...", "exitcode", inspect.ExitCode)
+					serviceLog.Debug("Service health check unsuccessful, retrying...", "exitcode", inspect.ExitCode)
 				} else {
-					healthCheckLog.Debug("Service health check timed out, retrying...")
+					serviceLog.Debug("Service health check timed out, retrying...")
 				}
 			}
 
