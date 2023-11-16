@@ -24,10 +24,11 @@ var runCmd = &cobra.Command{
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var spinner *ui.Spinner
+		prepareJobMessage := "Building Docker images for job"
 		if !verbose {
-			spinner = ui.NewSpinner("Preparing job")
+			spinner = ui.NewSpinner(prepareJobMessage)
 		} else {
-			cmd.PrintErrln(ui.SectionHeaderColor.Sprint("  Preparing job  "))
+			cmd.PrintErrln(ui.SectionHeaderColor.Sprintf("  %s  ", prepareJobMessage))
 		}
 		j, err := jobfile.Read(args[0], jobfile.ReadOptions{
 			Verbose: verbose,
