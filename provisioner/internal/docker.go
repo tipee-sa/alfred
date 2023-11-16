@@ -47,7 +47,9 @@ func RunContainer(
 	networkId := netResp.ID
 	defer cleanup(
 		"network",
-		func() error { return docker.NetworkRemove(context.Background(), networkId) },
+		func() error {
+			return docker.NetworkRemove(context.Background(), networkId)
+		},
 	)
 
 	// Initialize workspace
@@ -58,7 +60,9 @@ func RunContainer(
 	}
 	defer cleanup(
 		"workspace",
-		func() error { return taskFs.Delete("/") },
+		func() error {
+			return taskFs.Delete("/")
+		},
 	)
 
 	for _, dir := range []string{"output", "shared"} {
@@ -130,8 +134,7 @@ func RunContainer(
 		defer cleanup(
 			"service container",
 			func() error {
-				return docker.ContainerRemove(context.Background(), resp.ID,
-					types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
+				return docker.ContainerRemove(context.Background(), resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
 			},
 			"service", service.Name,
 		)
@@ -169,6 +172,7 @@ func RunContainer(
 				// Always wait 1 second before running the health check, and potentially more between retries
 				time.Sleep(lo.Ternary(i > 0, interval, 1*time.Second))
 
+				healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
 				healthCheckCmd := append([]string{service.Health.Cmd}, service.Health.Args...)
 
 				exec, err := docker.ContainerExecCreate(ctx, containerId, types.ExecConfig{
@@ -183,7 +187,7 @@ func RunContainer(
 
 				execCtx, cancel := context.WithTimeout(ctx, timeout)
 				defer cancel()
-				serviceLog.Debug("Running health check", "cmd", healthCheckCmd, "attempt", i+1, "interval", interval)
+				healthCheckLog.Debug("Running health check", "cmd", healthCheckCmd)
 				attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
 				if err != nil {
 					serviceErrors <- fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
@@ -209,13 +213,13 @@ func RunContainer(
 						return
 					}
 					if inspect.ExitCode == 0 {
-						serviceLog.Debug("Service is ready")
+						healthCheckLog.Debug("Service is ready")
 						return
 					}
 
-					serviceLog.Debug("Service health check unsuccessful, retrying...", "exitcode", inspect.ExitCode)
+					healthCheckLog.Debug("Service health check unsuccessful, retrying...", "exitcode", inspect.ExitCode)
 				} else {
-					serviceLog.Debug("Service health check timed out, retrying...")
+					healthCheckLog.Debug("Service health check timed out, retrying...")
 				}
 			}
 
@@ -293,8 +297,7 @@ func RunContainer(
 			defer cleanup(
 				"step container",
 				func() error {
-					return docker.ContainerRemove(context.Background(), resp.ID,
-						types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
+					return docker.ContainerRemove(context.Background(), resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
 				},
 			)
 
@@ -318,7 +321,7 @@ func RunContainer(
 			case status = <-wait:
 				// Container is done
 				if status.StatusCode != 0 {
-					break
+					return fmt.Errorf("step %d failed with status: %d", stepIndex, status.StatusCode)
 				}
 			case err := <-errChan:
 				return fmt.Errorf("failed while waiting for docker container for step %d: %w", stepIndex, err)
