@@ -18,7 +18,7 @@ import (
 var artifactCmd = &cobra.Command{
 	Use:   "artifact",
 	Short: "Download artifact",
-	Args:  cobra.RangeArgs(1, 2),
+	Args:  cobra.MinimumNArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		spinner := ui.NewSpinner("Loading artifacts")
@@ -29,11 +29,22 @@ var artifactCmd = &cobra.Command{
 		}
 
 		partialDownload := false
+
+		requestedTasks := args[1:]
+		var invalidRequestedTasks = make(map[string]bool, len(requestedTasks))
+		for _, requestedTask := range requestedTasks {
+			invalidRequestedTasks[requestedTask] = true
+		}
+
 		finishedTasks := []string{}
 
 		for _, task := range job.Tasks {
-			if len(args) == 2 && task.Name != args[1] {
-				continue
+			if len(requestedTasks) > 0 {
+				if _, exists := invalidRequestedTasks[task.Name]; exists {
+					delete(invalidRequestedTasks, task.Name)
+				} else {
+					continue
+				}
 			}
 
 			switch task.Status {
@@ -44,23 +55,32 @@ var artifactCmd = &cobra.Command{
 			}
 		}
 
-		if len(args) == 2 && len(finishedTasks) == 0 {
-			spinner.Fail()
-			return fmt.Errorf("task '%s' not found", args[1])
+		if len(requestedTasks) > 0 && len(invalidRequestedTasks) > 0 {
+			spinner.Warn()
+			for invalidTask := range invalidRequestedTasks {
+				cmd.PrintErrln(color.HiRedString("task '%s' does not exist in job '%s'", invalidTask, args[0]))
+			}
+			spinner = ui.NewSpinner("Downloading artifacts")
 		}
 
-		downloadedArtifacts := 0
-		for _, task := range finishedTasks {
+		var errors []string
+		for i, task := range finishedTasks {
 			file := path.Join(lo.Must(cmd.Flags().GetString("output")), fmt.Sprintf("%s.tar.gz", task))
 			if err := downloadArtifact(cmd.Context(), job.Name, task, file); err != nil {
-				spinner.Fail()
-				return err
+				errors = append(errors, err.Error())
 			}
 
-			downloadedArtifacts += 1
-			spinner.UpdateMessage(fmt.Sprintf("Downloading artifact (%d/%d)", downloadedArtifacts, len(finishedTasks)))
+			spinner.UpdateMessage(fmt.Sprintf("Downloading artifact (%d/%d)", i+1, len(finishedTasks)))
 		}
-		spinner.Success()
+
+		if len(errors) > 0 {
+			spinner.Warn()
+			for _, msg := range errors {
+				cmd.PrintErrln(color.HiRedString(msg))
+			}
+		} else {
+			spinner.Success()
+		}
 
 		if partialDownload {
 			cmd.PrintErrln(color.HiYellowString("\nWarning: not all tasks are completed, only some artifacts were downloaded"))
@@ -87,8 +107,8 @@ func getJob(ctx context.Context, name string) (*proto.JobStatus, error) {
 	return c.Recv()
 }
 
-func downloadArtifact(ctx context.Context, job string, task string, file string) error {
-	if err := os.MkdirAll(path.Dir(file), 0755); err != nil {
+func downloadArtifact(ctx context.Context, job string, task string, file string) (err error) {
+	if err = os.MkdirAll(path.Dir(file), 0755); err != nil {
 		return fmt.Errorf("failed to create output directory for task '%s': %w", task, err)
 	}
 
@@ -107,7 +127,12 @@ func downloadArtifact(ctx context.Context, job string, task string, file string)
 	if err != nil {
 		return fmt.Errorf("failed to create output file for task '%s': %w", task, err)
 	}
-	defer fd.Close()
+	defer func() {
+		fd.Close()
+		if err != nil {
+			_ = os.Remove(file)
+		}
+	}()
 
 	for {
 		chunk, err := c.Recv()
