@@ -8,6 +8,7 @@ require (
 	github.com/briandowns/spinner v1.23.0
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/fatih/color v1.15.0
+	github.com/go-task/slim-sprig/v3 v3.0.0
 	github.com/gophercloud/gophercloud v1.7.0
 	github.com/rivo/tview v0.0.0-20231102183219-1b91b8131c43
 	github.com/rivo/uniseg v0.4.4

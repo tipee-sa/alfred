@@ -21,6 +21,6 @@ steps:
   - dockerfile: "job.dockerfile"
     context: "."
 tasks:
-  {{range (lines (shell "sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 1"))}}
+  {{range (splitList "\n" (shell "sloth instance --app tipee list -o json | jq -r '.[] | select(.features.tests) | .id' | tail -n 5"))}}
   - {{.}}
   {{end}}

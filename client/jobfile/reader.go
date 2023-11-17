@@ -1,8 +1,6 @@
 package jobfile
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +12,9 @@ import (
 	"time"
 
 	"github.com/gammadia/alfred/proto"
+	// Fork of github.com/Masterminds/sprig/v3 removing functions having 3rd party dependencies. List available here :
+	// https://github.com/go-task/slim-sprig/commit/4aa88173255771335225fa85e97341262276d42b?w=1#diff-5faaf3bff8320883fedc2b5e1828c8cea82467bd7d8357e1c824dafe50835bfb
+	"github.com/go-task/slim-sprig/v3"
 	"github.com/samber/lo"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"gopkg.in/yaml.v3"
@@ -128,10 +129,9 @@ type TemplateData struct {
 
 func evaluateTemplate(source string, dir string, options ReadOptions) (string, error) {
 	var userError error
-	tmpl, err := template.New("jobfile").Funcs(template.FuncMap{
-		"base64": func(s string) string {
-			return base64.StdEncoding.EncodeToString([]byte(s))
-		},
+
+	tmpl, err := template.New("jobfile").Funcs(sprig.FuncMap()).Funcs(template.FuncMap{
+		// This one is better than sprig's fail() because it produces less noise in the error message.
 		"error": func(err string) any {
 			userError = errors.New(err)
 			panic(nil)
@@ -148,16 +148,6 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 				return strings.TrimRight(string(output), "\n\r")
 			}
 		},
-		"join": func(sep string, s []string) string {
-			return strings.Join(s, sep)
-		},
-		"json": func(v any) (string, error) {
-			buf, err := json.Marshal(v)
-			return string(buf), err
-		},
-		"lines": func(s string) []string {
-			return strings.Split(s, "\n")
-		},
 		"shell": func(script string) string {
 			cmd := exec.Command("/bin/bash", "-euo", "pipefail", "-c", script)
 			cmd.Dir = dir
@@ -169,12 +159,6 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			} else {
 				return strings.TrimRight(string(output), "\n\r")
 			}
-		},
-		"split": func(sep string, s string) []string {
-			return strings.Split(s, sep)
-		},
-		"trim": func(s string) string {
-			return strings.TrimSpace(s)
 		},
 	}).Parse(source)
 	if err != nil {
