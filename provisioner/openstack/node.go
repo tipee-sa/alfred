@@ -153,7 +153,7 @@ func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) 
 		}
 	}
 
-	return internal.RunContainer(context.TODO(), n.log, n.docker, task, n.fs, runConfig)
+	return internal.RunContainer(context.TODO(), n.docker, task, n.fs, runConfig)
 }
 
 func (n *Node) ensureNodeHasImage(image string) error {

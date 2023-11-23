@@ -139,11 +139,10 @@ func (s *Scheduler) Run() {
 				task := &Task{
 					Job:  job,
 					Name: name,
-
-					log: s.log.With(slog.Group("task", "job", job.FQN(), "name", name)),
+					Log:  s.log.With(slog.Group("task", "job", job.FQN(), "name", name)),
 				}
 
-				task.log.Debug("Queuing task")
+				task.Log.Debug("Queuing task")
 				s.broadcast(EventTaskQueued{Job: task.Job.FQN(), Task: task.Name})
 				s.tasksQueue = append(s.tasksQueue, task)
 			}
@@ -212,7 +211,7 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 				nodeState.tasks[slot] = nextTask
 				s.tasksQueue = s.tasksQueue[1:]
 
-				nextTask.log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
+				nextTask.Log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
 				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: &NodeSlotTask{nextTask.Job.Name, nextTask.Name}})
 
 				go s.watchTaskExecution(nodeState, slot, nextTask)
@@ -390,14 +389,14 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 		SecretLoader:      s.config.SecretLoader,
 	}
 
-	task.log.Info("Running task")
+	task.Log.Info("Running task")
 	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
 
 	if exitCode, err := node.RunTask(task, runConfig); err != nil {
-		task.log.Warn("Task failed", "error", err)
+		task.Log.Warn("Task failed", "error", err)
 		s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 	} else {
-		task.log.Info("Task completed")
+		task.Log.Info("Task completed")
 		s.broadcast(EventTaskCompleted{Job: task.Job.FQN(), Task: task.Name})
 	}
 

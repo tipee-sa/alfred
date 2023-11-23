@@ -25,16 +25,15 @@ import (
 
 func RunContainer(
 	ctx context.Context,
-	log *slog.Logger,
 	docker *client.Client,
 	task *scheduler.Task,
 	fs WorkspaceFS,
 	runConfig scheduler.RunTaskConfig,
 ) (int, error) {
-	cleanup := func(what string, thunk func() error, args ...any) {
+	tryTo := func(what string, thunk func() error, args ...any) {
 		if err := thunk(); err != nil {
 			args = append([]any{"error", err}, args...)
-			log.Error("Failed to cleanup "+what, args...)
+			task.Log.Error("Failed to "+what, args...)
 		}
 	}
 
@@ -45,8 +44,8 @@ func RunContainer(
 		return -1, fmt.Errorf("failed to create docker network: %w", err)
 	}
 	networkId := netResp.ID
-	defer cleanup(
-		"network",
+	defer tryTo(
+		"remove Docker network",
 		func() error {
 			return docker.NetworkRemove(context.Background(), networkId)
 		},
@@ -58,8 +57,8 @@ func RunContainer(
 	if err := taskFs.MkDir("/"); err != nil {
 		return -1, fmt.Errorf("failed to create workspace: %w", err)
 	}
-	defer cleanup(
-		"workspace",
+	defer tryTo(
+		"remove task workspace",
 		func() error {
 			return taskFs.Delete("/")
 		},
@@ -77,7 +76,7 @@ func RunContainer(
 	serviceContainers := map[string]string{}
 
 	for _, service := range task.Job.Services {
-		serviceLog := log.With("service", service.Name)
+		serviceLog := task.Log.With("service", service.Name)
 
 		env := lo.Map(service.Env, func(jobEnv *proto.Job_Env, _ int) string {
 			return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
@@ -131,8 +130,8 @@ func RunContainer(
 		if err != nil {
 			return -1, fmt.Errorf("failed to create docker container for service '%s': %w", service.Name, err)
 		}
-		defer cleanup(
-			"service container",
+		defer tryTo(
+			"remove service container",
 			func() error {
 				return docker.ContainerRemove(context.Background(), resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
 			},
@@ -149,7 +148,7 @@ func RunContainer(
 	for _, service := range task.Job.Services {
 		go func(service *proto.Job_Service) {
 			defer wg.Done()
-			serviceLog := log.With("service", service.Name)
+			serviceLog := task.Log.With("service", service.Name)
 
 			serviceLog.Debug("Starting service container")
 			containerId := serviceContainers[service.Name]
@@ -237,9 +236,10 @@ func RunContainer(
 
 	// Create and execute steps containers
 	var status container.WaitResponse
+	var stepError error
 	for i, image := range task.Job.Steps {
 		// Using a func here so that defer are called between each iteration
-		if err := func(stepIndex int) error {
+		stepError = func(stepIndex int) error {
 			secretEnv := []string{}
 			for _, secret := range task.Job.Secrets {
 				if runConfig.SecretLoader == nil {
@@ -294,11 +294,12 @@ func RunContainer(
 			if err != nil {
 				return fmt.Errorf("failed to create docker container for step %d: %w", stepIndex, err)
 			}
-			defer cleanup(
-				"step container",
+			defer tryTo(
+				"remove step container",
 				func() error {
 					return docker.ContainerRemove(context.Background(), resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
 				},
+				"step", stepIndex,
 			)
 
 			// Start main container
@@ -328,26 +329,37 @@ func RunContainer(
 			}
 
 			return nil
-		}(i + 1); err != nil {
-			return -1, err
+		}(i + 1)
+
+		// There's no point in executing further steps if one of them failed
+		if stepError != nil {
+			break
 		}
 	}
 
-	// Preserve artifacts
-	if runConfig.ArtifactPreserver != nil {
-		reader, err := taskFs.Archive("/output")
-		if err != nil {
-			return -1, fmt.Errorf("failed to archive 'output' directory: %w", err)
-		}
-		defer reader.Close()
+	// Here we don't use defer because the task workspace is removed in a defer statement already
+	tryTo(
+		"preserve artifact",
+		func() error {
+			if runConfig.ArtifactPreserver != nil {
+				task.Log.Debug("Preserve artifact")
 
-		if err := runConfig.ArtifactPreserver(reader, task); err != nil {
-			return -1, fmt.Errorf("failed to preserve artifacts: %w", err)
-		}
-	}
+				reader, err := taskFs.Archive("/output")
+				if err != nil {
+					return fmt.Errorf("failed to archive 'output' directory: %w", err)
+				}
+				defer reader.Close()
 
-	if status.StatusCode != 0 {
-		return int(status.StatusCode), fmt.Errorf("task execution ended with status: %d", status.StatusCode)
+				if err := runConfig.ArtifactPreserver(reader, task); err != nil {
+					return fmt.Errorf("failed to preserve artifacts: %w", err)
+				}
+			}
+			return nil
+		},
+	)
+
+	if stepError != nil {
+		return lo.Ternary(status.StatusCode != 0, int(status.StatusCode), -1), fmt.Errorf("task execution ended with error: %w", stepError)
 	}
 
 	return 0, nil

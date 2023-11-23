@@ -24,8 +24,7 @@ func (ts TaskStatus) AsProto() proto.TaskStatus_Status {
 type Task struct {
 	Job  *Job
 	Name string
-
-	log *slog.Logger
+	Log  *slog.Logger
 }
 
 func (t *Task) FQN() string {

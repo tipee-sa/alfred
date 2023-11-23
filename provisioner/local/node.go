@@ -29,7 +29,7 @@ func (n *Node) Name() string {
 }
 
 func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
-	return internal.RunContainer(n.ctx, n.log, n.docker, task, n.provisioner.fs, runConfig)
+	return internal.RunContainer(n.ctx, n.docker, task, n.provisioner.fs, runConfig)
 }
 
 func (*Node) Terminate() error {
