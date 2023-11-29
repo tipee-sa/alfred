@@ -313,7 +313,7 @@ func RunContainer(
 				tryTo(
 					"save container logs",
 					func() error {
-						return taskFs.SaveContainerLogs(resp.ID, fmt.Sprintf("/output/step-%d.log", stepIndex))
+						return taskFs.SaveContainerLogs(resp.ID, fmt.Sprintf("/output/%s-step-%d.log", task.Name, stepIndex))
 					},
 				)
 
