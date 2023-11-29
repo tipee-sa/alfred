@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/fatih/color"
@@ -33,6 +34,12 @@ var alfredCmd = &cobra.Command{
 	SilenceErrors: true,
 
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) (err error) {
+		dependencies := []string{"bash", "docker", "ssh", "zstd"}
+		command := exec.Command("/bin/which", dependencies...)
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("missing mandatory dependencies (%s): %w", strings.Join(dependencies, ", "), err)
+		}
+
 		defer func() {
 			if err != nil {
 				err = fmt.Errorf("failed to connect to gRPC client: %w", err)

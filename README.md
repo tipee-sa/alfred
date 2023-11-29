@@ -63,5 +63,5 @@ Creating the Alfred node image is done using [Packer](https://www.packer.io/) in
 
 - bash
 - docker
-- tar
+- ssh
 - zstd
