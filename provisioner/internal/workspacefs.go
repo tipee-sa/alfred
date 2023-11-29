@@ -8,6 +8,7 @@ import (
 type WorkspaceFS interface {
 	HostPath(p string) string
 	MkDir(p string) error
+	SaveContainerLogs(containerId, p string) error
 	Archive(p string) (io.ReadCloser, error)
 	Delete(p string) error
 	Scope(p string) WorkspaceFS
@@ -27,6 +28,10 @@ func (f *ScopedFS) HostPath(p string) string {
 
 func (f *ScopedFS) MkDir(p string) error {
 	return f.Parent.MkDir(path.Join(f.Prefix, p))
+}
+
+func (f *ScopedFS) SaveContainerLogs(containerId, p string) error {
+	return f.Parent.SaveContainerLogs(containerId, path.Join(f.Prefix, p))
 }
 
 func (f *ScopedFS) Archive(p string) (io.ReadCloser, error) {

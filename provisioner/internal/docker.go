@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/scheduler"
 	"github.com/samber/lo"
@@ -309,17 +307,16 @@ func RunContainer(
 				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
 
-			out, err := docker.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Follow: true, Timestamps: true, Details: true})
-			if err != nil {
-				return fmt.Errorf("failed to get docker container logs for step %d: %w", stepIndex, err)
-			}
-			defer out.Close()
-
-			_, _ = stdcopy.StdCopy(os.Stdout, os.Stderr, out)
-
 			// Wait for the container to finish
 			select {
 			case status = <-wait:
+				tryTo(
+					"save container logs",
+					func() error {
+						return taskFs.SaveContainerLogs(resp.ID, fmt.Sprintf("/output/step-%d.log", stepIndex))
+					},
+				)
+
 				// Container is done
 				if status.StatusCode != 0 {
 					return fmt.Errorf("step %d failed with status: %d", stepIndex, status.StatusCode)

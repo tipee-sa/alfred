@@ -29,6 +29,17 @@ func (f *fs) MkDir(p string) error {
 	return os.MkdirAll(f.HostPath(p), 0777)
 }
 
+func (f *fs) SaveContainerLogs(containerId, p string) error {
+	cmd := exec.Command("docker", "logs", "--timestamps", containerId)
+	if out, err := os.Create(f.HostPath(p)); err != nil {
+		return err
+	} else {
+		cmd.Stdout = out
+		cmd.Stderr = out
+	}
+	return cmd.Run()
+}
+
 func (f *fs) Archive(p string) (rc io.ReadCloser, err error) {
 	cmd := exec.Command("tar", "-c", "-f", "-", "-z", "-C", f.root, strings.TrimLeft(p, "/"))
 	if rc, err = cmd.StdoutPipe(); err != nil {

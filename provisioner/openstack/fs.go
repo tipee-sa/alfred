@@ -51,6 +51,20 @@ func (f *fs) MkDir(p string) error {
 	})
 }
 
+func (f *fs) SaveContainerLogs(containerId, p string) error {
+	session, err := f.ssh.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	defer session.Close()
+
+	return session.Run(fmt.Sprintf(
+		"docker logs --timestamps %s 2>&1 > %s",
+		shellescape.Quote(containerId),
+		shellescape.Quote(f.HostPath(p)),
+	))
+}
+
 // Archive returns a .tar.gz of the given path
 func (f *fs) Archive(p string) (io.ReadCloser, error) {
 	session, err := f.ssh.NewSession()
