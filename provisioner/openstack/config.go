@@ -13,6 +13,8 @@ type Config struct {
 	Image string `json:"openstack-image"`
 	// Machine flavor to use for nodes
 	Flavor string `json:"openstack-flavor"`
+	// Server group to use for nodes
+	ServerGroup string `json:"openstack-server-group"`
 	// Networks to attach to nodes
 	Networks []servers.Network `json:"openstack-network,omitempty"`
 	// Security groups to attach to nodes

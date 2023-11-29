@@ -83,9 +83,10 @@ func createProvisioner() (schedulerpkg.Provisioner, error) {
 
 	case "openstack":
 		config := openstack.Config{
-			Logger: logger,
-			Image:  viper.GetString(flags.OpenstackImage),
-			Flavor: viper.GetString(flags.OpenstackFlavor),
+			Logger:      logger,
+			Image:       viper.GetString(flags.OpenstackImage),
+			Flavor:      viper.GetString(flags.OpenstackFlavor),
+			ServerGroup: viper.GetString(flags.OpenstackServerGroup),
 			Networks: lo.Map(
 				viper.GetStringSlice(flags.OpenstackNetworks),
 				func(s string, _ int) servers.Network {

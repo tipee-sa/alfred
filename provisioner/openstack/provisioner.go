@@ -12,6 +12,7 @@ import (
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/schedulerhints"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"golang.org/x/crypto/ssh"
 )
@@ -101,8 +102,7 @@ func (p *Provisioner) GetName() string {
 
 func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 	name := fmt.Sprintf("alfred-%s", nodeName)
-
-	server, err := servers.Create(p.client, keypairs.CreateOptsExt{
+	var optsBuilder servers.CreateOptsBuilder = keypairs.CreateOptsExt{
 		CreateOptsBuilder: servers.CreateOpts{
 			Name:           name,
 			ImageRef:       p.config.Image,
@@ -115,7 +115,17 @@ func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 			},
 		},
 		KeyName: p.keypairName,
-	}).Extract()
+	}
+	if p.config.ServerGroup != "" {
+		optsBuilder = schedulerhints.CreateOptsExt{
+			CreateOptsBuilder: optsBuilder,
+			SchedulerHints: schedulerhints.SchedulerHints{
+				Group: p.config.ServerGroup,
+			},
+		}
+	}
+
+	server, err := servers.Create(p.client, optsBuilder).Extract()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server '%s': %w", name, err)
 	}

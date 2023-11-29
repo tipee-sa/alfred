@@ -29,6 +29,7 @@ const (
 
 	OpenstackDockerHost     = "openstack-docker-host"
 	OpenstackFlavor         = "openstack-flavor"
+	OpenstackServerGroup    = "openstack-server-group"
 	OpenstackImage          = "openstack-image"
 	OpenstackNetworks       = "openstack-networks"
 	OpenstackSecurityGroups = "openstack-security-groups"
@@ -55,6 +56,7 @@ func init() {
 	// Openstack
 	flags.String(OpenstackDockerHost, "", "docker host on the nodes")
 	flags.String(OpenstackFlavor, "", "flavor to use for provisioning")
+	flags.String(OpenstackServerGroup, "", "server group to use for provisioning")
 	flags.String(OpenstackImage, "", "image to use for provisioning")
 	flags.StringSlice(OpenstackNetworks, nil, "networks attached to the nodes")
 	flags.StringSlice(OpenstackSecurityGroups, nil, "security groups defined for the nodes")
