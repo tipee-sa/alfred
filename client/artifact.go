@@ -65,7 +65,7 @@ var artifactCmd = &cobra.Command{
 
 		var errors []string
 		for i, task := range finishedTasks {
-			file := path.Join(lo.Must(cmd.Flags().GetString("output")), fmt.Sprintf("%s.tar.gz", task))
+			file := path.Join(lo.Must(cmd.Flags().GetString("output")), fmt.Sprintf("%s.tar.zst", task))
 			if err := downloadArtifact(cmd.Context(), job.Name, task, file); err != nil {
 				errors = append(errors, err.Error())
 			}

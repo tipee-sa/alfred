@@ -53,7 +53,7 @@ func preserveArtifacts(reader io.Reader, task *schedulerpkg.Task) error {
 		return fmt.Errorf("failed to create artifacts directory: %w", err)
 	}
 
-	artifactFile := fmt.Sprintf("%s.tar.gz", task.Name)
+	artifactFile := fmt.Sprintf("%s.tar.zst", task.Name)
 	file, err := os.OpenFile(path.Join(artifactsDir, artifactFile), os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create artifact file: %w", err)

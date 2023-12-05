@@ -14,7 +14,7 @@ import (
 )
 
 func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.Alfred_DownloadArtifactServer) error {
-	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.gz", req.Task))
+	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
 
 	if _, err := os.Stat(artifact); err != nil {
 		return status.Errorf(codes.NotFound, "artifact not found")

@@ -41,7 +41,7 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 }
 
 func (f *fs) Archive(p string) (rc io.ReadCloser, err error) {
-	cmd := exec.Command("tar", "-c", "-f", "-", "-z", "-C", f.root, strings.TrimLeft(p, "/"))
+	cmd := exec.Command("tar", "--create", "--use-compress-program", "zstd --compress --adapt=min=5,max=8", "--file", "-", "--directory", f.root, strings.TrimLeft(p, "/"))
 	if rc, err = cmd.StdoutPipe(); err != nil {
 		return
 	}

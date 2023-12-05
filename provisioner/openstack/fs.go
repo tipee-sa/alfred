@@ -65,7 +65,7 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 	))
 }
 
-// Archive returns a .tar.gz of the given path
+// Archive returns a .tar.zst of the given path
 func (f *fs) Archive(p string) (io.ReadCloser, error) {
 	session, err := f.ssh.NewSession()
 	if err != nil {
@@ -74,7 +74,8 @@ func (f *fs) Archive(p string) (io.ReadCloser, error) {
 
 	out := lo.Must(session.StdoutPipe())
 	if err = session.Start(fmt.Sprintf(
-		"tar -c -f - -z -C %s %s",
+		"tar --create --use-compress-program=%s --file - --directory %s %s",
+		shellescape.Quote("zstd --compress --adapt=min=5,max=8"),
 		shellescape.Quote(f.root),
 		shellescape.Quote(strings.TrimLeft(p, "/")),
 	)); err != nil {
