@@ -2,23 +2,27 @@
 
 Is your favorite butler, who's able to run and monitor jobs to be executed on virtual machines in the cloud.
 
-## First use
+## Dependencies
 
-You need to add the Alfred host key to your known_hosts:
+- bash
+- docker
+- ssh
+- tar
+- zstd
 
-```
-ssh-keyscan -H alfred.tipee.dev >> ~/.ssh/known_hosts
-```
+## Setup
 
-## Deploy
-
-Done manually from Github Actions. **Beware that jobs are stopped during the deployment.**
+1. Install the required dependencies.
+2. Download Alfred's client binary and put it in your `$PATH`.
+3. Your SSH key must be added to Alfred remote server by an administrator.
+4. Add the Alfred host key to your known_hosts: `ssh-keyscan -H alfred.tipee.dev >> ~/.ssh/known_hosts`
+5. You should now be able to run `alfred version` and see the version of the remote server.
 
 ## Setup dev environment
 
 ### Required tools
 
-- Standard tools (`make`, `docker`)
+- `make`
 - [Go 1.21+](https://go.dev/doc/install)
 - [Reflex](https://github.com/cespare/reflex)
   - `go install github.com/cespare/reflex@latest`
@@ -33,35 +37,49 @@ Done manually from Github Actions. **Beware that jobs are stopped during the dep
 
 ### Run alfred
 
-Run the client :
+#### Commands
+
+Run the client:
 ```shell
 source hack/alfred.alias
-alfred
+alfred [commands...]
 ```
 
-Run the server :
+Run the server:
+```shell
+make bin/alfred-server
+bin/alfred-server [options...]
+```
+
+Run the server (with auto-reload):
 ```shell
 make run-server
 ```
 
-### OpenStack credentials
+#### Remote configuration
+
+By default, the `alfred` client will connect to the production server.
+
+For development, you can override the default remote by setting the `ALFRED_REMOTE="localhost:25373"` environment variable to point to your local server.
+You can also pass the `--remote localhost:25373` to `alfred`'s commands each time.
+
+#### OpenStack credentials
 
 To run alfred server with the OpenStack provisioner, you need credentials to access the OpenStack API.
 Ask [@BastienClement](https://github.com/BastienClement).
 
-### Remote configuration
+## Project maintenance
 
-By default, the `alfred` client will connect to the production server. 
+### Releasing the client binary
 
-For development, you can override the default remote by setting the `ALFRED_REMOTE` environment variable to point to your local server.
+Releasing a new version of the client binary is done by creating a release on GitHub. The binaries are automatically
+created for different platforms by a GitHub Action.
 
-## Alfred nodes' image
+### Deploying the server binary
 
-Creating the Alfred node image is done using [Packer](https://www.packer.io/) in a separate project. Ask [@BastienClement](https://github.com/BastienClement).
+Deployment is done manually using a GitHub Action. **Beware that running jobs are stopped during the deployment.**
 
-### Dependencies
+### Updating Alfred nodes' image
 
-- bash
-- docker
-- ssh
-- zstd
+The Alfred nodes' image is maintained using [Packer](https://www.packer.io/) in a separate repository.
+Ask [@BastienClement](https://github.com/BastienClement), he's the only one who can do it for now...
