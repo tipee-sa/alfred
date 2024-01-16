@@ -13,8 +13,8 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
 ## Setup
 
 1. Install the required dependencies.
-2. Download Alfred's client binary and put it in your `$PATH`.
-3. Your SSH key must be added to Alfred remote server by an administrator.
+2. Download Alfred's [client binary](https://github.com/gammadia/alfred/releases/latest) and put it in your `$PATH`.
+3. Your SSH key must be added to Alfred remote server by an administrator. Ask [@gnutix](https://github.com/gnutix).
 4. Add the Alfred host key to your known_hosts: `ssh-keyscan -H alfred.tipee.dev >> ~/.ssh/known_hosts`
 5. You should now be able to run `alfred version` and see the version of the remote server.
 
