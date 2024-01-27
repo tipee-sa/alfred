@@ -18,6 +18,10 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
 4. Add the Alfred host key to your known_hosts: `ssh-keyscan -H alfred.tipee.dev >> ~/.ssh/known_hosts`
 5. You should now be able to run `alfred version` and see the version of the remote server.
 
+### Usage
+
+Run `alfred --help` to see the list of available commands and options.
+
 ## Setup dev environment
 
 ### Required tools
@@ -35,15 +39,9 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
     - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
   - If not done already, add `$(go env GOPATH)/bin` to your `$PATH`
 
-### Run alfred
+### Run alfred server in local
 
 #### Commands
-
-Run the client:
-```shell
-source hack/alfred.alias
-alfred [commands...]
-```
 
 Run the server:
 ```shell
