@@ -49,10 +49,10 @@ func (n *Node) connect(server *servers.Server) (err error) {
 
 	openstackClient := n.provisioner.client
 
-	n.log.Debug("Wait for server to become ready", "wait", 1*time.Minute)
-	err = servers.WaitForStatus(openstackClient, server.ID, "ACTIVE", 60)
+	n.log.Debug("Wait for server to become ready", "wait", 2*time.Minute)
+	err = servers.WaitForStatus(openstackClient, server.ID, "ACTIVE", 120)
 	if err != nil {
-		return fmt.Errorf("failed while waiting for server '%s' to become ready after %s: %w", n.name, 1*time.Minute, err)
+		return fmt.Errorf("failed while waiting for server '%s' to become ready after %s: %w", n.name, 2*time.Minute, err)
 	}
 
 	pages, err := servers.ListAddresses(openstackClient, server.ID).AllPages()
