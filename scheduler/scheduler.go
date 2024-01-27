@@ -393,7 +393,11 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
 
 	if exitCode, err := node.RunTask(task, runConfig); err != nil {
-		task.Log.Warn("Task failed", "error", err)
+		if exitCode == 42 {
+			task.Log.Info("Task ran successfully, but reported issues", "error", err)
+		} else {
+			task.Log.Warn("Task failed while running", "error", err)
+		}
 		s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 	} else {
 		task.Log.Info("Task completed")
