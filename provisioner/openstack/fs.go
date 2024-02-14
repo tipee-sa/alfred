@@ -59,7 +59,7 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 	defer session.Close()
 
 	return session.Run(fmt.Sprintf(
-		"docker logs --timestamps %s 2>&1 > %s",
+		"docker logs --timestamps %s > %s 2>&1",
 		shellescape.Quote(containerId),
 		shellescape.Quote(f.HostPath(p)),
 	))
