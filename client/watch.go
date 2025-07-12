@@ -13,6 +13,7 @@ import (
 	"github.com/rivo/uniseg"
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
+	goproto "google.golang.org/protobuf/proto"
 )
 
 var watchCmd = &cobra.Command{
@@ -85,6 +86,8 @@ var watchCmd = &cobra.Command{
 				return err
 			}
 
+			safeMsg := goproto.Clone(msg).(*proto.JobStatus)
+
 			queued := []string{}
 			running := []string{}
 			aborted := []string{}
@@ -92,8 +95,8 @@ var watchCmd = &cobra.Command{
 			failures := []string{}
 			completed := []string{}
 
-			tasks = lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return t.Name })
-			for _, t := range msg.Tasks {
+			tasks = lo.Map(safeMsg.Tasks, func(t *proto.TaskStatus, _ int) string { return t.Name })
+			for _, t := range safeMsg.Tasks {
 				label := t.Name
 
 				if t.StartedAt != nil {
@@ -107,7 +110,7 @@ var watchCmd = &cobra.Command{
 						label += fmt.Sprintf(" (%s%s)", emoji(lo.Ternary(taskRunningFor >= aLongTime, "🧟", "🐢")), taskRunningFor)
 					}
 				} else {
-					taskQueuedFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Minute)
+					taskQueuedFor := time.Since(safeMsg.ScheduledAt.AsTime()).Truncate(time.Minute)
 					if taskQueuedFor >= aVeryLongTime {
 						label += fmt.Sprintf(" (%s%s)", emoji("😴"), taskQueuedFor)
 					}
@@ -153,10 +156,10 @@ var watchCmd = &cobra.Command{
 
 			stats = strings.Join(statItems, "\n")
 
-			if msg.CompletedAt != nil {
-				timestamp = emoji("🏁") + fmt.Sprintf("%s", msg.CompletedAt.AsTime().Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second))
+			if safeMsg.CompletedAt != nil {
+				timestamp = emoji("🏁") + fmt.Sprintf("%s", safeMsg.CompletedAt.AsTime().Sub(safeMsg.ScheduledAt.AsTime()).Truncate(time.Second))
 			} else {
-				jobRunningFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second)
+				jobRunningFor := time.Since(safeMsg.ScheduledAt.AsTime()).Truncate(time.Second)
 				jobRunningForEmoji := lo.Ternary(jobRunningFor >= aLongTime, lo.Ternary(jobRunningFor >= aVeryLongTime, "🧟", "🐢"), "⏱️")
 				timestamp = emoji(jobRunningForEmoji) + fmt.Sprintf("%s", jobRunningFor)
 			}
