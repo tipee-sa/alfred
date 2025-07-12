@@ -11,6 +11,7 @@ import (
 )
 
 var serverStatus *proto.Status
+var serverStatusMutex sync.RWMutex
 
 var clientListeners = map[chan schedulerpkg.Event]ClientListenerFilter{}
 var clientListenersMutex sync.RWMutex
@@ -28,6 +29,8 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 	for event := range c {
 		// TODO: fix serialization of payload
 		//eventLogger.Info(reflect.TypeOf(event).Name(), "payload", event)
+
+		serverStatusMutex.Lock()
 
 		switch event := event.(type) {
 		// Node events
@@ -151,6 +154,8 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 				}
 			}
 		}
+
+		serverStatusMutex.Unlock()
 
 		clientListenersMutex.RLock()
 		for channel, filter := range clientListeners {

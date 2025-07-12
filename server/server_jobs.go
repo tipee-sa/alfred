@@ -7,6 +7,7 @@ import (
 	schedulerpkg "github.com/gammadia/alfred/scheduler"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	goproto "google.golang.org/protobuf/proto"
 )
 
 func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) (*proto.ScheduleJobResponse, error) {
@@ -38,18 +39,28 @@ func (s *server) WatchJob(req *proto.WatchJobRequest, srv proto.Alfred_WatchJobS
 	defer cancel()
 
 	sync := func() (error, bool) {
+		serverStatusMutex.RLock()
+
+		var jobToSend *proto.JobStatus
 		for _, job := range serverStatus.Jobs {
 			if job.Name == req.Name {
-				if err := srv.Send(job); err != nil {
-					return err, true
-				}
-				if job.CompletedAt != nil {
-					return nil, true
-				}
-				return nil, false
+				jobToSend = goproto.Clone(job).(*proto.JobStatus)
+				break
 			}
 		}
-		return status.Errorf(codes.NotFound, "job '%s' not found", req.Name), true
+
+		serverStatusMutex.RUnlock()
+
+		if jobToSend == nil {
+			return status.Errorf(codes.NotFound, "job '%s' not found", req.Name), true
+		}
+		if err := srv.Send(jobToSend); err != nil {
+			return err, true
+		}
+		if jobToSend.CompletedAt != nil {
+			return nil, true
+		}
+		return nil, false
 	}
 
 	if err, ret := sync(); ret {
@@ -80,7 +91,11 @@ func (s *server) WatchJobs(req *proto.WatchJobsRequest, srv proto.Alfred_WatchJo
 	defer cancel()
 
 	sync := func() error {
-		return srv.Send(&proto.JobsList{Jobs: serverStatus.Jobs})
+		serverStatusMutex.RLock()
+		listToSend := goproto.Clone(&proto.JobsList{Jobs: serverStatus.Jobs}).(*proto.JobsList)
+		serverStatusMutex.RUnlock()
+
+		return srv.Send(listToSend)
 	}
 
 	if err := sync(); err != nil {
