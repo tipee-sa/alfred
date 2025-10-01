@@ -149,7 +149,7 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			}
 		},
 		"shell": func(script string) string {
-			cmd := exec.Command("/bin/bash", "-euo", "pipefail", "-c", script)
+			cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
 			cmd.Dir = dir
 			if options.Verbose {
 				cmd.Stderr = os.Stderr

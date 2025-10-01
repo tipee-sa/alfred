@@ -35,7 +35,7 @@ var alfredCmd = &cobra.Command{
 
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) (err error) {
 		dependencies := []string{"bash", "docker", "ssh", "zstd"}
-		command := exec.Command("/bin/which", dependencies...)
+		command := exec.Command("which", dependencies...)
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("missing mandatory dependencies (%s): %w", strings.Join(dependencies, ", "), err)
 		}
