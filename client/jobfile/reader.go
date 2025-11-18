@@ -1,10 +1,8 @@
 package jobfile
 
 import (
-    "bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -203,25 +201,11 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	cmd := exec.Command("docker", args...)
 
 	cmd.Dir = dir
-
-	// 1. Create a single buffer to capture the combined output (context + error)
-	var combinedOutput bytes.Buffer
-
-	// 2. Configure streams based on verbosity
-	if readOptions.Verbose {
-		// Print to terminal in real-time AND write to our buffer
-		cmd.Stdout = io.MultiWriter(os.Stdout, &combinedOutput)
-		cmd.Stderr = io.MultiWriter(os.Stderr, &combinedOutput)
-	} else {
-		// Quiet mode: Write ONLY to our buffer
-		cmd.Stdout = &combinedOutput
-		cmd.Stderr = &combinedOutput
-	}
+	cmd.Stdout = lo.Ternary(readOptions.Verbose, os.Stdout, nil)
+	cmd.Stderr = lo.Ternary(readOptions.Verbose, os.Stderr, nil)
 
 	if err := cmd.Run(); err != nil {
-		// 3. Clean up the output and attach it to the returned error
-		outputStr := strings.TrimSpace(combinedOutput.String())
-		return "", fmt.Errorf("failed to build image: %w\n\n--- Docker Build Log ---\n%s", err, outputStr)
+		return "", fmt.Errorf("failed to build image: %w", err)
 	}
 
 	imageId, err := os.ReadFile(tmp.Name())
