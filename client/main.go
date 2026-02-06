@@ -19,7 +19,7 @@ import (
 )
 
 // Versioning information set at build time
-var version, commit = "dev", "n/a"
+var version, commit, repository = "dev", "n/a", "tipee-sa/alfred"
 
 var clientConn *grpc.ClientConn
 var client proto.AlfredClient
@@ -96,6 +96,7 @@ func init() {
 	alfredCmd.AddCommand(artifactCmd)
 	alfredCmd.AddCommand(psCmd)
 	alfredCmd.AddCommand(runCmd)
+	alfredCmd.AddCommand(selfUpdateCmd)
 	alfredCmd.AddCommand(topCmd)
 	alfredCmd.AddCommand(versionCmd)
 	alfredCmd.AddCommand(watchCmd)
