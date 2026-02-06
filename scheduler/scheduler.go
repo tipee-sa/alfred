@@ -3,6 +3,7 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -36,6 +37,10 @@ type Scheduler struct {
 
 	// WaitGroup tracking all running tasks
 	wg sync.WaitGroup
+
+	// Live artifact archivers for running tasks (key: "jobFQN/taskName")
+	liveArchivers   map[string]func() (io.ReadCloser, error)
+	liveArchiversMu sync.RWMutex
 }
 
 func New(provisioner Provisioner, config Config) *Scheduler {
@@ -54,6 +59,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		listeners: make(map[chan Event]bool),
 
 		stop: make(chan any),
+
+		liveArchivers: make(map[string]func() (io.ReadCloser, error)),
 	}
 
 	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
@@ -381,12 +388,37 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	}
 }
 
+func (s *Scheduler) ArchiveLiveArtifact(jobFQN, taskName string) (io.ReadCloser, error) {
+	key := jobFQN + "/" + taskName
+
+	s.liveArchiversMu.RLock()
+	archiver, ok := s.liveArchivers[key]
+	s.liveArchiversMu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("no live artifact available for %s", key)
+	}
+
+	return archiver()
+}
+
 func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Task) {
 	node := nodeState.node
 
+	key := task.Job.FQN() + "/" + task.Name
 	runConfig := RunTaskConfig{
 		ArtifactPreserver: s.config.ArtifactPreserver,
 		SecretLoader:      s.config.SecretLoader,
+		OnWorkspaceReady: func(archiver func() (io.ReadCloser, error)) {
+			s.liveArchiversMu.Lock()
+			defer s.liveArchiversMu.Unlock()
+			s.liveArchivers[key] = archiver
+		},
+		OnWorkspaceTeardown: func() {
+			s.liveArchiversMu.Lock()
+			defer s.liveArchiversMu.Unlock()
+			delete(s.liveArchivers, key)
+		},
 	}
 
 	task.Log.Info("Running task")

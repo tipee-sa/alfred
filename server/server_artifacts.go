@@ -16,18 +16,26 @@ import (
 func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.Alfred_DownloadArtifactServer) error {
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
 
-	if _, err := os.Stat(artifact); err != nil {
+	var reader io.ReadCloser
+
+	if _, err := os.Stat(artifact); err == nil {
+		// Completed task: read from finalized artifact file
+		file, err := os.Open(artifact)
+		if err != nil {
+			return fmt.Errorf("failed to open artifact file: %w", err)
+		}
+		reader = file
+	} else if liveReader, err := scheduler.ArchiveLiveArtifact(req.Job, req.Task); err == nil {
+		// Running task: stream live snapshot from workspace
+		reader = liveReader
+	} else {
 		return status.Errorf(codes.NotFound, "artifact not found")
 	}
-
-	file, err := os.Open(artifact)
-	if err != nil {
-		return fmt.Errorf("failed to open artifact file: %w", err)
-	}
+	defer reader.Close()
 
 	chunk := make([]byte, config.MaxPacketSize-1024*1024 /* leave 1MB margin */)
 	for {
-		n, err := io.ReadFull(file, chunk)
+		n, err := io.ReadFull(reader, chunk)
 		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 			if err == io.EOF {
 				return nil

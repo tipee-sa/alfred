@@ -36,7 +36,7 @@ var artifactCmd = &cobra.Command{
 			invalidRequestedTasks[requestedTask] = true
 		}
 
-		finishedTasks := []string{}
+		downloadableTasks := []string{}
 
 		for _, task := range job.Tasks {
 			if len(requestedTasks) > 0 {
@@ -48,10 +48,13 @@ var artifactCmd = &cobra.Command{
 			}
 
 			switch task.Status {
-			case proto.TaskStatus_QUEUED, proto.TaskStatus_RUNNING, proto.TaskStatus_ABORTED:
+			case proto.TaskStatus_QUEUED, proto.TaskStatus_ABORTED:
 				partialDownload = true
+			case proto.TaskStatus_RUNNING:
+				partialDownload = true
+				downloadableTasks = append(downloadableTasks, task.Name)
 			case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED:
-				finishedTasks = append(finishedTasks, task.Name)
+				downloadableTasks = append(downloadableTasks, task.Name)
 			}
 		}
 
@@ -64,13 +67,13 @@ var artifactCmd = &cobra.Command{
 		}
 
 		var errors []string
-		for i, task := range finishedTasks {
+		for i, task := range downloadableTasks {
 			file := path.Join(lo.Must(cmd.Flags().GetString("output")), fmt.Sprintf("%s.tar.zst", task))
 			if err := downloadArtifact(cmd.Context(), job.Name, task, file); err != nil {
 				errors = append(errors, err.Error())
 			}
 
-			spinner.UpdateMessage(fmt.Sprintf("Downloading artifact (%d/%d)", i+1, len(finishedTasks)))
+			spinner.UpdateMessage(fmt.Sprintf("Downloading artifact (%d/%d)", i+1, len(downloadableTasks)))
 		}
 
 		if len(errors) > 0 {
@@ -83,7 +86,7 @@ var artifactCmd = &cobra.Command{
 		}
 
 		if partialDownload {
-			cmd.PrintErrln(color.HiYellowString("\nWarning: not all tasks are completed, only some artifacts were downloaded"))
+			cmd.PrintErrln(color.HiYellowString("\nWarning: not all tasks are completed, some artifacts may be partial snapshots"))
 		}
 
 		return nil

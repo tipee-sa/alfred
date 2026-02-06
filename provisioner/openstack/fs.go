@@ -1,6 +1,7 @@
 package openstack
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"path"
@@ -60,6 +61,25 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 
 	return session.Run(fmt.Sprintf(
 		"docker logs --timestamps %s > %s 2>&1",
+		shellescape.Quote(containerId),
+		shellescape.Quote(f.HostPath(p)),
+	))
+}
+
+func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) error {
+	session, err := f.ssh.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create SSH session: %w", err)
+	}
+	defer session.Close()
+
+	go func() {
+		<-ctx.Done()
+		session.Close()
+	}()
+
+	return session.Run(fmt.Sprintf(
+		"docker logs --follow --timestamps %s > %s 2>&1",
 		shellescape.Quote(containerId),
 		shellescape.Quote(f.HostPath(p)),
 	))

@@ -68,6 +68,16 @@ func RunContainer(
 		}
 	}
 
+	// Register live artifact archiver for in-progress downloads
+	if runConfig.OnWorkspaceReady != nil {
+		runConfig.OnWorkspaceReady(func() (io.ReadCloser, error) {
+			return taskFs.Archive("/output")
+		})
+	}
+	if runConfig.OnWorkspaceTeardown != nil {
+		defer runConfig.OnWorkspaceTeardown()
+	}
+
 	// Environment variables for each service
 	serviceEnv := map[string][]string{}
 	// Container IDs for each service
@@ -307,21 +317,30 @@ func RunContainer(
 				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
 
+			// Stream container logs to file in the background (available for live artifact downloads)
+			logPath := fmt.Sprintf("/output/%s-step-%d.log", task.Name, stepIndex)
+			logCtx, cancelLogs := context.WithCancel(ctx)
+			defer cancelLogs()
+			logDone := make(chan error, 1)
+			go func() {
+				logDone <- taskFs.StreamContainerLogs(logCtx, resp.ID, logPath)
+			}()
+
 			// Wait for the container to finish
 			select {
 			case status = <-wait:
-				tryTo(
-					"save container logs",
-					func() error {
-						return taskFs.SaveContainerLogs(resp.ID, fmt.Sprintf("/output/%s-step-%d.log", task.Name, stepIndex))
-					},
-				)
+				// Wait for log streaming to finish flushing
+				if err := <-logDone; err != nil && logCtx.Err() == nil {
+					task.Log.Error("Failed to stream container logs", "error", err, "step", stepIndex)
+				}
 
 				// Container is done
 				if status.StatusCode != 0 {
 					return fmt.Errorf("step %d failed with status: %d", stepIndex, status.StatusCode)
 				}
 			case err := <-errChan:
+				cancelLogs()
+				<-logDone
 				return fmt.Errorf("failed while waiting for docker container for step %d: %w", stepIndex, err)
 			}
 

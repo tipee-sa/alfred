@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"context"
 	"io"
 	"path"
 )
@@ -9,6 +10,7 @@ type WorkspaceFS interface {
 	HostPath(p string) string
 	MkDir(p string) error
 	SaveContainerLogs(containerId, p string) error
+	StreamContainerLogs(ctx context.Context, containerId, p string) error
 	Archive(p string) (io.ReadCloser, error)
 	Delete(p string) error
 	Scope(p string) WorkspaceFS
@@ -32,6 +34,10 @@ func (f *ScopedFS) MkDir(p string) error {
 
 func (f *ScopedFS) SaveContainerLogs(containerId, p string) error {
 	return f.Parent.SaveContainerLogs(containerId, path.Join(f.Prefix, p))
+}
+
+func (f *ScopedFS) StreamContainerLogs(ctx context.Context, containerId, p string) error {
+	return f.Parent.StreamContainerLogs(ctx, containerId, path.Join(f.Prefix, p))
 }
 
 func (f *ScopedFS) Archive(p string) (io.ReadCloser, error) {

@@ -1,6 +1,7 @@
 package local
 
 import (
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -37,6 +38,19 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 		cmd.Stdout = out
 		cmd.Stderr = out
 	}
+	return cmd.Run()
+}
+
+func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) error {
+	out, err := os.Create(f.HostPath(p))
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	cmd := exec.CommandContext(ctx, "docker", "logs", "--follow", "--timestamps", containerId)
+	cmd.Stdout = out
+	cmd.Stderr = out
 	return cmd.Run()
 }
 

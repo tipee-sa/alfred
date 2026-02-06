@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"io"
 	"log/slog"
 	"time"
 
@@ -25,8 +26,10 @@ func (ns NodeStatus) AsProto() proto.NodeStatus_Status {
 }
 
 type RunTaskConfig struct {
-	ArtifactPreserver ArtifactPreserver
-	SecretLoader      SecretLoader
+	ArtifactPreserver   ArtifactPreserver
+	SecretLoader        SecretLoader
+	OnWorkspaceReady    func(archiver func() (io.ReadCloser, error))
+	OnWorkspaceTeardown func()
 }
 
 type Node interface {
