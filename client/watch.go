@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/ui"
 	"github.com/gammadia/alfred/proto"
 	"github.com/rivo/uniseg"
@@ -79,7 +80,8 @@ var watchCmd = &cobra.Command{
 
 		var lastMsg *proto.JobStatus
 		var lastTasks []string
-		var statsLineCount int
+		var displayLines int
+		var started bool
 
 		renderTimestamp := func() string {
 			msg := lastMsg
@@ -167,28 +169,19 @@ var watchCmd = &cobra.Command{
 			return fmt.Sprintf("Job '%s' running (%s%d, %s)", args[0], emoji("📝"), len(lastTasks), timestamp)
 		}
 
-		// eraseStatsLines clears the task list lines displayed below the spinner.
-		// Must be called while holding the spinner lock.
-		eraseStatsLines := func() {
-			if statsLineCount == 0 {
-				return
+		render := func() {
+			if displayLines > 0 {
+				fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", displayLines)
 			}
-			for i := 0; i < statsLineCount; i++ {
-				fmt.Fprint(os.Stderr, "\n\033[2K")
+			timestamp := renderTimestamp()
+			stats := renderStats()
+			header := headerMsg(timestamp)
+			output := header
+			if stats != "" {
+				output += "\n" + stats
 			}
-			fmt.Fprintf(os.Stderr, "\033[%dA", statsLineCount)
-			statsLineCount = 0
-		}
-
-		// writeStatsLines prints the task list below the spinner.
-		// Must be called while holding the spinner lock.
-		writeStatsLines := func(stats string) {
-			if stats == "" {
-				return
-			}
-			fmt.Fprint(os.Stderr, "\n"+stats)
-			statsLineCount = strings.Count(stats, "\n") + 1
-			fmt.Fprintf(os.Stderr, "\033[%dA", statsLineCount)
+			fmt.Fprint(os.Stderr, output)
+			displayLines = strings.Count(output, "\n")
 		}
 
 		type recvResult struct {
@@ -208,43 +201,52 @@ var watchCmd = &cobra.Command{
 
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
+		defer fmt.Fprint(os.Stderr, "\033[?25h")
 
 		for {
 			select {
 			case result := <-msgCh:
 				if result.err != nil {
 					if result.err == io.EOF {
-						spinner.Lock()
-						eraseStatsLines()
-						spinner.Unlock()
+						if started {
+							if displayLines > 0 {
+								fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", displayLines)
+							}
+							fmt.Fprint(os.Stderr, "\033[?25h")
+						} else {
+							spinner.FinalMSG = ""
+							spinner.Stop()
+						}
 						stats := renderStats()
 						timestamp := renderTimestamp()
-						spinner.Success(fmt.Sprintf("Job '%s' completed (%s%d, %s)\n%s", args[0], emoji("📝"), len(lastTasks), timestamp, stats))
+						fmt.Fprintf(os.Stderr, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), args[0], emoji("📝"), len(lastTasks), timestamp, stats)
 						return nil
 					}
-					spinner.Lock()
-					eraseStatsLines()
-					spinner.Unlock()
-					spinner.Fail()
+					if started {
+						if displayLines > 0 {
+							fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", displayLines)
+						}
+						fmt.Fprint(os.Stderr, "\033[?25h")
+						fmt.Fprintf(os.Stderr, "%s Waiting for job data\n", color.HiRedString("✗"))
+					} else {
+						spinner.Fail()
+					}
 					return result.err
 				}
 				lastMsg = result.msg
-				stats := renderStats()
-				timestamp := renderTimestamp()
-				spinner.Lock()
-				eraseStatsLines()
-				spinner.Suffix = " " + headerMsg(timestamp)
-				writeStatsLines(stats)
-				spinner.Unlock()
+				if !started {
+					spinner.FinalMSG = ""
+					spinner.Stop()
+					started = true
+					fmt.Fprint(os.Stderr, "\033[?25l")
+				}
+				render()
 
 			case <-ticker.C:
-				if lastMsg == nil {
+				if !started {
 					continue
 				}
-				timestamp := renderTimestamp()
-				spinner.Lock()
-				spinner.Suffix = " " + headerMsg(timestamp)
-				spinner.Unlock()
+				render()
 			}
 		}
 	},
