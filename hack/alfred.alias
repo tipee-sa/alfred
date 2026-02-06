@@ -1,1 +1,1 @@
-alias alfred="make bin/alfred && bin/alfred"
+alias alfred="just build-client && bin/alfred"

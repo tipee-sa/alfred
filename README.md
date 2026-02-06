@@ -26,9 +26,9 @@ Run `alfred --help` to see the list of available commands and options.
 
 ### Required tools
 
-- `make`
+- [Just](https://github.com/casey/just) (command runner)
 - [Go 1.21+](https://go.dev/doc/install)
-- [Reflex](https://github.com/cespare/reflex)
+- [Reflex](https://github.com/cespare/reflex) (optional, for auto-reload during development)
   - `go install github.com/cespare/reflex@latest`
 - [Protocol Buffer](https://grpc.io/docs/protoc-installation/) (needed for [gRPC](https://grpc.io/))
   - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/latest) archive, unpack it
@@ -45,13 +45,12 @@ Run `alfred --help` to see the list of available commands and options.
 
 Run the server:
 ```shell
-make bin/alfred-server
-bin/alfred-server [options...]
+just server
 ```
 
-Run the server (with auto-reload):
+Run a test job against the local server:
 ```shell
-make run-server
+just run
 ```
 
 #### Remote configuration
