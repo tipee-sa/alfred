@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -67,23 +68,31 @@ var watchCmd = &cobra.Command{
 			return fmt.Sprintf("%s%s (%s%d)", strings.Join(nItems, " "), lo.Ternary(partial, " …", ""), emoji("📝"), nbItems)
 		}
 
-		var stats, timestamp string
-		var tasks []string
+		// Job header: <1h ⏱️ / 1-2h 🐢 / 2h+ 🧟
+		jobSlowThreshold := lo.Must(time.ParseDuration("1h"))
+		jobVerySlowThreshold := lo.Must(time.ParseDuration("2h"))
+		// Task duration: 30-60m 🐢 / 1h+ 🧟
+		taskSlowThreshold := lo.Must(time.ParseDuration("30m"))
+		taskVerySlowThreshold := lo.Must(time.ParseDuration("1h"))
+		// Queued task: 2h+ 😴
+		taskQueuedThreshold := lo.Must(time.ParseDuration("2h"))
 
-		someTime := lo.Must(time.ParseDuration("30m"))
-		aLongTime := lo.Must(time.ParseDuration("2h"))
-		aVeryLongTime := lo.Must(time.ParseDuration("4h"))
+		var lastMsg *proto.JobStatus
+		var lastTasks []string
+		var statsLineCount int
 
-		for {
-			msg, err := c.Recv()
-			if err != nil {
-				if err == io.EOF {
-					spinner.Success(fmt.Sprintf("Job '%s' completed (%s%d, %s)\n%s", args[0], emoji("📝"), len(tasks), timestamp, stats))
-					return nil
-				}
-				spinner.Fail()
-				return err
+		renderTimestamp := func() string {
+			msg := lastMsg
+			if msg.CompletedAt != nil {
+				return emoji("🏁") + fmt.Sprintf("%s", msg.CompletedAt.AsTime().Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second))
 			}
+			jobRunningFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second)
+			jobRunningForEmoji := lo.Ternary(jobRunningFor >= jobSlowThreshold, lo.Ternary(jobRunningFor >= jobVerySlowThreshold, "🧟", "🐢"), "⏱️")
+			return emoji(jobRunningForEmoji) + fmt.Sprintf("%s", jobRunningFor)
+		}
+
+		renderStats := func() string {
+			msg := lastMsg
 
 			queued := []string{}
 			running := []string{}
@@ -92,7 +101,7 @@ var watchCmd = &cobra.Command{
 			failures := []string{}
 			completed := []string{}
 
-			tasks = lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return t.Name })
+			lastTasks = lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return t.Name })
 			for _, t := range msg.Tasks {
 				label := t.Name
 
@@ -103,12 +112,12 @@ var watchCmd = &cobra.Command{
 					} else {
 						taskRunningFor = time.Since(t.StartedAt.AsTime()).Truncate(time.Minute)
 					}
-					if taskRunningFor >= someTime {
-						label += fmt.Sprintf(" (%s%s)", emoji(lo.Ternary(taskRunningFor >= aLongTime, "🧟", "🐢")), taskRunningFor)
+					if taskRunningFor >= taskSlowThreshold {
+						label += fmt.Sprintf(" (%s%s)", emoji(lo.Ternary(taskRunningFor >= taskVerySlowThreshold, "🧟", "🐢")), taskRunningFor)
 					}
 				} else {
 					taskQueuedFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Minute)
-					if taskQueuedFor >= aVeryLongTime {
+					if taskQueuedFor >= taskQueuedThreshold {
 						label += fmt.Sprintf(" (%s%s)", emoji("😴"), taskQueuedFor)
 					}
 				}
@@ -151,17 +160,92 @@ var watchCmd = &cobra.Command{
 				statItems = append(statItems, emoji("✅")+itemsPrinter(completed, true))
 			}
 
-			stats = strings.Join(statItems, "\n")
+			return strings.Join(statItems, "\n")
+		}
 
-			if msg.CompletedAt != nil {
-				timestamp = emoji("🏁") + fmt.Sprintf("%s", msg.CompletedAt.AsTime().Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second))
-			} else {
-				jobRunningFor := time.Since(msg.ScheduledAt.AsTime()).Truncate(time.Second)
-				jobRunningForEmoji := lo.Ternary(jobRunningFor >= aLongTime, lo.Ternary(jobRunningFor >= aVeryLongTime, "🧟", "🐢"), "⏱️")
-				timestamp = emoji(jobRunningForEmoji) + fmt.Sprintf("%s", jobRunningFor)
+		headerMsg := func(timestamp string) string {
+			return fmt.Sprintf("Job '%s' running (%s%d, %s)", args[0], emoji("📝"), len(lastTasks), timestamp)
+		}
+
+		// eraseStatsLines clears the task list lines displayed below the spinner.
+		// Must be called while holding the spinner lock.
+		eraseStatsLines := func() {
+			if statsLineCount == 0 {
+				return
 			}
+			for i := 0; i < statsLineCount; i++ {
+				fmt.Fprint(os.Stderr, "\n\033[2K")
+			}
+			fmt.Fprintf(os.Stderr, "\033[%dA", statsLineCount)
+			statsLineCount = 0
+		}
 
-			spinner.UpdateMessage(fmt.Sprintf("Job '%s' running (%s%d, %s)\n%s", args[0], emoji("📝"), len(tasks), timestamp, stats))
+		// writeStatsLines prints the task list below the spinner.
+		// Must be called while holding the spinner lock.
+		writeStatsLines := func(stats string) {
+			if stats == "" {
+				return
+			}
+			fmt.Fprint(os.Stderr, "\n"+stats)
+			statsLineCount = strings.Count(stats, "\n") + 1
+			fmt.Fprintf(os.Stderr, "\033[%dA", statsLineCount)
+		}
+
+		type recvResult struct {
+			msg *proto.JobStatus
+			err error
+		}
+		msgCh := make(chan recvResult, 1)
+		go func() {
+			for {
+				msg, err := c.Recv()
+				msgCh <- recvResult{msg, err}
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case result := <-msgCh:
+				if result.err != nil {
+					if result.err == io.EOF {
+						spinner.Lock()
+						eraseStatsLines()
+						spinner.Unlock()
+						stats := renderStats()
+						timestamp := renderTimestamp()
+						spinner.Success(fmt.Sprintf("Job '%s' completed (%s%d, %s)\n%s", args[0], emoji("📝"), len(lastTasks), timestamp, stats))
+						return nil
+					}
+					spinner.Lock()
+					eraseStatsLines()
+					spinner.Unlock()
+					spinner.Fail()
+					return result.err
+				}
+				lastMsg = result.msg
+				stats := renderStats()
+				timestamp := renderTimestamp()
+				spinner.Lock()
+				eraseStatsLines()
+				spinner.Suffix = " " + headerMsg(timestamp)
+				writeStatsLines(stats)
+				spinner.Unlock()
+
+			case <-ticker.C:
+				if lastMsg == nil {
+					continue
+				}
+				timestamp := renderTimestamp()
+				spinner.Lock()
+				spinner.Suffix = " " + headerMsg(timestamp)
+				spinner.Unlock()
+			}
 		}
 	},
 }
