@@ -10,6 +10,14 @@ import (
 	goproto "google.golang.org/protobuf/proto"
 )
 
+func (s *server) CancelJob(ctx context.Context, req *proto.CancelJobRequest) (*proto.CancelJobResponse, error) {
+	return &proto.CancelJobResponse{}, scheduler.CancelJob(req.Name)
+}
+
+func (s *server) CancelTask(ctx context.Context, req *proto.CancelTaskRequest) (*proto.CancelTaskResponse, error) {
+	return &proto.CancelTaskResponse{}, scheduler.CancelTask(req.Job, req.Task)
+}
+
 func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) (*proto.ScheduleJobResponse, error) {
 	jobName, err := scheduler.Schedule(&schedulerpkg.Job{
 		Job:         in.Job,

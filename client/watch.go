@@ -9,9 +9,15 @@ import (
 	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/ui"
 	"github.com/gammadia/alfred/proto"
+	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+func init() {
+	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when any task fails (excludes exit 42)")
+	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks on any non-zero exit (including exit 42)")
+}
 
 var watchCmd = &cobra.Command{
 	Use:   "watch [JOB]",
@@ -19,6 +25,9 @@ var watchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
+		abortOnFailure := lo.Must(cmd.Flags().GetBool("abort-on-failure"))
+		abortOnError := lo.Must(cmd.Flags().GetBool("abort-on-error"))
+
 		c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: args[0]})
 		if err != nil {
 			return err
@@ -115,6 +124,21 @@ var watchCmd = &cobra.Command{
 					spinner.Stop()
 					started = true
 					fmt.Fprint(os.Stderr, "\033[?25l")
+				}
+				if abortOnFailure || abortOnError {
+					for _, t := range result.msg.Tasks {
+						if t.Status == proto.TaskStatus_FAILED {
+							shouldAbort := abortOnError || (abortOnFailure && (t.ExitCode == nil || *t.ExitCode != 42))
+							if shouldAbort {
+								if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
+									fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
+								} else {
+									abortOnFailure, abortOnError = false, false
+								}
+								break
+							}
+						}
+					}
 				}
 				render()
 
