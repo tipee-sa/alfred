@@ -36,7 +36,8 @@ func init() {
 // to serverStatus, ensuring consistent state updates. For each event it:
 // 1. Acquires serverStatusMutex (write) and updates serverStatus
 // 2. Acquires clientListenersMutex (read) and forwards the event to matching client watchers
-// This goroutine exits when the channel is closed (scheduler shutdown closes s.events).
+// This goroutine blocks forever once the scheduler shuts down (the subscriber channel is
+// never closed), but that's fine — the process is exiting and the runtime collects it.
 func listenEvents(c <-chan schedulerpkg.Event) {
        for event := range c { // exits when channel is closed
 		serverStatusMutex.Lock()
@@ -171,7 +172,13 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 			if filter != nil && !filter(event) {
 				continue
 			}
-			channel <- event
+			// Non-blocking send: drop events if the client's buffer is full.
+			// This prevents a slow client from freezing all event processing.
+			select {
+			case channel <- event:
+			default:
+				log.Debug("Client listener queue full, dropping event")
+			}
 		}
 		clientListenersMutex.RUnlock()
 	}

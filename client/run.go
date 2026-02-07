@@ -129,12 +129,17 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 			n, err := io.ReadFull(reader, chunk)
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 				if err == io.EOF {
+					// Pipe closed: check if the subprocess succeeded before telling the server we're done.
+					if err := cmd.Wait(); err != nil {
+						return fmt.Errorf("'docker save | zstd' failed for image '%s': %w", image, err)
+					}
 					return c.Send(&proto.LoadImageMessage{
 						Message: &proto.LoadImageMessage_Done_{
 							Done: &proto.LoadImageMessage_Done{},
 						},
 					})
 				} else {
+					cmd.Wait() // reap the subprocess
 					return fmt.Errorf("failed to read docker image chunk: %w", err)
 				}
 			} else {
@@ -146,6 +151,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 						},
 					},
 				}); err != nil {
+					cmd.Wait() // reap the subprocess
 					return fmt.Errorf("failed to send docker image chunk to server: %w", err)
 				}
 			}

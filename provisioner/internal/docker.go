@@ -402,10 +402,10 @@ func startAndWaitForService(
 		}
 
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
 		healthCheckLog.Debug("Running health check", "cmd", healthCheckCmd)
 		attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
 		if err != nil {
+			cancel()
 			return fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
 		}
 
@@ -422,16 +422,19 @@ func startAndWaitForService(
 		// Drain stdout to "wait" for the exec to complete. If the monitor goroutine
 		// closed the reader due to timeout, err is non-nil but we ignore it.
 		if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut.Load() {
+			cancel()
 			return fmt.Errorf("failed during docker exec for service '%s': %w", service.Name, err)
 		}
 
 		if !healthCheckTimedOut.Load() {
 			inspect, err := docker.ContainerExecInspect(ctx, exec.ID)
 			if err != nil {
+				cancel()
 				return fmt.Errorf("failed to inspect docker exec for service '%s': %w", service.Name, err)
 			}
 			if inspect.ExitCode == 0 {
 				healthCheckLog.Debug("Service is ready")
+				cancel()
 				return nil
 			}
 
@@ -439,6 +442,10 @@ func startAndWaitForService(
 		} else {
 			healthCheckLog.Debug("Service health check timed out, retrying...")
 		}
+
+		// Cancel the context for this iteration before the next retry,
+		// instead of deferring to function return (which would accumulate).
+		cancel()
 	}
 
 	return fmt.Errorf("failed health check for service '%s'", service.Name)
