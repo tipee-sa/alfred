@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,13 +118,22 @@ func RunContainer(
 			serviceLog.Debug("Service image already on node")
 		}
 
+		tmpfs := map[string]string{}
+		for _, t := range service.Tmpfs {
+			path, opts, _ := strings.Cut(t, ":")
+			tmpfs[path] = opts
+		}
+
 		resp, err := docker.ContainerCreate(
 			ctx,
 			&container.Config{
 				Image: service.Image,
+				Cmd:   service.Command,
 				Env:   env,
 			},
-			&container.HostConfig{},
+			&container.HostConfig{
+				Tmpfs: tmpfs,
+			},
 			&network.NetworkingConfig{
 				EndpointsConfig: map[string]*network.EndpointSettings{
 					networkName: {

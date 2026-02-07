@@ -90,8 +90,10 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 
 	for name, service := range jobfile.Services {
 		jobService := &proto.Job_Service{
-			Name:  name,
-			Image: service.Image,
+			Name:    name,
+			Image:   service.Image,
+			Command: service.Command,
+			Tmpfs:   service.Tmpfs,
 			Env: lo.MapToSlice(service.Env, func(key string, value string) *proto.Job_Env {
 				return &proto.Job_Env{
 					Key:   key,

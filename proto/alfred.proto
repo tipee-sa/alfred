@@ -30,6 +30,8 @@ message Job {
         string image = 2;
         repeated Env env = 3;
         optional Health health = 4;
+        repeated string command = 5;
+        repeated string tmpfs = 6;
 
         message Health {
             string cmd = 1;

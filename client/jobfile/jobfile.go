@@ -30,9 +30,11 @@ type JobfileImage struct {
 }
 
 type JobfileService struct {
-	Image  string
-	Env    map[string]string
-	Health JobfileServiceHealth
+	Image   string
+	Command []string
+	Tmpfs   []string
+	Env     map[string]string
+	Health  JobfileServiceHealth
 }
 
 type JobfileServiceHealth struct {
