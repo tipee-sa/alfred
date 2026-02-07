@@ -3,12 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
-	"github.com/gammadia/alfred/server/config"
 	"io"
 	"os"
 	"path"
 
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/config"
+	"github.com/gammadia/alfred/server/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -25,10 +26,11 @@ func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.
 			return fmt.Errorf("failed to open artifact file: %w", err)
 		}
 		reader = file
-	} else if liveReader, err := scheduler.ArchiveLiveArtifact(req.Job, req.Task); err == nil {
+	} else if liveReader, liveErr := scheduler.ArchiveLiveArtifact(req.Job, req.Task); liveErr == nil {
 		// Running task: stream live snapshot from workspace
 		reader = liveReader
 	} else {
+		log.Warn("Artifact not found", "job", req.Job, "task", req.Task, "liveError", liveErr)
 		return status.Errorf(codes.NotFound, "artifact not found")
 	}
 	defer reader.Close()
