@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/api/types/filters"
@@ -410,21 +411,21 @@ func startAndWaitForService(
 
 		// Monitor goroutine: when the timeout fires, close the attach reader to unblock
 		// io.Copy below. Without this, io.Copy would block indefinitely if the health
-		// check command hangs. The flag distinguishes timeout-induced errors from real ones.
-		healthCheckTimedOut := false
+		// check command hangs. The atomic bool distinguishes timeout-induced errors from real ones.
+		var healthCheckTimedOut atomic.Bool
 		go func() {
-			<-execCtx.Done()        // blocks until timeout or parent cancellation
-			healthCheckTimedOut = true
-			attach.Close()          // forces io.Copy to return with an error
+			<-execCtx.Done()             // blocks until timeout or parent cancellation
+			healthCheckTimedOut.Store(true)
+			attach.Close()               // forces io.Copy to return with an error
 		}()
 
 		// Drain stdout to "wait" for the exec to complete. If the monitor goroutine
 		// closed the reader due to timeout, err is non-nil but we ignore it.
-		if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut {
+		if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut.Load() {
 			return fmt.Errorf("failed during docker exec for service '%s': %w", service.Name, err)
 		}
 
-		if !healthCheckTimedOut {
+		if !healthCheckTimedOut.Load() {
 			inspect, err := docker.ContainerExecInspect(ctx, exec.ID)
 			if err != nil {
 				return fmt.Errorf("failed to inspect docker exec for service '%s': %w", service.Name, err)
