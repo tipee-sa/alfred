@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/gammadia/alfred/client/ui"
 	"github.com/spf13/cobra"
@@ -37,7 +38,22 @@ var selfUpdateCmd = &cobra.Command{
 
 		spinner := ui.NewSpinner(fmt.Sprintf("Downloading %s", url))
 
-		resp, err := http.Get(url)
+		// Extract new version from the GitHub redirect URL (e.g. .../releases/download/1.2.3/alfred-...)
+		var newVersion string
+		httpClient := &http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				parts := strings.Split(req.URL.Path, "/")
+				for i, part := range parts {
+					if part == "download" && i+1 < len(parts) {
+						newVersion = parts[i+1]
+						break
+					}
+				}
+				return nil
+			},
+		}
+
+		resp, err := httpClient.Get(url)
 		if err != nil {
 			spinner.Fail()
 			return fmt.Errorf("failed to download update: %w", err)
@@ -73,7 +89,11 @@ var selfUpdateCmd = &cobra.Command{
 			return fmt.Errorf("failed to replace binary: %w", err)
 		}
 
-		spinner.Success(fmt.Sprintf("Updated %s", execPath))
+		msg := fmt.Sprintf("Updated %s", execPath)
+		if newVersion != "" {
+			msg = fmt.Sprintf("Updated %s from %s to %s", execPath, version, newVersion)
+		}
+		spinner.Success(msg)
 		return nil
 	},
 }
