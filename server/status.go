@@ -10,9 +10,17 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// serverStatus is the in-memory state reconstructed from the scheduler event stream.
+// It's the single source of truth for all gRPC read handlers (WatchJob, WatchJobs, etc.).
+// Protected by serverStatusMutex: listenEvents writes, gRPC handlers read.
 var serverStatus *proto.Status
 var serverStatusMutex sync.RWMutex
 
+// clientListeners maps each connected gRPC watcher to its event filter.
+// When listenEvents processes an event, it forwards it to all matching listeners.
+// Protected by clientListenersMutex (write: addClientListener, read: listenEvents).
+//
+// Lock ordering (to prevent deadlock): always serverStatusMutex BEFORE clientListenersMutex.
 var clientListeners = map[chan schedulerpkg.Event]ClientListenerFilter{}
 var clientListenersMutex sync.RWMutex
 
@@ -24,12 +32,13 @@ func init() {
 	serverStatus.Scheduler = &proto.Status_Scheduler{}
 }
 
+// listenEvents runs as a dedicated goroutine (started in main.go). It's the only writer
+// to serverStatus, ensuring consistent state updates. For each event it:
+// 1. Acquires serverStatusMutex (write) and updates serverStatus
+// 2. Acquires clientListenersMutex (read) and forwards the event to matching client watchers
+// This goroutine exits when the channel is closed (scheduler shutdown closes s.events).
 func listenEvents(c <-chan schedulerpkg.Event) {
-	//eventLogger := log.Base.With("component", "events")
-	for event := range c {
-		// TODO: fix serialization of payload
-		//eventLogger.Info(reflect.TypeOf(event).Name(), "payload", event)
-
+       for event := range c { // exits when channel is closed
 		serverStatusMutex.Lock()
 
 		switch event := event.(type) {
@@ -168,6 +177,10 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 	}
 }
 
+// addClientListener registers a new event listener with an optional filter.
+// Returns a buffered channel (1024) and a cancel function that removes the listener.
+// The cancel function MUST be called (typically via defer) when the gRPC handler exits,
+// otherwise the listener leaks and listenEvents keeps sending to it forever.
 func addClientListener(filter ClientListenerFilter) (events chan schedulerpkg.Event, cancel func()) {
 	clientListenersMutex.Lock()
 	defer clientListenersMutex.Unlock()

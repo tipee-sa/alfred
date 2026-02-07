@@ -13,32 +13,50 @@ import (
 	"github.com/samber/lo"
 )
 
+// Scheduler orchestrates task scheduling using a single-goroutine event loop (Run).
+// All state mutations (tasksQueue, nodes, nodesQueue) happen exclusively in Run(),
+// avoiding races. Background goroutines (watchTask/Node*) communicate back via
+// channels and requestTick() — never by mutating scheduler state directly.
 type Scheduler struct {
 	provisioner Provisioner
 	config      Config
 	log         *slog.Logger
 
-	input        chan *Job
+	// input receives jobs from Schedule(). Unbuffered: Schedule() blocks until Run() reads it.
+	input chan *Job
+	// tickRequests is buffered (capacity 1) to coalesce multiple scheduling requests into one.
+	// Multiple goroutines call requestTick() concurrently; only one pending tick is needed.
 	tickRequests chan any
-	deferred     chan func()
+	// deferred receives functions to execute on the main Run() goroutine after a delay.
+	// Used by after() to safely mutate state from timer callbacks without races.
+	deferred chan func()
 
+	// tasksQueue and nodes are only accessed from Run() — no mutex needed.
 	tasksQueue []*Task
 	nodes      []*nodeState
 
 	nodesQueue            []*nodeState
 	earliestNextNodeStart time.Time
 
-	events         chan Event
+	// events is a buffered channel (capacity 64) feeding forwardEvents(), which distributes
+	// to all subscribers. The buffer prevents broadcast() from blocking the main loop.
+	events chan Event
+	// listeners is the set of subscriber channels. Protected by RWMutex because
+	// forwardEvents() reads it frequently while Subscribe/unsubscribe write infrequently.
 	listeners      map[chan Event]bool
 	listenersMutex sync.RWMutex
 
 	shutdown bool
-	stop     chan any
+	// stop is closed (not sent to) by Shutdown() to unblock the Run() select.
+	stop chan any
 
-	// WaitGroup tracking all running tasks
+	// wg tracks all running tasks. Incremented in Schedule() (one per task),
+	// decremented in watchTaskExecution() when each task finishes.
+	// Wait() blocks on this to ensure graceful shutdown waits for all tasks.
 	wg sync.WaitGroup
 
-	// Live artifact archivers for running tasks (key: "jobFQN/taskName")
+	// liveArchivers allows downloading artifacts from still-running tasks.
+	// Written by watchTaskExecution() callbacks, read by ArchiveLiveArtifact().
 	liveArchivers   map[string]func() (io.ReadCloser, error)
 	liveArchiversMu sync.RWMutex
 }
@@ -64,11 +82,18 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 	}
 
 	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
+
+	// forwardEvents runs as a long-lived goroutine that drains s.events and distributes
+	// each event to all registered listeners (non-blocking: drops if a listener is full).
+	// It exits when s.events is closed (in Shutdown).
 	go scheduler.forwardEvents()
 
 	return scheduler
 }
 
+// Subscribe returns a buffered event channel (capacity 1024) and an unsubscribe function.
+// The caller must call the unsubscribe function when done to prevent memory leaks.
+// Events are delivered best-effort: if the channel fills up, forwardEvents drops messages.
 func (s *Scheduler) Subscribe() (<-chan Event, func()) {
 	s.listenersMutex.Lock()
 	defer s.listenersMutex.Unlock()
@@ -106,6 +131,9 @@ func (s *Scheduler) forwardEvents() {
 	}
 }
 
+// Schedule is called from gRPC handlers (any goroutine). It increments the WaitGroup
+// for each task, then sends the job to the input channel. The send blocks until Run()
+// reads it, which is fine — Run() is always selecting on input.
 func (s *Scheduler) Schedule(job *Job) (string, error) {
 	job.id = namegen.Get()
 	nbTasks := len(job.Tasks)
@@ -118,29 +146,47 @@ func (s *Scheduler) Schedule(job *Job) (string, error) {
 	s.broadcast(EventJobScheduled{Job: job.FQN(), About: job.About, Tasks: job.Tasks})
 
 	s.wg.Add(nbTasks)
-	s.input <- job
+	s.input <- job // blocks until Run() reads it
 
 	return job.FQN(), nil
 }
 
+// Wait blocks until all tasks have finished (wg counter reaches 0) and the provisioner
+// has cleaned up. Called by the server during shutdown to ensure graceful completion.
 func (s *Scheduler) Wait() {
 	s.wg.Wait()
 	s.provisioner.Wait()
 }
 
+// Shutdown signals the scheduler to stop. Closing s.stop unblocks the select in Run().
+// A background goroutine waits for all tasks to finish, then closes s.events, which
+// causes forwardEvents() to exit (range over closed channel returns).
 func (s *Scheduler) Shutdown() {
 	close(s.stop)
 	go func() {
 		s.Wait()
-		close(s.events)
+		close(s.events) // forwardEvents() exits when this channel is closed
 	}()
 }
 
+// Run is the scheduler's main event loop. It runs in a single goroutine — all state
+// mutations (tasksQueue, nodes, nodesQueue) happen here, so no mutexes are needed for them.
+//
+// The loop blocks on select until one of four things happens:
+//   - A new job arrives (from Schedule via s.input)
+//   - A tick is requested (from any goroutine via requestTick)
+//   - A deferred function fires (from after() via s.deferred)
+//   - Shutdown is signaled (from Shutdown() closing s.stop)
+//
+// Background goroutines (watchTaskExecution, watchNodeProvisioning, watchNodeTermination)
+// communicate back to this loop only via requestTick() and broadcast() — never by
+// modifying scheduler fields directly.
 func (s *Scheduler) Run() {
 	s.log.Info("Scheduler is running")
 
 	for {
 		select {
+		// New job submitted: enqueue all its tasks and trigger a scheduling pass.
 		case job := <-s.input:
 			for _, name := range job.Tasks {
 				task := &Task{
@@ -155,18 +201,23 @@ func (s *Scheduler) Run() {
 			}
 			s.requestTick("job tasks should be scheduled")
 
+		// Scheduling pass: assign queued tasks to free node slots, then resize the node pool.
+		// Multiple requestTick() calls coalesce into a single pass (channel capacity 1).
 		case <-s.tickRequests:
-			// Attempt to schedule as many tasks as possible
 			for len(s.tasksQueue) > 0 {
 				if !s.scheduleTaskOnOnlineNode() {
-					break
+					break // no free slots available
 				}
 			}
 			s.resizePool()
 
+		// Delayed function execution: after() uses time.AfterFunc to send functions here
+		// so they run on this goroutine (safe to mutate scheduler state).
 		case f := <-s.deferred:
 			f()
 
+		// Shutdown: stop accepting jobs, shut down provisioner, terminate all online nodes
+		// concurrently, then exit the loop. The caller (server) waits via Wait().
 		case <-s.stop:
 			s.log.Info("Shutting down scheduler")
 			s.shutdown = true
@@ -221,7 +272,7 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 				nextTask.Log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
 				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: &NodeSlotTask{nextTask.Job.Name, nextTask.Name}})
 
-				go s.watchTaskExecution(nodeState, slot, nextTask)
+				go s.watchTaskExecution(nodeState, slot, nextTask) // async: blocks on RunTask
 				return true
 			}
 		}
@@ -241,7 +292,7 @@ func (s *Scheduler) resizePool() {
 		if nodeState.status == NodeStatusOnline && lo.EveryBy(nodeState.tasks, func(task *Task) bool {
 			return task == nil
 		}) {
-			go s.watchNodeTermination(nodeState)
+			go s.watchNodeTermination(nodeState) // async: blocks on node.Terminate()
 		}
 	}
 
@@ -367,6 +418,11 @@ func (s *Scheduler) resizePool() {
 	}
 }
 
+// watchNodeProvisioning runs in its own goroutine (spawned from resizePool).
+// It blocks on provisioner.Provision() which may take seconds (local Docker)
+// or minutes (OpenStack VM creation + SSH connection).
+// On success: marks node online and requests a tick so tasks can be assigned.
+// On failure: schedules a deferred discard after ProvisioningFailureCooldown.
 func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	nodeState.log.Info("Provisioning node")
 	nodeState.UpdateStatus(NodeStatusProvisioning)
@@ -375,6 +431,7 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
 		nodeState.UpdateStatus(NodeStatusFailedProvisioning)
 
+		// Schedule cleanup on the main goroutine (via deferred channel) after cooldown
 		s.after(s.config.ProvisioningFailureCooldown, func() {
 			nodeState.log.Info("Discarding failed node")
 			nodeState.UpdateStatus(NodeStatusDiscarded)
@@ -402,6 +459,12 @@ func (s *Scheduler) ArchiveLiveArtifact(jobFQN, taskName string) (io.ReadCloser,
 	return archiver()
 }
 
+// watchTaskExecution runs in its own goroutine (one per task, spawned from scheduleTaskOnOnlineNode).
+// It blocks on node.RunTask() for the entire duration of the task (which calls RunContainer
+// internally — creating network, starting services, running steps, archiving artifacts).
+//
+// Lifecycle: broadcast Running → block on RunTask → broadcast Failed/Completed →
+// atomic increment job counter (detect job completion) → free node slot → wg.Done → requestTick.
 func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Task) {
 	node := nodeState.node
 
@@ -409,6 +472,9 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	runConfig := RunTaskConfig{
 		ArtifactPreserver: s.config.ArtifactPreserver,
 		SecretLoader:      s.config.SecretLoader,
+		// Callbacks invoked by RunContainer when workspace is created/destroyed.
+		// They register/unregister a live archiver so clients can download artifacts
+		// from running tasks via ArchiveLiveArtifact().
 		OnWorkspaceReady: func(archiver func() (io.ReadCloser, error)) {
 			s.liveArchiversMu.Lock()
 			defer s.liveArchiversMu.Unlock()
@@ -424,6 +490,7 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	task.Log.Info("Running task")
 	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
 
+	// This blocks for the entire task duration (minutes to hours)
 	if exitCode, err := node.RunTask(task, runConfig); err != nil {
 		if exitCode == 42 {
 			task.Log.Info("Task ran successfully, but reported issues", "error", err)
@@ -436,18 +503,27 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 		s.broadcast(EventTaskCompleted{Job: task.Job.FQN(), Task: task.Name})
 	}
 
+	// Atomic counter: multiple watchTaskExecution goroutines may finish concurrently.
+	// When the last task of a job completes, broadcast EventJobCompleted.
 	if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
 		s.log.Info("Job completed", "name", task.Job.FQN())
 		s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
 	}
 
+	// Free the node slot so another task can use it
 	s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
 	nodeState.tasks[slot] = nil
 
-	s.wg.Done()
-	s.requestTick("executed task should give its slot to another task")
+	s.wg.Done()                                                        // matches wg.Add in Schedule()
+	s.requestTick("executed task should give its slot to another task") // trigger rescheduling
 }
 
+// watchNodeTermination runs in its own goroutine (spawned from resizePool when a node
+// has all empty slots). It blocks on node.Terminate() which cleans up the node (no-op
+// for local Docker, VM deletion for OpenStack).
+//
+// WARNING: this modifies s.nodes from a background goroutine. This is currently safe
+// because resizePool won't re-process a TERMINATING node, but it's a subtle invariant.
 func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 	nodeState.log.Info("Terminating node")
 	nodeState.UpdateStatus(NodeStatusTerminating)

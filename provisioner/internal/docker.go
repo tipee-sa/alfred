@@ -22,6 +22,18 @@ import (
 	"github.com/samber/lo"
 )
 
+// RunContainer is the core task execution engine. It orchestrates the full lifecycle:
+// network → workspace → services (parallel) → steps (sequential) → artifact archival → cleanup.
+//
+// Cleanup uses deferred calls in LIFO order. The order of defer registration matters:
+//   1. defer: remove network         (registered first → runs last)
+//   2. defer: remove workspace       (registered second → runs second-to-last)
+//   3. defer: OnWorkspaceTeardown    (unregisters live archiver)
+//   4. defer: remove service containers (one defer per service)
+//   5. (per step) defer: remove step container + cancel log streaming
+//
+// Artifact archival happens BEFORE workspace deletion (it's not deferred — it runs inline
+// after all steps). This is critical: archiving reads from /output which lives in the workspace.
 func RunContainer(
 	ctx context.Context,
 	docker *client.Client,
@@ -29,6 +41,8 @@ func RunContainer(
 	fs WorkspaceFS,
 	runConfig scheduler.RunTaskConfig,
 ) (int, error) {
+	// tryTo is a best-effort cleanup helper: logs errors but doesn't fail the task.
+	// Used in defers because cleanup should not mask the original error.
 	tryTo := func(what string, thunk func() error, args ...any) {
 		if err := thunk(); err != nil {
 			args = append([]any{"error", err}, args...)
@@ -43,6 +57,7 @@ func RunContainer(
 		return -1, fmt.Errorf("failed to create docker network: %w", err)
 	}
 	networkId := netResp.ID
+	// Uses context.Background() so cleanup isn't skipped if ctx is already cancelled
 	defer tryTo(
 		"remove Docker network",
 		func() error {
@@ -158,13 +173,16 @@ func RunContainer(
 		serviceContainers[service.Name] = resp.ID
 	}
 
-	// Start all services
+	// Start all services concurrently. Each service gets its own goroutine that blocks
+	// on startAndWaitForService (which starts the container and runs health check retries).
+	// WaitGroup ensures we don't proceed to step execution until all services are ready.
 	var wg sync.WaitGroup
+	// Buffered to len(services) so goroutines never block on send
 	serviceErrors := make(chan error, len(task.Job.Services))
 
 	wg.Add(len(task.Job.Services))
 	for _, service := range task.Job.Services {
-		go func(service *proto.Job_Service) {
+		go func(service *proto.Job_Service) { // explicit param to avoid loop variable capture
 			defer wg.Done()
 			serviceLog := task.Log.With("service", service.Name)
 			containerId := serviceContainers[service.Name]
@@ -187,19 +205,20 @@ func RunContainer(
 		}(service)
 	}
 
-	// Wait for all services to start
-	wg.Wait()
-	close(serviceErrors)
+	wg.Wait()          // block until all service goroutines finish
+	close(serviceErrors) // safe to close: all senders are done
 
 	if err := <-serviceErrors; err != nil {
 		return -1, fmt.Errorf("some service failed: %w", err)
 	}
 
-	// Create and execute steps containers
+	// Create and execute step containers sequentially.
+	// Each step runs in an immediately-invoked closure so that defer statements (container
+	// removal, log cancellation) execute between iterations instead of accumulating until
+	// RunContainer returns.
 	var status container.WaitResponse
 	var stepError error
 	for i, image := range task.Job.Steps {
-		// Using a func here so that defer are called between each iteration
 		stepError = func(stepIndex int) error {
 			secretEnv := []string{}
 			for _, secret := range task.Job.Secrets {
@@ -263,14 +282,17 @@ func RunContainer(
 				"step", stepIndex,
 			)
 
-			// Start main container
+			// ContainerWait returns two channels: wait (exit status) and errChan (Docker API error).
+			// We register the wait BEFORE starting so we don't miss the exit event.
 			wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
 			err = docker.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
 			if err != nil {
 				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
 
-			// Stream container logs to file in the background (available for live artifact downloads)
+			// Stream container logs to file in a background goroutine.
+			// Uses a child context so we can cancel log streaming when the container exits.
+			// logDone channel signals when the goroutine finishes (buffered so it never blocks).
 			logPath := fmt.Sprintf("/output/%s-step-%d.log", task.Name, stepIndex)
 			logCtx, cancelLogs := context.WithCancel(ctx)
 			defer cancelLogs()
@@ -279,19 +301,23 @@ func RunContainer(
 				logDone <- taskFs.StreamContainerLogs(logCtx, resp.ID, logPath)
 			}()
 
-			// Wait for the container to finish
+			// Wait for the container to finish. Two possible outcomes:
+			// 1. Container exits normally → wait receives the exit status
+			// 2. Docker API error → errChan receives the error
 			select {
 			case status = <-wait:
-				// Wait for log streaming to finish flushing
+				// Container exited. Wait for log streaming goroutine to flush remaining output.
+				// Only report log errors if they're genuine (not from our own cancellation).
 				if err := <-logDone; err != nil && logCtx.Err() == nil {
 					task.Log.Error("Failed to stream container logs", "error", err, "step", stepIndex)
 				}
 
-				// Container is done
 				if status.StatusCode != 0 {
 					return fmt.Errorf("step %d failed with status: %d", stepIndex, status.StatusCode)
 				}
 			case err := <-errChan:
+				// Docker API failed. Cancel log streaming and wait for the goroutine to exit
+				// (prevents goroutine leak).
 				cancelLogs()
 				<-logDone
 				return fmt.Errorf("failed while waiting for docker container for step %d: %w", stepIndex, err)
@@ -306,7 +332,8 @@ func RunContainer(
 		}
 	}
 
-	// Here we don't use defer because the task workspace is removed in a defer statement already
+	// Archive artifacts BEFORE returning (which triggers deferred workspace deletion).
+	// This is NOT deferred because it must run before the workspace defer that deletes /output.
 	tryTo(
 		"preserve artifact",
 		func() error {
@@ -381,13 +408,18 @@ func startAndWaitForService(
 			return fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
 		}
 
+		// Monitor goroutine: when the timeout fires, close the attach reader to unblock
+		// io.Copy below. Without this, io.Copy would block indefinitely if the health
+		// check command hangs. The flag distinguishes timeout-induced errors from real ones.
 		healthCheckTimedOut := false
 		go func() {
-			<-execCtx.Done()
+			<-execCtx.Done()        // blocks until timeout or parent cancellation
 			healthCheckTimedOut = true
-			attach.Close()
+			attach.Close()          // forces io.Copy to return with an error
 		}()
 
+		// Drain stdout to "wait" for the exec to complete. If the monitor goroutine
+		// closed the reader due to timeout, err is non-nil but we ignore it.
 		if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut {
 			return fmt.Errorf("failed during docker exec for service '%s': %w", service.Name, err)
 		}

@@ -23,7 +23,13 @@ import (
 var version, commit = "dev", "n/a"
 
 var dataRoot string
+
+// Global context for shutdown cascading. When cancel() is called (from signal handler),
+// all goroutines watching ctx.Done() begin their shutdown sequence.
 var ctx, cancel = context.WithCancel(context.Background())
+
+// wg tracks the two main goroutines: scheduler and gRPC server.
+// main() blocks on wg.Wait() and only exits when both are done.
 var wg sync.WaitGroup
 
 func main() {
@@ -68,26 +74,35 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Scheduler goroutine: Run() blocks in its event loop until Shutdown() is called.
+	// A companion goroutine waits for ctx cancellation, then orchestrates a graceful
+	// shutdown: Shutdown() signals the scheduler to stop, Wait() blocks until all
+	// running tasks complete, then wg.Done() unblocks main.
 	wg.Add(1)
 	go scheduler.Run()
 	go func() {
-		<-ctx.Done()
-		scheduler.Shutdown()
-		scheduler.Wait()
+		<-ctx.Done()         // triggered by cancel() in signal handler
+		scheduler.Shutdown() // closes scheduler's stop channel → Run() returns
+		scheduler.Wait()     // blocks until all tasks finish (wg inside scheduler)
 		wg.Done()
 	}()
 
-	// Listen for events from the scheduler
+	// listenEvents runs in its own goroutine, consuming scheduler events to:
+	// 1. Reconstruct serverStatus (the in-memory state used by all gRPC handlers)
+	// 2. Forward filtered events to connected client watchers
+	// It exits when the scheduler's event channel is closed (during Shutdown).
 	channel, unsubscribe := scheduler.Subscribe()
 	defer unsubscribe()
 	go listenEvents(channel)
 
-	// Start serving gRPC requests
+	// gRPC server goroutine. A nested goroutine watches for shutdown and calls
+	// GracefulStop(), which stops accepting new connections and waits for in-flight
+	// RPCs to complete. Then Serve() returns and wg.Done() unblocks main.
 	wg.Add(1)
 	go func() {
 		go func() {
-			<-ctx.Done()
-			s.GracefulStop()
+			<-ctx.Done()     // triggered by cancel() in signal handler
+			s.GracefulStop() // waits for in-flight RPCs to finish
 		}()
 
 		log.Info("Server listening", "address", lis.Addr())
@@ -98,19 +113,22 @@ func main() {
 		wg.Done()
 	}()
 
-	// Wait for shutdown before finishing the main goroutine
+	// Block until both scheduler and gRPC server goroutines have finished.
 	wg.Wait()
 	log.Info("Shutdown completed. Bye!")
 }
 
+// setupInterrupts handles Ctrl+C (SIGINT) with a double-tap pattern:
+// - First signal: calls cancel() which cascades shutdown through ctx.Done() to all goroutines
+// - Second signal: forces immediate exit (in case graceful shutdown hangs)
 func setupInterrupts() {
-	sig := make(chan os.Signal, 1)
+	sig := make(chan os.Signal, 1) // buffered: won't miss a signal while processing
 	signal.Notify(sig, os.Interrupt)
 
 	go func() {
 		<-sig
 		log.Info("Shutdown signal received, attempting graceful shutdown")
-		cancel()
+		cancel() // triggers ctx.Done() everywhere
 		<-sig
 		log.Warn("Second shutdown signal received, forcing exit")
 		os.Exit(1)

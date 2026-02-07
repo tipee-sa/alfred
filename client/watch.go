@@ -184,6 +184,10 @@ var watchCmd = &cobra.Command{
 			displayLines = strings.Count(output, "\n")
 		}
 
+		// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
+		// Without this, we couldn't multiplex between incoming messages and the ticker.
+		// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
+		// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
 		type recvResult struct {
 			msg *proto.JobStatus
 			err error
@@ -191,21 +195,24 @@ var watchCmd = &cobra.Command{
 		msgCh := make(chan recvResult, 1)
 		go func() {
 			for {
-				msg, err := c.Recv()
+				msg, err := c.Recv() // blocks until server sends or stream ends
 				msgCh <- recvResult{msg, err}
 				if err != nil {
-					return
+					return // EOF or error: stop reading
 				}
 			}
 		}()
 
+		// Ticker re-renders the display every second to update elapsed time counters
+		// (job duration, task duration) even when no new events arrive from the server.
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
-		defer fmt.Fprint(os.Stderr, "\033[?25h")
+		defer fmt.Fprint(os.Stderr, "\033[?25h") // always restore cursor visibility on exit
 
+		// Main event loop: blocks on select until either a message arrives or the ticker fires.
 		for {
 			select {
-			case result := <-msgCh:
+			case result := <-msgCh: // new message (or error/EOF) from gRPC stream
 				if result.err != nil {
 					if result.err == io.EOF {
 						if started {
@@ -242,9 +249,9 @@ var watchCmd = &cobra.Command{
 				}
 				render()
 
-			case <-ticker.C:
+			case <-ticker.C: // 1-second tick: re-render to update elapsed time display
 				if !started {
-					continue
+					continue // don't render before first message arrives
 				}
 				render()
 			}
