@@ -167,80 +167,23 @@ func RunContainer(
 		go func(service *proto.Job_Service) {
 			defer wg.Done()
 			serviceLog := task.Log.With("service", service.Name)
-
-			serviceLog.Debug("Starting service container")
 			containerId := serviceContainers[service.Name]
-			err := docker.ContainerStart(ctx, containerId, types.ContainerStartOptions{})
-			if err != nil {
-				serviceErrors <- fmt.Errorf("failed to start docker container for service '%s': %w", service.Name, err)
-				return
-			}
 
-			if service.Health == nil {
-				serviceLog.Debug("No health check defined, skipping...")
-				return
-			}
-
-			interval := lo.Ternary(service.Health.Interval != nil, service.Health.Interval.AsDuration(), 10*time.Second)
-			timeout := lo.Ternary(service.Health.Timeout != nil, service.Health.Timeout.AsDuration(), 5*time.Second)
-			retries := lo.Ternary(service.Health.Retries != nil, int(*service.Health.Retries), 3)
-
-			for i := 0; i < retries; i++ {
-				// Always wait 1 second before running the health check, and potentially more between retries
-				time.Sleep(lo.Ternary(i > 0, interval, 1*time.Second))
-
-				healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
-				healthCheckCmd := append([]string{service.Health.Cmd}, service.Health.Args...)
-
-				exec, err := docker.ContainerExecCreate(ctx, containerId, types.ExecConfig{
-					Cmd:          healthCheckCmd,
-					Env:          serviceEnv[service.Name],
-					AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
+			if err := startAndWaitForService(ctx, docker, service, containerId, serviceEnv[service.Name], serviceLog); err != nil {
+				// Fetch container logs to help diagnose the failure
+				logReader, logErr := docker.ContainerLogs(ctx, containerId, types.ContainerLogsOptions{
+					ShowStdout: true,
+					ShowStderr: true,
 				})
-				if err != nil {
-					serviceErrors <- fmt.Errorf("failed to create docker exec for service '%s': %w", service.Name, err)
-					return
-				}
-
-				execCtx, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-				healthCheckLog.Debug("Running health check", "cmd", healthCheckCmd)
-				attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
-				if err != nil {
-					serviceErrors <- fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
-					return
-				}
-
-				healthCheckTimedOut := false
-				go func() {
-					<-execCtx.Done()
-					healthCheckTimedOut = true
-					attach.Close()
-				}()
-
-				if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut {
-					serviceErrors <- fmt.Errorf("failed during docker exec for service '%s': %w", service.Name, err)
-					return
-				}
-
-				if !healthCheckTimedOut {
-					inspect, err := docker.ContainerExecInspect(ctx, exec.ID)
-					if err != nil {
-						serviceErrors <- fmt.Errorf("failed to inspect docker exec for service '%s': %w", service.Name, err)
-						return
+				if logErr == nil {
+					if logs, readErr := io.ReadAll(logReader); readErr == nil && len(logs) > 0 {
+						serviceLog.Warn("Service container logs", "logs", string(logs))
 					}
-					if inspect.ExitCode == 0 {
-						healthCheckLog.Debug("Service is ready")
-						return
-					}
-
-					healthCheckLog.Debug("Service health check unsuccessful, retrying...", "exitcode", inspect.ExitCode)
-				} else {
-					healthCheckLog.Debug("Service health check timed out, retrying...")
+					logReader.Close()
 				}
+
+				serviceErrors <- err
 			}
-
-			serviceErrors <- fmt.Errorf("failed health check for service '%s'", service.Name)
 		}(service)
 	}
 
@@ -389,4 +332,81 @@ func RunContainer(
 	}
 
 	return 0, nil
+}
+
+func startAndWaitForService(
+	ctx context.Context,
+	docker *client.Client,
+	service *proto.Job_Service,
+	containerId string,
+	env []string,
+	serviceLog *slog.Logger,
+) error {
+	serviceLog.Debug("Starting service container")
+	err := docker.ContainerStart(ctx, containerId, types.ContainerStartOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to start docker container for service '%s': %w", service.Name, err)
+	}
+
+	if service.Health == nil {
+		serviceLog.Debug("No health check defined, skipping...")
+		return nil
+	}
+
+	interval := lo.Ternary(service.Health.Interval != nil, service.Health.Interval.AsDuration(), 10*time.Second)
+	timeout := lo.Ternary(service.Health.Timeout != nil, service.Health.Timeout.AsDuration(), 5*time.Second)
+	retries := lo.Ternary(service.Health.Retries != nil, int(*service.Health.Retries), 3)
+
+	for i := 0; i < retries; i++ {
+		// Always wait 1 second before running the health check, and potentially more between retries
+		time.Sleep(lo.Ternary(i > 0, interval, 1*time.Second))
+
+		healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
+		healthCheckCmd := append([]string{service.Health.Cmd}, service.Health.Args...)
+
+		exec, err := docker.ContainerExecCreate(ctx, containerId, types.ExecConfig{
+			Cmd:          healthCheckCmd,
+			Env:          env,
+			AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create docker exec for service '%s': %w", service.Name, err)
+		}
+
+		execCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		healthCheckLog.Debug("Running health check", "cmd", healthCheckCmd)
+		attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
+		if err != nil {
+			return fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)
+		}
+
+		healthCheckTimedOut := false
+		go func() {
+			<-execCtx.Done()
+			healthCheckTimedOut = true
+			attach.Close()
+		}()
+
+		if _, err := io.Copy(io.Discard, attach.Reader); err != nil && !healthCheckTimedOut {
+			return fmt.Errorf("failed during docker exec for service '%s': %w", service.Name, err)
+		}
+
+		if !healthCheckTimedOut {
+			inspect, err := docker.ContainerExecInspect(ctx, exec.ID)
+			if err != nil {
+				return fmt.Errorf("failed to inspect docker exec for service '%s': %w", service.Name, err)
+			}
+			if inspect.ExitCode == 0 {
+				healthCheckLog.Debug("Service is ready")
+				return nil
+			}
+
+			healthCheckLog.Debug("Service health check unsuccessful, retrying...", "exitcode", inspect.ExitCode)
+		} else {
+			healthCheckLog.Debug("Service health check timed out, retrying...")
+		}
+	}
+
+	return fmt.Errorf("failed health check for service '%s'", service.Name)
 }
