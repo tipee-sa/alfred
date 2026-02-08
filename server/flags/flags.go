@@ -51,7 +51,7 @@ func init() {
 	flags.Duration(ProvisioningDelay, 20*time.Second, "how long to wait between provisioning nodes")
 	flags.Duration(ProvisioningFailureCooldown, 1*time.Minute, "how long to wait before retrying provisioning")
 	flags.String(ServerData, path.Join(workDir, "var", "server-data"), "data directory for server")
-	flags.Int(TasksPerNode, 2, "maximum number of tasks to run on a single node")
+	flags.Int(TasksPerNode, 2, "default number of tasks to run on a single node (overridden by jobfile)")
 
 	// Openstack
 	flags.String(OpenstackDockerHost, "", "docker host on the nodes")

@@ -1,7 +1,7 @@
 package scheduler
 
 type Provisioner interface {
-	Provision(nodeName string) (Node, error) // TODO: we need cancellation
+	Provision(nodeName string, flavor string) (Node, error) // TODO: we need cancellation
 	// Shutdown shuts down the provisioner, terminating all nodes.
 	Shutdown()
 	// Wait blocks until the provisioner has fully shut down.

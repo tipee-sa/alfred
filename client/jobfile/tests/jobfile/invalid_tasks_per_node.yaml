@@ -1,0 +1,6 @@
+version: "1"
+name: "test"
+tasks-per-node: -1
+steps:
+  - dockerfile: "a.dockerfile"
+    context: "."

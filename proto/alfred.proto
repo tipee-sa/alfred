@@ -31,6 +31,8 @@ message Job {
     repeated Env secrets = 5;
     repeated Service services = 6;
     repeated string tasks = 7;
+    string flavor = 8;
+    uint32 tasks_per_node = 9;
 
     message Service {
         string name = 1;

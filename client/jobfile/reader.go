@@ -60,6 +60,8 @@ func Read(file string, options ReadOptions) (job *proto.Job, renderedSource stri
 
 	job.Name = jobfile.Name
 	job.Tasks = jobfile.Tasks
+	job.Flavor = jobfile.Flavor
+	job.TasksPerNode = uint32(jobfile.TasksPerNode)
 	job.Steps = make([]string, len(jobfile.Steps))
 	for i, step := range jobfile.Steps {
 		if job.Steps[i], err = buildImage(

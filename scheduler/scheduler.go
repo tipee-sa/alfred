@@ -161,7 +161,15 @@ func (s *Scheduler) Schedule(job *Job) (string, error) {
 	job.id = namegen.Get()
 	nbTasks := len(job.Tasks)
 
-	s.log.Info("Scheduling job", "name", job.FQN(), "tasks", nbTasks)
+	// Normalize defaults: empty/zero means "use server default"
+	if job.Flavor == "" {
+		job.Flavor = s.config.DefaultFlavor
+	}
+	if job.TasksPerNode == 0 {
+		job.TasksPerNode = uint32(s.config.DefaultTasksPerNode)
+	}
+
+	s.log.Info("Scheduling job", "name", job.FQN(), "tasks", nbTasks, "flavor", job.Flavor, "tasksPerNode", job.TasksPerNode)
 	s.wg.Add(nbTasks)
 
 	select {
@@ -380,29 +388,36 @@ func splitTaskKey(key string) (jobFQN, taskName string, ok bool) {
 }
 
 func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
-	nextTask := s.tasksQueue[0]
-
-	for _, nodeState := range s.nodes {
-		if nodeState.status != NodeStatusOnline {
+	for _, ns := range s.nodes {
+		if ns.status != NodeStatusOnline {
 			continue
 		}
 
-		for slot, runningTask := range nodeState.tasks {
-			if runningTask == nil {
-				nodeState.tasks[slot] = nextTask
-				s.tasksQueue = s.tasksQueue[1:]
+		for slot, runningTask := range ns.tasks {
+			if runningTask != nil {
+				continue
+			}
 
-				nextTask.Log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
-				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: &NodeSlotTask{nextTask.Job.Name, nextTask.Name}})
+			// Find a queued task matching this node's type
+			for i, task := range s.tasksQueue {
+				if task.Job.Flavor != ns.flavor || int(task.Job.TasksPerNode) != ns.tasksPerNode {
+					continue
+				}
 
-				taskKey := nextTask.Job.FQN() + "/" + nextTask.Name
+				ns.tasks[slot] = task
+				s.tasksQueue = append(s.tasksQueue[:i], s.tasksQueue[i+1:]...)
+
+				task.Log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", ns.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
+				s.broadcast(EventNodeSlotUpdated{Node: ns.nodeName, Slot: slot, Task: &NodeSlotTask{task.Job.Name, task.Name}})
+
+				taskKey := task.Job.FQN() + "/" + task.Name
 				ctx, cancel := context.WithCancel(context.Background())
 
 				s.taskCancelsMu.Lock()
 				s.taskCancels[taskKey] = cancel
 				s.taskCancelsMu.Unlock()
 
-				go s.watchTaskExecution(ctx, cancel, taskKey, nodeState, slot, nextTask) // async: blocks on RunTask
+				go s.watchTaskExecution(ctx, cancel, taskKey, ns, slot, task) // async: blocks on RunTask
 				return true
 			}
 		}
@@ -411,98 +426,167 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 	return false
 }
 
+// nodeTypeKey identifies a (flavor, tasksPerNode) combination for node pool partitioning.
+type nodeTypeKey struct {
+	flavor       string
+	tasksPerNode int
+}
+
 func (s *Scheduler) resizePool() {
 	// Remove discarded nodes
 	s.nodes = lo.Filter(s.nodes, func(nodeState *nodeState, _ int) bool {
 		return nodeState.status != NodeStatusDiscarded
 	})
 
-	// Terminate nodes that have no more tasks running on them
-	for _, nodeState := range s.nodes {
-		if nodeState.status == NodeStatusOnline && lo.EveryBy(nodeState.tasks, func(task *Task) bool {
-			return task == nil
-		}) {
+	// Terminate nodes that have no more tasks running on them and no matching queued tasks
+	for _, ns := range s.nodes {
+		if ns.status != NodeStatusOnline {
+			continue
+		}
+		if !lo.EveryBy(ns.tasks, func(task *Task) bool { return task == nil }) {
+			continue
+		}
+
+		// Check if any queued task matches this node's type before terminating
+		hasMatchingTask := lo.SomeBy(s.tasksQueue, func(task *Task) bool {
+			return task.Job.Flavor == ns.flavor && int(task.Job.TasksPerNode) == ns.tasksPerNode
+		})
+		if !hasMatchingTask {
 			// Mark as terminating here (on the main goroutine) before spawning the
 			// background goroutine, to avoid a data race on nodeState.status.
-			nodeState.UpdateStatus(NodeStatusTerminating)
-			go s.watchNodeTermination(nodeState) // async: blocks on node.Terminate()
+			ns.UpdateStatus(NodeStatusTerminating)
+			go s.watchNodeTermination(ns) // async: blocks on node.Terminate()
 		}
 	}
 
-	// Make sure we need more nodes
+	// No queued tasks or at global node cap → prune queue and return
 	if len(s.tasksQueue) < 1 || len(s.nodes) >= s.config.MaxNodes {
 		s.emptyNodesQueue()
 		return
 	}
-	s.log.Debug("Need more nodes",
-		"tasksQueue", len(s.tasksQueue),
+
+	// Group queued tasks by (flavor, tasksPerNode) type
+	tasksByType := make(map[nodeTypeKey]int)
+	for _, task := range s.tasksQueue {
+		key := nodeTypeKey{flavor: task.Job.Flavor, tasksPerNode: int(task.Job.TasksPerNode)}
+		tasksByType[key]++
+	}
+
+	for key, taskCount := range tasksByType {
+		s.resizePoolForType(key.flavor, key.tasksPerNode, taskCount)
+	}
+
+	// Prune nodesQueue entries for types with zero remaining demand
+	s.nodesQueue = lo.Filter(s.nodesQueue, func(ns *nodeState, _ int) bool {
+		key := nodeTypeKey{flavor: ns.flavor, tasksPerNode: ns.tasksPerNode}
+		return tasksByType[key] > 0
+	})
+}
+
+func (s *Scheduler) resizePoolForType(flavor string, tasksPerNode int, queuedTaskCount int) {
+	// Count existing and provisioning nodes of this type
+	existingNodes := 0
+	provisioningNodes := 0
+	for _, ns := range s.nodes {
+		if ns.flavor != flavor || ns.tasksPerNode != tasksPerNode {
+			continue
+		}
+		existingNodes++
+		if ns.status == NodeStatusProvisioning {
+			provisioningNodes++
+		}
+	}
+
+	// Check global cap
+	if len(s.nodes) >= s.config.MaxNodes {
+		return
+	}
+
+	s.log.Debug("Need more nodes for type",
+		"flavor", flavor,
+		"tasksPerNode", tasksPerNode,
+		"queuedTasks", queuedTaskCount,
 		"maxNodes", s.config.MaxNodes,
-		"maxTasksPerNode", s.config.TasksPerNode,
-		"nodes", len(s.nodes),
+		"existingNodesForType", existingNodes,
+		"totalNodes", len(s.nodes),
 	)
+
+	nbNodesToCreate := func(incomingNodes int) int {
+		return internal.NbNodesToCreate(s.config.MaxNodes, tasksPerNode, queuedTaskCount, len(s.nodes), incomingNodes)
+	}
+
 	nodesToCreate := 0
 
 	// First, we check if provisioning nodes cover our needs
-	provisioningNodes := lo.Reduce(s.nodes, func(acc int, nodeState *nodeState, _ int) int {
-		return lo.Ternary(nodeState.status == NodeStatusProvisioning, acc+1, acc)
-	}, 0)
-	if nodesToCreate = s.nbNodesToCreate(provisioningNodes); nodesToCreate < 1 {
-		s.log.Debug("Provisioning nodes cover our needs", "needed", nodesToCreate, "provisioningNodes", provisioningNodes)
-		s.emptyNodesQueue()
-		// Here we don't need to remove extra provisioning machines, as they will be discarded as soon as they are online
+	if nodesToCreate = nbNodesToCreate(provisioningNodes); nodesToCreate < 1 {
+		s.log.Debug("Provisioning nodes cover our needs for type",
+			"flavor", flavor, "tasksPerNode", tasksPerNode,
+			"needed", nodesToCreate, "provisioningNodes", provisioningNodes,
+		)
+		s.removeAllQueuedNodesOfType(flavor, tasksPerNode)
 		return
 	}
-	s.log.Debug("Provisioning nodes are not enough", "needed", nodesToCreate, "provisioningNodes", provisioningNodes)
+	s.log.Debug("Provisioning nodes are not enough for type",
+		"flavor", flavor, "tasksPerNode", tasksPerNode,
+		"needed", nodesToCreate, "provisioningNodes", provisioningNodes,
+	)
 
 	// Then, we check if nodes in the queue that we can now provision cover our needs
 	queuedNodes := 0
 	provisioningQueueNodes := 0
-	for _, nodeState := range s.nodesQueue {
-		if time.Now().After(nodeState.earliestStart) {
-			nodeState.log.Info("Provisioning node from the queue")
-			nodeState.UpdateStatus(NodeStatusProvisioning)
+	for _, ns := range s.nodesQueue {
+		if ns.flavor != flavor || ns.tasksPerNode != tasksPerNode {
+			continue
+		}
 
-			s.nodesQueue = lo.Without(s.nodesQueue, nodeState)
-			s.nodes = append(s.nodes, nodeState)
-			go s.watchNodeProvisioning(nodeState)
+		if time.Now().After(ns.earliestStart) {
+			ns.log.Info("Provisioning node from the queue")
+			ns.UpdateStatus(NodeStatusProvisioning)
 
-			provisioningQueueNodes += 1
+			s.nodesQueue = lo.Without(s.nodesQueue, ns)
+			s.nodes = append(s.nodes, ns)
+			go s.watchNodeProvisioning(ns)
 
-			if nodesToCreate = s.nbNodesToCreate(provisioningNodes + provisioningQueueNodes); nodesToCreate < 1 {
-				s.log.Debug("Provisioning nodes from the queue cover our needs",
+			provisioningQueueNodes++
+
+			if nodesToCreate = nbNodesToCreate(provisioningNodes + provisioningQueueNodes); nodesToCreate < 1 {
+				s.log.Debug("Provisioning nodes from the queue cover our needs for type",
+					"flavor", flavor, "tasksPerNode", tasksPerNode,
 					"needed", nodesToCreate,
 					"provisioningNodes", provisioningNodes,
 					"provisioningQueueNodes", provisioningQueueNodes,
 				)
-				s.emptyNodesQueue()
+				s.removeAllQueuedNodesOfType(flavor, tasksPerNode)
 				return
-			} else {
-				s.log.Debug("Provisioning nodes from the queue are not enough",
-					"needed", nodesToCreate,
-					"provisioningNodes", provisioningNodes,
-					"provisioningQueueNodes", provisioningQueueNodes,
-				)
 			}
+			s.log.Debug("Provisioning nodes from the queue are not enough for type",
+				"flavor", flavor, "tasksPerNode", tasksPerNode,
+				"needed", nodesToCreate,
+				"provisioningNodes", provisioningNodes,
+				"provisioningQueueNodes", provisioningQueueNodes,
+			)
 		} else {
-			queuedNodes += 1
+			queuedNodes++
 		}
 	}
 
 	// Finally, we check if nodes queued in the future cover our needs
-	if nodesToCreate = s.nbNodesToCreate(provisioningNodes + provisioningQueueNodes + queuedNodes); nodesToCreate < 1 {
-		s.log.Debug("Provisioning nodes and queued nodes cover our needs",
+	if nodesToCreate = nbNodesToCreate(provisioningNodes + provisioningQueueNodes + queuedNodes); nodesToCreate < 1 {
+		s.log.Debug("Provisioning nodes and queued nodes cover our needs for type",
+			"flavor", flavor, "tasksPerNode", tasksPerNode,
 			"needed", nodesToCreate,
 			"provisioningNodes", provisioningNodes,
 			"provisioningQueueNodes", provisioningQueueNodes,
 			"queuedNodes", queuedNodes,
 		)
 		if nodesToCreate < 0 {
-			s.log.Debug("Remove extra nodes from the queue", "nodesToRemove", -nodesToCreate)
-			s.nodesQueue = s.nodesQueue[:len(s.nodesQueue)+nodesToCreate]
+			s.log.Debug("Remove extra queued nodes of type", "flavor", flavor, "tasksPerNode", tasksPerNode, "nodesToRemove", -nodesToCreate)
+			s.removeQueuedNodesOfType(flavor, tasksPerNode, -nodesToCreate)
 		}
 		return
 	}
-	s.log.Debug("Provisioning nodes and queued nodes are not enough",
+	s.log.Debug("Provisioning nodes and queued nodes are not enough for type",
+		"flavor", flavor, "tasksPerNode", tasksPerNode,
 		"needed", nodesToCreate,
 		"provisioningNodes", provisioningNodes,
 		"provisioningQueueNodes", provisioningQueueNodes,
@@ -515,6 +599,11 @@ func (s *Scheduler) resizePool() {
 	}
 
 	for i := 0; i < nodesToCreate; i++ {
+		// Respect global MaxNodes cap
+		if len(s.nodes)+len(s.nodesQueue) >= s.config.MaxNodes {
+			break
+		}
+
 		// Never queue the first node we create
 		queueNode := (len(s.nodes) > 0 || len(s.nodesQueue) > 0 || i > 0) && time.Now().Before(s.earliestNextNodeStart)
 
@@ -522,17 +611,19 @@ func (s *Scheduler) resizePool() {
 		ns := &nodeState{
 			scheduler: s,
 
-			node:   nil,
-			status: lo.Ternary(queueNode, NodeStatusQueued, NodeStatusProvisioning),
-			tasks:  make([]*Task, s.config.TasksPerNode),
-			log:    s.log.With("component", "node").With(slog.Group("node", "name", nodeName)),
+			node:         nil,
+			status:       lo.Ternary(queueNode, NodeStatusQueued, NodeStatusProvisioning),
+			flavor:       flavor,
+			tasksPerNode: tasksPerNode,
+			tasks:        make([]*Task, tasksPerNode),
+			log:          s.log.With("component", "node").With(slog.Group("node", "name", nodeName)),
 
 			nodeName:      nodeName,
 			earliestStart: s.earliestNextNodeStart,
 		}
 
-		ns.log.Debug("Creating node", "earliestStart", ns.earliestStart, "status", ns.status)
-		s.broadcast(EventNodeCreated{Node: nodeName, Status: ns.status})
+		ns.log.Debug("Creating node", "earliestStart", ns.earliestStart, "status", ns.status, "flavor", flavor, "tasksPerNode", tasksPerNode)
+		s.broadcast(EventNodeCreated{Node: nodeName, Status: ns.status, NumSlots: tasksPerNode})
 
 		if queueNode {
 			s.nodesQueue = append(s.nodesQueue, ns)
@@ -562,7 +653,7 @@ func (s *Scheduler) resizePool() {
 func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	nodeState.log.Info("Provisioning node")
 
-	if node, err := s.provisioner.Provision(nodeState.nodeName); err != nil {
+	if node, err := s.provisioner.Provision(nodeState.nodeName, nodeState.flavor); err != nil {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
 
 		select {
@@ -712,6 +803,23 @@ func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 	}
 }
 
+func (s *Scheduler) removeAllQueuedNodesOfType(flavor string, tasksPerNode int) {
+	s.nodesQueue = lo.Filter(s.nodesQueue, func(ns *nodeState, _ int) bool {
+		return ns.flavor != flavor || ns.tasksPerNode != tasksPerNode
+	})
+}
+
+func (s *Scheduler) removeQueuedNodesOfType(flavor string, tasksPerNode int, count int) {
+	removed := 0
+	for i := len(s.nodesQueue) - 1; i >= 0 && removed < count; i-- {
+		ns := s.nodesQueue[i]
+		if ns.flavor == flavor && ns.tasksPerNode == tasksPerNode {
+			s.nodesQueue = append(s.nodesQueue[:i], s.nodesQueue[i+1:]...)
+			removed++
+		}
+	}
+}
+
 func (s *Scheduler) emptyNodesQueue() {
 	if len(s.nodesQueue) < 1 {
 		return
@@ -720,6 +828,3 @@ func (s *Scheduler) emptyNodesQueue() {
 	s.nodesQueue = nil
 }
 
-func (s *Scheduler) nbNodesToCreate(incomingNodes int) int {
-	return internal.NbNodesToCreate(s.config.MaxNodes, s.config.TasksPerNode, len(s.tasksQueue), len(s.nodes), incomingNodes)
-}

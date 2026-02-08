@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"sync"
 	"time"
 
@@ -13,7 +14,9 @@ import (
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/schedulerhints"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/pagination"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -26,6 +29,11 @@ type Provisioner struct {
 
 	keypairName string
 	privateKey  ssh.Signer
+
+	// flavorCache caches flavor name → UUID resolutions. Protected by flavorCacheMu.
+	// Flavor names don't change during a session, so lookups are cached indefinitely.
+	flavorCache   map[string]string
+	flavorCacheMu sync.Mutex
 
 	// WaitGroup tracking all provisioned resources
 	// An item is added to track the first call to Shutdown()
@@ -67,6 +75,7 @@ func New(config Config) (*Provisioner, error) {
 		log:    config.Logger.With(slog.Group("provisioner", "name", name)),
 
 		keypairName: fmt.Sprintf("alfred-%s", name),
+		flavorCache: make(map[string]string),
 	}
 	provisioner.wg.Add(1) // One item for the provisioner itself
 
@@ -100,13 +109,18 @@ func (p *Provisioner) GetName() string {
 	return p.name
 }
 
-func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
+func (p *Provisioner) Provision(nodeName string, flavor string) (scheduler.Node, error) {
+	flavorRef, err := p.resolveFlavor(flavor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve flavor '%s': %w", flavor, err)
+	}
+
 	name := fmt.Sprintf("alfred-%s", nodeName)
 	var optsBuilder servers.CreateOptsBuilder = keypairs.CreateOptsExt{
 		CreateOptsBuilder: servers.CreateOpts{
 			Name:           name,
 			ImageRef:       p.config.Image,
-			FlavorRef:      p.config.Flavor,
+			FlavorRef:      flavorRef,
 			Networks:       p.config.Networks,
 			SecurityGroups: p.config.SecurityGroups,
 			Metadata: map[string]string{
@@ -153,4 +167,45 @@ func (p *Provisioner) Shutdown() {
 
 func (p *Provisioner) Wait() {
 	p.wg.Wait()
+}
+
+var uuidRegexp = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// resolveFlavor resolves a flavor name to its UUID. If the input already looks
+// like a UUID, it is returned as-is. Results are cached for the session lifetime.
+func (p *Provisioner) resolveFlavor(flavor string) (string, error) {
+	if uuidRegexp.MatchString(flavor) {
+		return flavor, nil
+	}
+
+	p.flavorCacheMu.Lock()
+	defer p.flavorCacheMu.Unlock()
+
+	if id, ok := p.flavorCache[flavor]; ok {
+		return id, nil
+	}
+
+	var flavorID string
+	err := flavors.ListDetail(p.client, nil).EachPage(func(page pagination.Page) (bool, error) {
+		flavorList, err := flavors.ExtractFlavors(page)
+		if err != nil {
+			return false, err
+		}
+		for _, f := range flavorList {
+			if f.Name == flavor {
+				flavorID = f.ID
+				return false, nil // stop paging
+			}
+		}
+		return true, nil // continue to next page
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to list flavors: %w", err)
+	}
+	if flavorID == "" {
+		return "", fmt.Errorf("flavor '%s' not found", flavor)
+	}
+
+	p.flavorCache[flavor] = flavorID
+	return flavorID, nil
 }
