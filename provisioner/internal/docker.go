@@ -307,9 +307,10 @@ func RunContainer(
 				logDone <- taskFs.StreamContainerLogs(logCtx, resp.ID, logPath)
 			}()
 
-			// Wait for the container to finish. Two possible outcomes:
+			// Wait for the container to finish. Three possible outcomes:
 			// 1. Container exits normally → wait receives the exit status
 			// 2. Docker API error → errChan receives the error
+			// 3. Context cancelled (task aborted) → ctx.Done() fires
 			select {
 			case status = <-wait:
 				// Container exited. Wait for log streaming goroutine to flush remaining output.
@@ -327,6 +328,14 @@ func RunContainer(
 				cancelLogs()
 				<-logDone
 				return fmt.Errorf("failed while waiting for docker container for step %d: %w", stepIndex, err)
+			case <-ctx.Done():
+				// Task was cancelled. Actively kill the container since context cancellation
+				// may not propagate through the Docker SDK (especially over SSH-tunneled connections).
+				task.Log.Info("Killing container for aborted step", "step", stepIndex)
+				_ = docker.ContainerKill(context.Background(), resp.ID, "SIGKILL")
+				cancelLogs()
+				<-logDone
+				return fmt.Errorf("step %d aborted: %w", stepIndex, ctx.Err())
 			}
 
 			return nil
@@ -340,25 +349,29 @@ func RunContainer(
 
 	// Archive artifacts BEFORE returning (which triggers deferred workspace deletion).
 	// This is NOT deferred because it must run before the workspace defer that deletes /output.
-	tryTo(
-		"preserve artifact",
-		func() error {
-			if runConfig.ArtifactPreserver != nil {
-				task.Log.Debug("Preserve artifact")
+	// Skip archival when the task was aborted — the archive operation could also block
+	// over SSH-tunneled connections, and partial artifacts from aborted tasks aren't useful.
+	if ctx.Err() == nil {
+		tryTo(
+			"preserve artifact",
+			func() error {
+				if runConfig.ArtifactPreserver != nil {
+					task.Log.Debug("Preserve artifact")
 
-				reader, err := taskFs.Archive("/output")
-				if err != nil {
-					return fmt.Errorf("failed to archive 'output' directory: %w", err)
-				}
-				defer reader.Close()
+					reader, err := taskFs.Archive("/output")
+					if err != nil {
+						return fmt.Errorf("failed to archive 'output' directory: %w", err)
+					}
+					defer reader.Close()
 
-				if err := runConfig.ArtifactPreserver(reader, task); err != nil {
-					return fmt.Errorf("failed to preserve artifacts: %w", err)
+					if err := runConfig.ArtifactPreserver(reader, task); err != nil {
+						return fmt.Errorf("failed to preserve artifacts: %w", err)
+					}
 				}
-			}
-			return nil
-		},
-	)
+				return nil
+			},
+		)
+	}
 
 	if stepError != nil {
 		return lo.Ternary(status.StatusCode != 0, int(status.StatusCode), -1), fmt.Errorf("task execution ended with error: %w", stepError)
