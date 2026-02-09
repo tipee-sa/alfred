@@ -89,6 +89,9 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 				About:       event.About,
 				Tasks:       make([]*proto.TaskStatus, 0, len(event.Tasks)),
 				ScheduledAt: timestamppb.Now(),
+				Jobfile:     event.Jobfile,
+				CommandLine: event.CommandLine,
+				StartedBy:   event.StartedBy,
 			})
 		case schedulerpkg.EventJobCompleted:
 			for _, job := range serverStatus.Jobs {

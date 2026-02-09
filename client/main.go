@@ -97,6 +97,7 @@ func init() {
 	alfredCmd.AddCommand(psCmd)
 	alfredCmd.AddCommand(runCmd)
 	alfredCmd.AddCommand(selfUpdateCmd)
+	alfredCmd.AddCommand(showCmd)
 	alfredCmd.AddCommand(topCmd)
 	alfredCmd.AddCommand(versionCmd)
 	alfredCmd.AddCommand(watchCmd)
