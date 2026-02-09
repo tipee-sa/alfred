@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
+
+// recvResult holds the result of a gRPC Recv() call.
+type recvResult struct {
+	msg *proto.JobStatus
+	err error
+}
 
 func init() {
 	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when any task fails (excludes exit 42)")
@@ -48,28 +55,10 @@ var watchCmd = &cobra.Command{
 			now: time.Now,
 		}
 
-		var lastMsg *proto.JobStatus
-		var displayLines int
-		var started bool
-
-		render := func() {
-			if displayLines > 0 {
-				fmt.Fprintf(os.Stderr, "\033[%dA", displayLines)
-			}
-			fmt.Fprint(os.Stderr, "\r\033[J")
-			output, lines := renderer.renderOutput(lastMsg)
-			fmt.Fprint(os.Stderr, output)
-			displayLines = lines
-		}
-
 		// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
 		// Without this, we couldn't multiplex between incoming messages and the ticker.
 		// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
 		// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
-		type recvResult struct {
-			msg *proto.JobStatus
-			err error
-		}
 		msgCh := make(chan recvResult, 1)
 		go func() {
 			for {
@@ -81,73 +70,134 @@ var watchCmd = &cobra.Command{
 			}
 		}()
 
-		// Ticker re-renders the display every second to update elapsed time counters
-		// (job duration, task duration) even when no new events arrive from the server.
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		defer fmt.Fprint(os.Stderr, "\033[?25h") // always restore cursor visibility on exit
-
-		// Main event loop: blocks on select until either a message arrives or the ticker fires.
-		for {
-			select {
-			case result := <-msgCh: // new message (or error/EOF) from gRPC stream
-				if result.err != nil {
-					if result.err == io.EOF {
-						if started {
-							if displayLines > 0 {
-								fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", displayLines)
+		return runWatchLoop(
+			cmd.Context(),
+			msgCh,
+			renderer,
+			args[0],
+			os.Stderr,
+			func() { spinner.FinalMSG = ""; spinner.Stop() },
+			func() { spinner.FinalMSG = ""; spinner.Stop() },
+			func() { spinner.Fail() },
+			func(msg *proto.JobStatus) {
+				if !abortOnFailure && !abortOnError {
+					return
+				}
+				for _, t := range msg.Tasks {
+					if t.Status == proto.TaskStatus_FAILED {
+						shouldAbort := abortOnError || (abortOnFailure && (t.ExitCode == nil || *t.ExitCode != 42))
+						if shouldAbort {
+							if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
+								fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
+							} else {
+								abortOnFailure, abortOnError = false, false
 							}
-							fmt.Fprint(os.Stderr, "\033[?25h")
-						} else {
-							spinner.FinalMSG = ""
-							spinner.Stop()
+							break
 						}
-						taskNames, stats := renderer.renderStats(lastMsg)
-						timestamp := renderer.renderTimestamp(lastMsg)
-						fmt.Fprintf(os.Stderr, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), args[0], emojiLabel("📝"), len(taskNames), timestamp, stats)
-						return nil
 					}
+				}
+			},
+		)
+	},
+}
+
+// runWatchLoop runs the watch event loop, processing messages from msgCh,
+// rendering output and managing cursor visibility. Returns nil on clean
+// exits (EOF, context cancellation) and the stream error for real failures.
+//
+// Callbacks handle spinner lifecycle (nil-safe):
+//   - onFirstMessage: called when first message arrives (e.g. stop spinner)
+//   - onCleanStop: called on clean exit before first message (e.g. stop spinner cleanly)
+//   - onFailStop: called on error before first message (e.g. fail spinner)
+//   - onMessage: called after each received message (e.g. abort-on-failure logic)
+func runWatchLoop(
+	ctx context.Context,
+	msgCh <-chan recvResult,
+	renderer *watchRenderer,
+	jobName string,
+	w io.Writer,
+	onFirstMessage func(),
+	onCleanStop func(),
+	onFailStop func(),
+	onMessage func(*proto.JobStatus),
+) error {
+	var lastMsg *proto.JobStatus
+	var displayLines int
+	var started bool
+
+	render := func() {
+		if displayLines > 0 {
+			fmt.Fprintf(w, "\033[%dA", displayLines)
+		}
+		fmt.Fprint(w, "\r\033[J")
+		output, lines := renderer.renderOutput(lastMsg)
+		fmt.Fprint(w, output)
+		displayLines = lines
+	}
+
+	// Ticker re-renders the display every second to update elapsed time counters
+	// (job duration, task duration) even when no new events arrive from the server.
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	defer fmt.Fprint(w, "\033[?25h") // always restore cursor visibility on exit
+
+	// Main event loop: blocks on select until either a message arrives or the ticker fires.
+	for {
+		select {
+		case result := <-msgCh: // new message (or error/EOF) from gRPC stream
+			if result.err != nil {
+				if result.err == io.EOF {
 					if started {
 						if displayLines > 0 {
-							fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", displayLines)
+							fmt.Fprintf(w, "\033[%dA\r\033[J", displayLines)
 						}
-						fmt.Fprint(os.Stderr, "\033[?25h")
-						fmt.Fprintf(os.Stderr, "%s Waiting for job data\n", color.HiRedString("✗"))
-					} else {
-						spinner.Fail()
+						fmt.Fprint(w, "\033[?25h")
+					} else if onCleanStop != nil {
+						onCleanStop()
 					}
-					return result.err
+					taskNames, stats := renderer.renderStats(lastMsg)
+					timestamp := renderer.renderTimestamp(lastMsg)
+					fmt.Fprintf(w, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), len(taskNames), timestamp, stats)
+					return nil
 				}
-				lastMsg = result.msg
-				if !started {
-					spinner.FinalMSG = ""
-					spinner.Stop()
-					started = true
-					fmt.Fprint(os.Stderr, "\033[?25l")
-				}
-				if abortOnFailure || abortOnError {
-					for _, t := range result.msg.Tasks {
-						if t.Status == proto.TaskStatus_FAILED {
-							shouldAbort := abortOnError || (abortOnFailure && (t.ExitCode == nil || *t.ExitCode != 42))
-							if shouldAbort {
-								if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
-									fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
-								} else {
-									abortOnFailure, abortOnError = false, false
-								}
-								break
-							}
-						}
+				if started {
+					if displayLines > 0 {
+						fmt.Fprintf(w, "\033[%dA\r\033[J", displayLines)
 					}
+					fmt.Fprint(w, "\033[?25h")
 				}
-				render()
-
-			case <-ticker.C: // 1-second tick: re-render to update elapsed time display
-				if !started {
-					continue // don't render before first message arrives
+				if ctx.Err() == context.Canceled {
+					if !started && onCleanStop != nil {
+						onCleanStop()
+					}
+					fmt.Fprintf(w, "%s Interrupted\n", color.HiYellowString("!"))
+					return nil
 				}
-				render()
+				if started {
+					fmt.Fprintf(w, "%s Waiting for job data\n", color.HiRedString("✗"))
+				} else if onFailStop != nil {
+					onFailStop()
+				}
+				return result.err
 			}
+			lastMsg = result.msg
+			if !started {
+				if onFirstMessage != nil {
+					onFirstMessage()
+				}
+				started = true
+				fmt.Fprint(w, "\033[?25l")
+			}
+			if onMessage != nil {
+				onMessage(result.msg)
+			}
+			render()
+
+		case <-ticker.C: // 1-second tick: re-render to update elapsed time display
+			if !started {
+				continue // don't render before first message arrives
+			}
+			render()
 		}
-	},
+	}
 }

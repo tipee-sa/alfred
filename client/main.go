@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/sossh"
@@ -112,8 +114,11 @@ func init() {
 }
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	alfredCmd.SetOut(os.Stdout)
-	if err := alfredCmd.Execute(); err != nil {
+	if err := alfredCmd.ExecuteContext(ctx); err != nil {
 		lo.Must(fmt.Fprintln(os.Stderr, color.HiRedString(fmt.Sprint(err))))
 		os.Exit(1)
 	}
