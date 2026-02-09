@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/docker/docker/client"
@@ -26,7 +27,7 @@ type Node struct {
 	docker      *client.Client
 	fs          *fs
 
-	terminated bool
+	terminated atomic.Bool
 
 	log   *slog.Logger
 	mutex sync.Mutex
@@ -114,7 +115,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			if n.terminated {
+			if n.terminated.Load() {
 				return
 			}
 			if _, _, err := n.ssh.SendRequest("keepalive@alfred", true, nil); err != nil {
@@ -214,10 +215,9 @@ func (n *Node) ensureNodeHasImage(image string) error {
 }
 
 func (n *Node) Terminate() error {
-	if n.terminated {
+	if !n.terminated.CompareAndSwap(false, true) {
 		return nil
 	}
-	n.terminated = true
 
 	if n.ssh != nil {
 		_ = n.ssh.Close()
