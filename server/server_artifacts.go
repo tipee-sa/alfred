@@ -18,6 +18,7 @@ func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
 
 	var reader io.ReadCloser
+	source := "finalized"
 
 	if _, err := os.Stat(artifact); err == nil {
 		// Completed task: read from finalized artifact file
@@ -26,25 +27,40 @@ func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.
 			return fmt.Errorf("failed to open artifact file: %w", err)
 		}
 		reader = file
-	} else if liveReader, liveErr := scheduler.ArchiveLiveArtifact(req.Job, req.Task); liveErr == nil {
-		// Running task: stream live snapshot from workspace
-		reader = liveReader
 	} else {
-		log.Warn("Artifact not found", "job", req.Job, "task", req.Task, "liveError", liveErr)
-		return status.Errorf(codes.NotFound, "artifact not found")
+		// Running task: stream live snapshot from workspace
+		source = "live"
+		log.Debug("Attempting live artifact download", "job", req.Job, "task", req.Task)
+		liveReader, liveErr := scheduler.ArchiveLiveArtifact(req.Job, req.Task)
+		if liveErr != nil {
+			log.Warn("Artifact not found", "job", req.Job, "task", req.Task, "liveError", liveErr)
+			return status.Errorf(codes.NotFound, "artifact not found")
+		}
+		reader = liveReader
 	}
-	defer reader.Close()
+	defer func() {
+		if err := reader.Close(); err != nil {
+			log.Warn("Error closing artifact reader", "job", req.Job, "task", req.Task, "source", source, "error", err)
+		}
+	}()
 
+	totalBytes := 0
 	chunk := make([]byte, config.MaxPacketSize-1024*1024 /* leave 1MB margin */)
 	for {
 		n, err := io.ReadFull(reader, chunk)
 		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 			if err == io.EOF {
+				if totalBytes == 0 {
+					log.Warn("Empty artifact stream", "job", req.Job, "task", req.Task, "source", source)
+					return status.Errorf(codes.Internal, "artifact stream was empty (archive command may have failed)")
+				}
+				log.Debug("Artifact download complete", "job", req.Job, "task", req.Task, "source", source, "totalBytes", totalBytes)
 				return nil
 			} else {
 				return fmt.Errorf("failed to read artifact chunk: %w", err)
 			}
 		} else {
+			totalBytes += n
 			if err = srv.Send(&proto.DownloadArtifactChunk{
 				Data:   chunk[:n],
 				Length: uint32(n),

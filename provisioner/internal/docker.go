@@ -91,6 +91,11 @@ func RunContainer(
 			return taskFs.Archive("/output")
 		})
 	}
+	if runConfig.OnLogReaderReady != nil {
+		runConfig.OnLogReaderReady(func(lines int) (io.ReadCloser, error) {
+			return taskFs.TailLogs("/output", lines)
+		})
+	}
 	if runConfig.OnWorkspaceTeardown != nil {
 		defer runConfig.OnWorkspaceTeardown()
 	}

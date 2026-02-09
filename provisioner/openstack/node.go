@@ -109,6 +109,21 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		}
 	}
 
+	// Start SSH keepalive goroutine to prevent connection from dying during long tasks (4h+)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if n.terminated {
+				return
+			}
+			if _, _, err := n.ssh.SendRequest("keepalive@alfred", true, nil); err != nil {
+				n.log.Warn("SSH keepalive failed", "error", err)
+				return
+			}
+		}
+	}()
+
 	n.log.Debug("Wait for Docker daemon to start", "wait", initialWait)
 	time.Sleep(initialWait)
 

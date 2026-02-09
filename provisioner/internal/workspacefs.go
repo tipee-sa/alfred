@@ -12,6 +12,7 @@ type WorkspaceFS interface {
 	SaveContainerLogs(containerId, p string) error
 	StreamContainerLogs(ctx context.Context, containerId, p string) error
 	Archive(p string) (io.ReadCloser, error)
+	TailLogs(dir string, lines int) (io.ReadCloser, error)
 	Delete(p string) error
 	Scope(p string) WorkspaceFS
 }
@@ -42,6 +43,10 @@ func (f *ScopedFS) StreamContainerLogs(ctx context.Context, containerId, p strin
 
 func (f *ScopedFS) Archive(p string) (io.ReadCloser, error) {
 	return f.Parent.Archive(path.Join(f.Prefix, p))
+}
+
+func (f *ScopedFS) TailLogs(dir string, lines int) (io.ReadCloser, error) {
+	return f.Parent.TailLogs(path.Join(f.Prefix, dir), lines)
 }
 
 func (f *ScopedFS) Delete(p string) error {
