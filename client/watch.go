@@ -22,8 +22,8 @@ type recvResult struct {
 }
 
 func init() {
-	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when any task fails (excludes exit 42)")
-	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks on any non-zero exit (including exit 42)")
+	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42")
+	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42)")
 }
 
 var watchCmd = &cobra.Command{
@@ -85,7 +85,7 @@ var watchCmd = &cobra.Command{
 				}
 				for _, t := range msg.Tasks {
 					if t.Status == proto.TaskStatus_FAILED {
-						shouldAbort := abortOnError || (abortOnFailure && (t.ExitCode == nil || *t.ExitCode != 42))
+						shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
 						if shouldAbort {
 							if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
 								fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
