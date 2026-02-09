@@ -171,8 +171,9 @@ var watchCmd = &cobra.Command{
 
 		render := func() {
 			if displayLines > 0 {
-				fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", displayLines)
+				fmt.Fprintf(os.Stderr, "\033[%dA", displayLines)
 			}
+			fmt.Fprint(os.Stderr, "\r\033[J")
 			timestamp := renderTimestamp()
 			stats := renderStats()
 			header := headerMsg(timestamp)
