@@ -74,16 +74,12 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 
 	args := append([]string{"-n", fmt.Sprintf("%d", lines)}, logFiles...)
 	cmd := exec.Command("tail", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tail command failed: %w", err)
 	}
-	if err = cmd.Start(); err != nil {
-		return nil, err
-	}
-	return &archiveReader{Reader: stdout, cmd: cmd, stderr: &stderr}, nil
+
+	return io.NopCloser(bytes.NewReader(output)), nil
 }
 
 func (f *fs) Archive(p string) (io.ReadCloser, error) {

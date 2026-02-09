@@ -91,23 +91,24 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH session: %w", err)
 	}
+	defer session.Close()
 
 	var stderr bytes.Buffer
 	session.Stderr = &stderr
 
-	out := lo.Must(session.StdoutPipe())
-	// The test -n check ensures we fail with "no log files found" (via stderr)
-	// instead of silently returning an empty stream when no .log files exist.
-	if err = session.Start(fmt.Sprintf(
+	// Collect all output at once (tail output is bounded by -n lines).
+	// Using session.Output avoids SSH stdout pipe EOF delivery issues that cause
+	// the streaming read loop to hang.
+	output, err := session.Output(fmt.Sprintf(
 		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -n %d`,
 		shellescape.Quote(f.HostPath(dir)),
 		lines,
-	)); err != nil {
-		session.Close()
-		return nil, err
+	))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read logs: %w: %s", err, stderr.String())
 	}
 
-	return &sshReadCloser{Reader: out, session: session, stderr: &stderr, label: "tail"}, nil
+	return io.NopCloser(bytes.NewReader(output)), nil
 }
 
 // Archive returns a .tar.zst of the given path
