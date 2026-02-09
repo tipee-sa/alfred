@@ -15,6 +15,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/samber/lo"
 	"github.com/spf13/viper"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 var scheduler *schedulerpkg.Scheduler
@@ -44,6 +45,8 @@ func createScheduler() error {
 	serverStatus.Scheduler.Provisioner = viper.GetString(flags.Provisioner)
 	serverStatus.Scheduler.MaxNodes = uint32(viper.GetInt(flags.MaxNodes))
 	serverStatus.Scheduler.TasksPerNodes = uint32(viper.GetInt(flags.TasksPerNode))
+	serverStatus.Scheduler.LogLevel = viper.GetString(flags.LogLevel)
+	serverStatus.Scheduler.ProvisioningDelay = durationpb.New(viper.GetDuration(flags.ProvisioningDelay))
 
 	return nil
 }

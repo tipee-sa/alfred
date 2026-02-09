@@ -144,3 +144,33 @@ func (s *server) WatchJobs(req *proto.WatchJobsRequest, srv proto.Alfred_WatchJo
 		}
 	}
 }
+
+// WatchStatus streams the full server status (nodes, jobs, tasks, scheduler config)
+// on every event. Used by the `top` command. nil filter accepts all event types.
+func (s *server) WatchStatus(req *proto.WatchStatusRequest, srv proto.Alfred_WatchStatusServer) error {
+	channel, cancel := addClientListener(nil)
+	defer cancel()
+
+	sync := func() error {
+		serverStatusMutex.RLock()
+		statusToSend := goproto.Clone(serverStatus).(*proto.Status)
+		serverStatusMutex.RUnlock()
+
+		return srv.Send(statusToSend)
+	}
+
+	if err := sync(); err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case <-srv.Context().Done():
+			return nil
+		case <-channel:
+			if err := sync(); err != nil {
+				return err
+			}
+		}
+	}
+}
