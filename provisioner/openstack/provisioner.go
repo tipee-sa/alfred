@@ -175,6 +175,7 @@ var uuidRegexp = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 // like a UUID, it is returned as-is. Results are cached for the session lifetime.
 func (p *Provisioner) resolveFlavor(flavor string) (string, error) {
 	if uuidRegexp.MatchString(flavor) {
+		p.log.Debug("Flavor is already a UUID, skipping resolution", "flavor", flavor)
 		return flavor, nil
 	}
 
@@ -182,30 +183,39 @@ func (p *Provisioner) resolveFlavor(flavor string) (string, error) {
 	defer p.flavorCacheMu.Unlock()
 
 	if id, ok := p.flavorCache[flavor]; ok {
+		p.log.Debug("Flavor resolved from cache", "flavor", flavor, "id", id)
 		return id, nil
 	}
 
+	p.log.Debug("Fetching flavor list from OpenStack", "flavor", flavor)
+
+	var allNames []string
 	var flavorID string
 	err := flavors.ListDetail(p.client, nil).EachPage(func(page pagination.Page) (bool, error) {
 		flavorList, err := flavors.ExtractFlavors(page)
 		if err != nil {
 			return false, err
 		}
+		p.log.Debug("Fetched flavor page", "count", len(flavorList))
 		for _, f := range flavorList {
+			allNames = append(allNames, f.Name)
+			p.flavorCache[f.Name] = f.ID
 			if f.Name == flavor {
 				flavorID = f.ID
-				return false, nil // stop paging
 			}
 		}
-		return true, nil // continue to next page
+		return flavorID == "", nil // stop paging once found
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to list flavors: %w", err)
 	}
+
+	p.log.Debug("Available flavors", "names", allNames)
+
 	if flavorID == "" {
 		return "", fmt.Errorf("flavor '%s' not found", flavor)
 	}
 
-	p.flavorCache[flavor] = flavorID
+	p.log.Debug("Flavor resolved", "flavor", flavor, "id", flavorID)
 	return flavorID, nil
 }
