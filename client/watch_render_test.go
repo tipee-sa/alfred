@@ -70,6 +70,15 @@ func TestVisualLineCount_MultiCodepointEmoji(t *testing.T) {
 	assert.Equal(t, 2, visualLineCount(s, 80))
 }
 
+// --- formatMinutes tests ---
+
+func TestFormatMinutes(t *testing.T) {
+	assert.Equal(t, "30m", formatMinutes(30*time.Minute))
+	assert.Equal(t, "1h0m", formatMinutes(1*time.Hour))
+	assert.Equal(t, "1h30m", formatMinutes(90*time.Minute))
+	assert.Equal(t, "2h0m", formatMinutes(2*time.Hour))
+}
+
 // --- emojiLabel tests ---
 
 func TestEmojiLabel_SingleCodepoint(t *testing.T) {
@@ -346,6 +355,8 @@ func TestRenderStats_SlowRunningTask(t *testing.T) {
 	}
 	_, stats := r.renderStats(msg)
 	assert.Contains(t, stats, "🐢")
+	assert.Contains(t, stats, "45m")
+	assert.NotContains(t, stats, "45m0s")
 }
 
 func TestRenderStats_VerySlowRunningTask(t *testing.T) {

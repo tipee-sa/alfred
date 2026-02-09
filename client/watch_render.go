@@ -29,6 +29,11 @@ type watchRenderer struct {
 	now       func() time.Time // injected; tests pass a fixed time
 }
 
+// formatMinutes formats a minute-truncated duration as "36m" instead of "36m0s".
+func formatMinutes(d time.Duration) string {
+	return strings.TrimSuffix(d.String(), "0s")
+}
+
 // emojiLabel returns the emoji followed by spacing equal to its rune count,
 // ensuring consistent alignment regardless of emoji rendering width.
 func emojiLabel(emoji string) string {
@@ -123,12 +128,12 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 				taskRunningFor = r.now().Sub(t.StartedAt.AsTime()).Truncate(time.Minute)
 			}
 			if taskRunningFor >= taskSlowThreshold {
-				label += fmt.Sprintf(" (%s%s)", emojiLabel(lo.Ternary(taskRunningFor >= taskVerySlowThreshold, "🧟", "🐢")), taskRunningFor)
+				label += fmt.Sprintf(" (%s%s)", emojiLabel(lo.Ternary(taskRunningFor >= taskVerySlowThreshold, "🧟", "🐢")), formatMinutes(taskRunningFor))
 			}
 		} else {
 			taskQueuedFor := r.now().Sub(msg.ScheduledAt.AsTime()).Truncate(time.Minute)
 			if taskQueuedFor >= taskQueuedThreshold {
-				label += fmt.Sprintf(" (%s%s)", emojiLabel("😴"), taskQueuedFor)
+				label += fmt.Sprintf(" (%s%s)", emojiLabel("😴"), formatMinutes(taskQueuedFor))
 			}
 		}
 
