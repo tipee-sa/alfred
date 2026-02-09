@@ -146,14 +146,14 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	return nil
 }
 
-func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
+func (n *Node) RunTask(ctx context.Context, task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
 	for _, image := range task.Job.Steps {
 		if err := n.ensureNodeHasImage(image); err != nil {
 			return -1, fmt.Errorf("failed to ensure node has docker image '%s': %w", image, err)
 		}
 	}
 
-	return internal.RunContainer(context.TODO(), n.docker, task, n.fs, runConfig)
+	return internal.RunContainer(ctx, n.docker, task, n.fs, runConfig)
 }
 
 func (n *Node) ensureNodeHasImage(image string) error {

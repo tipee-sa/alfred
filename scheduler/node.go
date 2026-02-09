@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"time"
@@ -34,7 +35,7 @@ type RunTaskConfig struct {
 
 type Node interface {
 	Name() string
-	RunTask(task *Task, config RunTaskConfig) (int, error) // TODO: we need cancellation
+	RunTask(ctx context.Context, task *Task, config RunTaskConfig) (int, error)
 	Terminate() error
 }
 

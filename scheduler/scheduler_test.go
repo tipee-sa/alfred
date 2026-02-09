@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -57,9 +58,13 @@ type mockNode struct {
 
 func (n *mockNode) Name() string { return n.name }
 
-func (n *mockNode) RunTask(_ *Task, _ RunTaskConfig) (int, error) {
-	<-n.taskDone
-	return 0, nil
+func (n *mockNode) RunTask(ctx context.Context, _ *Task, _ RunTaskConfig) (int, error) {
+	select {
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	case <-n.taskDone:
+		return 0, nil
+	}
 }
 
 func (n *mockNode) Terminate() error {
@@ -262,7 +267,7 @@ type perTaskNode struct {
 
 func (n *perTaskNode) Name() string { return n.mockNode.name }
 
-func (n *perTaskNode) RunTask(task *Task, config RunTaskConfig) (int, error) {
+func (n *perTaskNode) RunTask(ctx context.Context, task *Task, config RunTaskConfig) (int, error) {
 	tn := &mockNode{
 		name:        n.mockNode.name,
 		taskDone:    make(chan struct{}),
@@ -272,8 +277,12 @@ func (n *perTaskNode) RunTask(task *Task, config RunTaskConfig) (int, error) {
 	n.taskNodes[task.Name] = tn
 	n.mu.Unlock()
 	n.ready <- tn
-	<-tn.taskDone
-	return 0, nil
+	select {
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	case <-tn.taskDone:
+		return 0, nil
+	}
 }
 
 func (n *perTaskNode) Terminate() error {
@@ -464,4 +473,335 @@ func TestProvisioningFailure(t *testing.T) {
 	close(node.taskDone)
 	waitForEvent[EventJobCompleted](t, events)
 	close(node.terminateCh)
+}
+
+// --- Cancel tests ---
+
+func TestCancelRunningTask(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	s := newTestScheduler(prov)
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Cancel the task
+	err = s.CancelTask(job.FQN(), "task-a")
+	require.NoError(t, err)
+
+	// Should see TaskAborted
+	ev := waitForEvent[EventTaskAborted](t, events)
+	assert.Equal(t, job.FQN(), ev.Job)
+	assert.Equal(t, "task-a", ev.Task)
+
+	// Should see JobCompleted
+	waitForEvent[EventJobCompleted](t, events)
+
+	close(node.terminateCh)
+}
+
+func TestCancelQueuedTask(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	// 1 node, 1 slot: second task must queue
+	s := New(prov, Config{
+		Logger:                      slog.New(slog.NewTextHandler(nopWriter{}, &slog.HandlerOptions{Level: slog.LevelError})),
+		MaxNodes:                    1,
+		TasksPerNode:                1,
+		ProvisioningDelay:           0,
+		ProvisioningFailureCooldown: 0,
+	})
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a", "task-b")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	// Wait for task-a to start running (task-b is queued)
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Cancel the queued task-b
+	err = s.CancelTask(job.FQN(), "task-b")
+	require.NoError(t, err)
+
+	// Should see task-b aborted
+	ev := waitForEvent[EventTaskAborted](t, events)
+	assert.Equal(t, "task-b", ev.Task)
+
+	// Cancel task-a too so the test completes quickly
+	err = s.CancelTask(job.FQN(), "task-a")
+	require.NoError(t, err)
+
+	waitForEvent[EventJobCompleted](t, events)
+
+	close(node.terminateCh)
+}
+
+func TestCancelJob(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	// 1 node, 2 slots: both tasks run concurrently
+	s := New(prov, Config{
+		Logger:                      slog.New(slog.NewTextHandler(nopWriter{}, &slog.HandlerOptions{Level: slog.LevelError})),
+		MaxNodes:                    1,
+		TasksPerNode:                2,
+		ProvisioningDelay:           0,
+		ProvisioningFailureCooldown: 0,
+	})
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a", "task-b")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node := waitForNode(t, nodes)
+
+	// Wait for both tasks to start running
+	waitForEvent[EventTaskRunning](t, events)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Cancel the entire job
+	err = s.CancelJob(job.FQN())
+	require.NoError(t, err)
+
+	// Should see both tasks aborted
+	aborted := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		ev := waitForEvent[EventTaskAborted](t, events)
+		aborted[ev.Task] = true
+	}
+	assert.True(t, aborted["task-a"])
+	assert.True(t, aborted["task-b"])
+
+	// Job should complete
+	waitForEvent[EventJobCompleted](t, events)
+
+	close(node.terminateCh)
+}
+
+func TestShutdownCancelsRunningTasks(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	s := newTestScheduler(prov)
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+
+	job := newTestJob("task-a")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Shutdown should cancel running tasks
+	s.Shutdown()
+
+	// Wait should return promptly (not blocked for minutes)
+	done := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: Wait returned
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait() did not return within 3s after Shutdown()")
+	}
+}
+
+// TestShutdownDrainsQueuedTasks verifies that queued tasks (never started) are properly
+// aborted on shutdown, so Wait() doesn't hang. Uses 1 node with 1 slot and a 2-task job:
+// task-a runs, task-b stays queued. Shutdown should abort task-b and cancel task-a.
+func TestShutdownDrainsQueuedTasks(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	// 1 node, 1 slot: only one task can run, the other stays queued
+	s := New(prov, Config{
+		Logger:                      slog.New(slog.NewTextHandler(nopWriter{}, &slog.HandlerOptions{Level: slog.LevelError})),
+		MaxNodes:                    1,
+		TasksPerNode:                1,
+		ProvisioningDelay:           0,
+		ProvisioningFailureCooldown: 0,
+	})
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+
+	_, err := s.Schedule(newTestJob("task-a", "task-b"))
+	require.NoError(t, err)
+
+	// Wait for task-a to start running (task-b is queued)
+	waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Shutdown while task-b is still queued
+	s.Shutdown()
+
+	// Wait should return promptly — not hang on the queued task's WaitGroup slot
+	done := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: Wait returned
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait() blocked — queued tasks were not drained on shutdown")
+	}
+}
+
+// TestCancelQueuedTaskFreesResources verifies that cancelling queued tasks triggers
+// a scheduling tick so idle nodes get terminated.
+func TestCancelQueuedTaskFreesResources(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	// 1 node, 1 slot
+	s := New(prov, Config{
+		Logger:                      slog.New(slog.NewTextHandler(nopWriter{}, &slog.HandlerOptions{Level: slog.LevelError})),
+		MaxNodes:                    1,
+		TasksPerNode:                1,
+		ProvisioningDelay:           0,
+		ProvisioningFailureCooldown: 0,
+	})
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a", "task-b")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Cancel the queued task-b, then cancel running task-a
+	err = s.CancelTask(job.FQN(), "task-b")
+	require.NoError(t, err)
+	waitForEvent[EventTaskAborted](t, events)
+
+	err = s.CancelTask(job.FQN(), "task-a")
+	require.NoError(t, err)
+	waitForEvent[EventTaskAborted](t, events)
+
+	waitForEvent[EventJobCompleted](t, events)
+
+	// The node should be terminated (requestTick after cancellation triggers resizePool)
+	close(node.terminateCh)
+	waitForEvent[EventNodeTerminated](t, events)
+}
+
+func TestCancelNonexistentTask(t *testing.T) {
+	prov := newMockProvisioner()
+	s := newTestScheduler(prov)
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	err := s.CancelTask("nonexistent-job", "nonexistent-task")
+	assert.Error(t, err)
 }

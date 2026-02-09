@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -54,10 +55,27 @@ type Scheduler struct {
 	// Wait() blocks on this to ensure graceful shutdown waits for all tasks.
 	wg sync.WaitGroup
 
+	// cancellations receives cancel requests from CancelJob/CancelTask.
+	// Processed by the main Run() goroutine to safely mutate scheduler state.
+	cancellations chan cancelRequest
+
+	// taskCancels maps "jobFQN/taskName" to context.CancelFunc for running tasks.
+	// Protected by taskCancelsMu because it's written from the main goroutine
+	// (scheduleTaskOnOnlineNode, handleCancellation, shutdown) and from
+	// watchTaskExecution (cleanup on task completion).
+	taskCancels   map[string]context.CancelFunc
+	taskCancelsMu sync.Mutex
+
 	// liveArchivers allows downloading artifacts from still-running tasks.
 	// Written by watchTaskExecution() callbacks, read by ArchiveLiveArtifact().
 	liveArchivers   map[string]func() (io.ReadCloser, error)
 	liveArchiversMu sync.RWMutex
+}
+
+type cancelRequest struct {
+	jobFQN   string
+	taskName string // empty = cancel all tasks in the job
+	done     chan error
 }
 
 func New(provisioner Provisioner, config Config) *Scheduler {
@@ -76,6 +94,9 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		listeners: make(map[chan Event]bool),
 
 		stop: make(chan any),
+
+		cancellations: make(chan cancelRequest),
+		taskCancels:   make(map[string]context.CancelFunc),
 
 		liveArchivers: make(map[string]func() (io.ReadCloser, error)),
 	}
@@ -221,17 +242,40 @@ func (s *Scheduler) Run() {
 		case f := <-s.deferred:
 			f()
 
-		// Shutdown: stop accepting jobs, shut down provisioner, terminate all online nodes
-		// concurrently, then exit the loop. The caller (server) waits via Wait().
+		// Cancellation request: cancel queued and/or running tasks.
+		case req := <-s.cancellations:
+			s.handleCancellation(req)
+
+		// Shutdown: stop accepting jobs, shut down provisioner, cancel all running tasks,
+		// drain queued tasks, terminate all online nodes, then exit the loop.
+		// The caller (server) waits via Wait().
 		case <-s.stop:
 			s.log.Info("Shutting down scheduler")
 			s.provisioner.Shutdown()
 
+			// Cancel all running tasks so Wait() returns promptly
+			s.taskCancelsMu.Lock()
+			for _, cancel := range s.taskCancels {
+				cancel()
+			}
+			s.taskCancelsMu.Unlock()
+
+			// Drain queued tasks that will never run: broadcast aborts and
+			// decrement WaitGroup so Wait() doesn't block indefinitely.
+			for _, task := range s.tasksQueue {
+				task.Log.Warn("Aborting queued task due to scheduler shutdown")
+				s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
+				if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
+					s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
+				}
+				s.wg.Done()
+			}
+			s.tasksQueue = nil
+
 			s.log.Info("Terminating online nodes")
 			for _, nodeState := range s.nodes {
-				// TODO: canceling of non running nodes
 				if nodeState.status == NodeStatusOnline {
-					go nodeState.node.Terminate() // TODO (maybe): handle error
+					go nodeState.node.Terminate()
 				}
 			}
 			return
@@ -262,6 +306,79 @@ func (s *Scheduler) after(d time.Duration, f func()) {
 	})
 }
 
+func (s *Scheduler) handleCancellation(req cancelRequest) {
+	found := false
+
+	// Cancel queued tasks: remove from queue, broadcast abort, decrement WaitGroup
+	remaining := s.tasksQueue[:0]
+	for _, task := range s.tasksQueue {
+		matches := task.Job.FQN() == req.jobFQN && (req.taskName == "" || task.Name == req.taskName)
+		if matches {
+			found = true
+			task.Log.Info("Task aborted (was queued)")
+			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
+			if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
+				s.log.Info("Job completed", "name", task.Job.FQN())
+				s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
+			}
+			s.wg.Done()
+		} else {
+			remaining = append(remaining, task)
+		}
+	}
+	s.tasksQueue = remaining
+
+	// Cancel running tasks: call their cancel funcs (context propagates to RunContainer)
+	s.taskCancelsMu.Lock()
+	for key, cancel := range s.taskCancels {
+		// key format: "jobFQN/taskName"
+		taskJobFQN, taskName, _ := splitTaskKey(key)
+		if taskJobFQN == req.jobFQN && (req.taskName == "" || taskName == req.taskName) {
+			found = true
+			cancel()
+		}
+	}
+	s.taskCancelsMu.Unlock()
+
+	if !found {
+		req.done <- fmt.Errorf("no matching tasks found for job %q task %q", req.jobFQN, req.taskName)
+	} else {
+		req.done <- nil
+		s.requestTick("cancelled tasks should free resources")
+	}
+}
+
+// CancelJob cancels all queued and running tasks for the given job.
+func (s *Scheduler) CancelJob(jobFQN string) error {
+	done := make(chan error, 1)
+	select {
+	case s.cancellations <- cancelRequest{jobFQN: jobFQN, done: done}:
+		return <-done
+	case <-s.stop:
+		return fmt.Errorf("scheduler is shutting down")
+	}
+}
+
+// CancelTask cancels a specific task within a job.
+func (s *Scheduler) CancelTask(jobFQN string, taskName string) error {
+	done := make(chan error, 1)
+	select {
+	case s.cancellations <- cancelRequest{jobFQN: jobFQN, taskName: taskName, done: done}:
+		return <-done
+	case <-s.stop:
+		return fmt.Errorf("scheduler is shutting down")
+	}
+}
+
+func splitTaskKey(key string) (jobFQN, taskName string, ok bool) {
+	for i := len(key) - 1; i >= 0; i-- {
+		if key[i] == '/' {
+			return key[:i], key[i+1:], true
+		}
+	}
+	return key, "", false
+}
+
 func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 	nextTask := s.tasksQueue[0]
 
@@ -278,7 +395,14 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 				nextTask.Log.Info("Scheduling task on node", "slot", fmt.Sprintf("%s:%d", nodeState.node.Name(), slot), "remainingTasks", len(s.tasksQueue))
 				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: &NodeSlotTask{nextTask.Job.Name, nextTask.Name}})
 
-				go s.watchTaskExecution(nodeState, slot, nextTask) // async: blocks on RunTask
+				taskKey := nextTask.Job.FQN() + "/" + nextTask.Name
+				ctx, cancel := context.WithCancel(context.Background())
+
+				s.taskCancelsMu.Lock()
+				s.taskCancels[taskKey] = cancel
+				s.taskCancelsMu.Unlock()
+
+				go s.watchTaskExecution(ctx, cancel, taskKey, nodeState, slot, nextTask) // async: blocks on RunTask
 				return true
 			}
 		}
@@ -485,12 +609,19 @@ func (s *Scheduler) ArchiveLiveArtifact(jobFQN, taskName string) (io.ReadCloser,
 // It blocks on node.RunTask() for the entire duration of the task (which calls RunContainer
 // internally — creating network, starting services, running steps, archiving artifacts).
 //
-// Lifecycle: broadcast Running → block on RunTask → broadcast Failed/Completed →
+// Lifecycle: broadcast Running → block on RunTask → broadcast Aborted/Failed/Completed →
 // atomic increment job counter (detect job completion) → free node slot → wg.Done → requestTick.
-func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Task) {
+func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.CancelFunc, taskKey string, nodeState *nodeState, slot int, task *Task) {
+	defer func() {
+		cancel()
+		s.taskCancelsMu.Lock()
+		delete(s.taskCancels, taskKey)
+		s.taskCancelsMu.Unlock()
+	}()
+
 	node := nodeState.node
 
-	key := task.Job.FQN() + "/" + task.Name
+	key := taskKey
 	runConfig := RunTaskConfig{
 		ArtifactPreserver: s.config.ArtifactPreserver,
 		SecretLoader:      s.config.SecretLoader,
@@ -513,13 +644,17 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
 
 	// This blocks for the entire task duration (minutes to hours)
-	if exitCode, err := node.RunTask(task, runConfig); err != nil {
-		if exitCode == 42 {
+	if exitCode, err := node.RunTask(ctx, task, runConfig); err != nil {
+		if ctx.Err() != nil {
+			task.Log.Info("Task aborted")
+			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
+		} else if exitCode == 42 {
 			task.Log.Info("Task ran successfully, but reported issues", "error", err)
+			s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		} else {
 			task.Log.Warn("Task failed while running", "error", err)
+			s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		}
-		s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 	} else {
 		task.Log.Info("Task completed")
 		s.broadcast(EventTaskCompleted{Job: task.Job.FQN(), Task: task.Name})

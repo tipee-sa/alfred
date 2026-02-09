@@ -14,8 +14,6 @@ type Node struct {
 
 	provisioner *Provisioner
 
-	ctx    context.Context
-	cancel context.CancelFunc
 	docker *client.Client
 
 	log *slog.Logger
@@ -28,8 +26,8 @@ func (n *Node) Name() string {
 	return n.name
 }
 
-func (n *Node) RunTask(task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
-	return internal.RunContainer(n.ctx, n.docker, task, n.provisioner.fs, runConfig)
+func (n *Node) RunTask(ctx context.Context, task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
+	return internal.RunContainer(ctx, n.docker, task, n.provisioner.fs, runConfig)
 }
 
 func (*Node) Terminate() error {

@@ -19,6 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
+	Alfred_CancelJob_FullMethodName        = "/proto.Alfred/CancelJob"
+	Alfred_CancelTask_FullMethodName       = "/proto.Alfred/CancelTask"
 	Alfred_DownloadArtifact_FullMethodName = "/proto.Alfred/DownloadArtifact"
 	Alfred_LoadImage_FullMethodName        = "/proto.Alfred/LoadImage"
 	Alfred_ScheduleJob_FullMethodName      = "/proto.Alfred/ScheduleJob"
@@ -31,6 +33,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type AlfredClient interface {
+	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error)
+	CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error)
 	DownloadArtifact(ctx context.Context, in *DownloadArtifactRequest, opts ...grpc.CallOption) (Alfred_DownloadArtifactClient, error)
 	LoadImage(ctx context.Context, opts ...grpc.CallOption) (Alfred_LoadImageClient, error)
 	ScheduleJob(ctx context.Context, in *ScheduleJobRequest, opts ...grpc.CallOption) (*ScheduleJobResponse, error)
@@ -45,6 +49,24 @@ type alfredClient struct {
 
 func NewAlfredClient(cc grpc.ClientConnInterface) AlfredClient {
 	return &alfredClient{cc}
+}
+
+func (c *alfredClient) CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error) {
+	out := new(CancelJobResponse)
+	err := c.cc.Invoke(ctx, Alfred_CancelJob_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *alfredClient) CancelTask(ctx context.Context, in *CancelTaskRequest, opts ...grpc.CallOption) (*CancelTaskResponse, error) {
+	out := new(CancelTaskResponse)
+	err := c.cc.Invoke(ctx, Alfred_CancelTask_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *alfredClient) DownloadArtifact(ctx context.Context, in *DownloadArtifactRequest, opts ...grpc.CallOption) (Alfred_DownloadArtifactClient, error) {
@@ -196,6 +218,8 @@ func (x *alfredWatchJobsClient) Recv() (*JobsList, error) {
 // All implementations must embed UnimplementedAlfredServer
 // for forward compatibility
 type AlfredServer interface {
+	CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error)
+	CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error)
 	DownloadArtifact(*DownloadArtifactRequest, Alfred_DownloadArtifactServer) error
 	LoadImage(Alfred_LoadImageServer) error
 	ScheduleJob(context.Context, *ScheduleJobRequest) (*ScheduleJobResponse, error)
@@ -209,6 +233,12 @@ type AlfredServer interface {
 type UnimplementedAlfredServer struct {
 }
 
+func (UnimplementedAlfredServer) CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelJob not implemented")
+}
+func (UnimplementedAlfredServer) CancelTask(context.Context, *CancelTaskRequest) (*CancelTaskResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CancelTask not implemented")
+}
 func (UnimplementedAlfredServer) DownloadArtifact(*DownloadArtifactRequest, Alfred_DownloadArtifactServer) error {
 	return status.Errorf(codes.Unimplemented, "method DownloadArtifact not implemented")
 }
@@ -238,6 +268,42 @@ type UnsafeAlfredServer interface {
 
 func RegisterAlfredServer(s grpc.ServiceRegistrar, srv AlfredServer) {
 	s.RegisterService(&Alfred_ServiceDesc, srv)
+}
+
+func _Alfred_CancelJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AlfredServer).CancelJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Alfred_CancelJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AlfredServer).CancelJob(ctx, req.(*CancelJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Alfred_CancelTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelTaskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AlfredServer).CancelTask(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Alfred_CancelTask_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AlfredServer).CancelTask(ctx, req.(*CancelTaskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Alfred_DownloadArtifact_Handler(srv interface{}, stream grpc.ServerStream) error {
@@ -372,6 +438,14 @@ var Alfred_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "proto.Alfred",
 	HandlerType: (*AlfredServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "CancelJob",
+			Handler:    _Alfred_CancelJob_Handler,
+		},
+		{
+			MethodName: "CancelTask",
+			Handler:    _Alfred_CancelTask_Handler,
+		},
 		{
 			MethodName: "ScheduleJob",
 			Handler:    _Alfred_ScheduleJob_Handler,

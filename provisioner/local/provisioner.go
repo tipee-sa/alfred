@@ -1,7 +1,6 @@
 package local
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 
@@ -11,8 +10,6 @@ import (
 
 type Provisioner struct {
 	config Config
-	ctx    context.Context
-	cancel context.CancelFunc
 	docker *client.Client
 	fs     *fs
 
@@ -28,12 +25,8 @@ func New(config Config) (*Provisioner, error) {
 		return nil, fmt.Errorf("failed to init docker client: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
 	return &Provisioner{
 		config: config,
-		ctx:    ctx,
-		cancel: cancel,
 		docker: docker,
 		fs:     newFs(config.Workspace),
 
@@ -44,14 +37,10 @@ func New(config Config) (*Provisioner, error) {
 func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 	p.nextNodeNumber += 1
 
-	ctx, cancel := context.WithCancel(p.ctx)
-
 	node := &Node{
 		name:        nodeName,
 		provisioner: p,
 
-		ctx:    ctx,
-		cancel: cancel,
 		docker: p.docker,
 	}
 	node.log = p.config.Logger.With(slog.Group("node", "name", nodeName))

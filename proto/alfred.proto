@@ -8,6 +8,8 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 service Alfred {
+    rpc CancelJob (CancelJobRequest) returns (CancelJobResponse);
+    rpc CancelTask (CancelTaskRequest) returns (CancelTaskResponse);
     rpc DownloadArtifact (DownloadArtifactRequest) returns (stream DownloadArtifactChunk);
     rpc LoadImage (stream LoadImageMessage) returns (stream LoadImageResponse);
     rpc ScheduleJob (ScheduleJobRequest) returns (ScheduleJobResponse);
@@ -15,6 +17,11 @@ service Alfred {
     rpc WatchJob (WatchJobRequest) returns (stream JobStatus);
     rpc WatchJobs (WatchJobsRequest) returns (stream JobsList);
 }
+
+message CancelJobRequest { string name = 1; }
+message CancelJobResponse {}
+message CancelTaskRequest { string job = 1; string task = 2; }
+message CancelTaskResponse {}
 
 message Job {
     string name = 1;
