@@ -15,6 +15,10 @@ import (
 )
 
 func (s *server) DownloadArtifact(req *proto.DownloadArtifactRequest, srv proto.Alfred_DownloadArtifactServer) error {
+	if err := validateJobTask(req.Job, req.Task); err != nil {
+		return err
+	}
+
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
 
 	var reader io.ReadCloser

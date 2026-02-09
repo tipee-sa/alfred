@@ -19,6 +19,10 @@ import (
 )
 
 func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfred_StreamTaskLogsServer) error {
+	if err := validateJobTask(req.Job, req.Task); err != nil {
+		return err
+	}
+
 	tailLines := int(req.TailLines)
 	if tailLines <= 0 {
 		tailLines = 100
