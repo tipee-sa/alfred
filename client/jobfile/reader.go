@@ -34,27 +34,28 @@ type UnmarshalError struct {
 	Source string
 }
 
-func Read(file string, options ReadOptions) (job *proto.Job, err error) {
+func Read(file string, options ReadOptions) (job *proto.Job, renderedSource string, err error) {
 	job = &proto.Job{}
 	workDir := path.Join(lo.Must(os.Getwd()), path.Dir(file))
 
 	var buf []byte
 	if buf, err = os.ReadFile(file); err != nil {
-		return nil, fmt.Errorf("failed to read file: %w", err)
+		return nil, "", fmt.Errorf("failed to read file: %w", err)
 	}
 
 	source, err := evaluateTemplate(string(buf), workDir, options)
 	if err != nil {
-		return nil, fmt.Errorf("failed to evaluate template: %w", err)
+		return nil, "", fmt.Errorf("failed to evaluate template: %w", err)
 	}
+	renderedSource = source
 
 	var jobfile Jobfile
 	if err = yaml.Unmarshal([]byte(source), &jobfile); err != nil {
-		return nil, UnmarshalError{fmt.Errorf("failed to unmarshal jobfile: %w", err), source}
+		return nil, "", UnmarshalError{fmt.Errorf("failed to unmarshal jobfile: %w", err), source}
 	}
 	jobfile.path = workDir
 	if err = jobfile.Validate(); err != nil {
-		return nil, UnmarshalError{fmt.Errorf("failed to validate jobfile: %w", err), source}
+		return nil, "", UnmarshalError{fmt.Errorf("failed to validate jobfile: %w", err), source}
 	}
 
 	job.Name = jobfile.Name
@@ -67,7 +68,7 @@ func Read(file string, options ReadOptions) (job *proto.Job, err error) {
 			step.Options,
 			options,
 		); err != nil {
-			return nil, fmt.Errorf("failed to build image for jobfile step (%d): %w", i+1, err)
+			return nil, "", fmt.Errorf("failed to build image for jobfile step (%d): %w", i+1, err)
 		}
 	}
 

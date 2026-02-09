@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/alessio/shellescape"
 	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/jobfile"
 	"github.com/gammadia/alfred/client/ui"
@@ -30,7 +31,7 @@ var runCmd = &cobra.Command{
 		} else {
 			cmd.PrintErrln(ui.SectionHeaderColor.Sprintf("  %s  ", prepareJobMessage))
 		}
-		j, err := jobfile.Read(args[0], jobfile.ReadOptions{
+		j, renderedSource, err := jobfile.Read(args[0], jobfile.ReadOptions{
 			Verbose: verbose,
 			Args:    args[1:],
 			Params: lo.SliceToMap(
@@ -64,7 +65,12 @@ var runCmd = &cobra.Command{
 		spinner.Success()
 
 		spinner = ui.NewSpinner("Scheduling job")
-		job, err := client.ScheduleJob(cmd.Context(), &proto.ScheduleJobRequest{Job: j})
+		job, err := client.ScheduleJob(cmd.Context(), &proto.ScheduleJobRequest{
+			Job:         j,
+			Jobfile:     renderedSource,
+			CommandLine: shellescape.QuoteCommand(os.Args),
+			StartedBy:   os.Getenv("USER"),
+		})
 		if err != nil {
 			spinner.Fail()
 			return err

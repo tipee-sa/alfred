@@ -11,7 +11,12 @@ import (
 )
 
 func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) (*proto.ScheduleJobResponse, error) {
-	jobName, err := scheduler.Schedule(&schedulerpkg.Job{Job: in.Job})
+	jobName, err := scheduler.Schedule(&schedulerpkg.Job{
+		Job:         in.Job,
+		Jobfile:     in.Jobfile,
+		CommandLine: in.CommandLine,
+		StartedBy:   in.StartedBy,
+	})
 	return &proto.ScheduleJobResponse{Name: jobName}, err
 }
 

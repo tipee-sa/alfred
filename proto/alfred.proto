@@ -91,6 +91,9 @@ message LoadImageResponse {
 
 message ScheduleJobRequest {
     Job job = 1;
+    string jobfile = 2;
+    string command_line = 3;
+    string started_by = 4;
 }
 
 message ScheduleJobResponse {
@@ -137,6 +140,9 @@ message JobStatus {
     repeated TaskStatus tasks = 3;
     google.protobuf.Timestamp scheduled_at = 4;
     optional google.protobuf.Timestamp completed_at = 5;
+    string jobfile = 6;
+    string command_line = 7;
+    string started_by = 8;
 }
 
 message TaskStatus {

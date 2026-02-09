@@ -13,6 +13,10 @@ type Job struct {
 	id string
 
 	tasksCompleted atomic.Uint32
+
+	Jobfile     string
+	CommandLine string
+	StartedBy   string
 }
 
 func (j *Job) FQN() string {

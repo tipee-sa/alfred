@@ -189,7 +189,10 @@ func (s *Scheduler) Run() {
 		select {
 		// New job submitted: broadcast the job event, enqueue all its tasks, and trigger a scheduling pass.
 		case job := <-s.input:
-			s.broadcast(EventJobScheduled{Job: job.FQN(), About: job.About, Tasks: job.Tasks})
+			s.broadcast(EventJobScheduled{
+				Job: job.FQN(), About: job.About, Tasks: job.Tasks,
+				Jobfile: job.Jobfile, CommandLine: job.CommandLine, StartedBy: job.StartedBy,
+			})
 			for _, name := range job.Tasks {
 				task := &Task{
 					Job:  job,

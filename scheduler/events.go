@@ -32,9 +32,12 @@ type EventNodeTerminated struct {
 // Jobs
 
 type EventJobScheduled struct {
-	Job   string
-	About string
-	Tasks []string
+	Job         string
+	About       string
+	Tasks       []string
+	Jobfile     string
+	CommandLine string
+	StartedBy   string
 }
 
 type EventJobCompleted struct {
