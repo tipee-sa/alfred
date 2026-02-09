@@ -1,0 +1,6 @@
+version: "1"
+name: "test"
+flavor: "a16"
+steps:
+  - dockerfile: "a.dockerfile"
+    context: "."

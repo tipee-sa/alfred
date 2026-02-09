@@ -16,6 +16,8 @@ var flagtests = []struct {
 }{
 	{"tests/jobfile/valid_minimalist.yaml", ""},
 	{"tests/jobfile/valid_full_featured.yaml", ""},
+	{"tests/jobfile/valid_with_flavor_and_tpn.yaml", ""},
+	{"tests/jobfile/valid_with_flavor_only.yaml", ""},
 
 	{"tests/jobfile/invalid_missing_name.yaml", "name must be a valid identifier"},
 	{"tests/jobfile/invalid_missing_image_dockerfile.yaml", "image.dockerfile is required"},
@@ -31,6 +33,7 @@ var flagtests = []struct {
 	{"tests/jobfile/invalid_services_map.yaml", "yaml: unmarshal errors:\n  line 7: cannot unmarshal !!seq into map[string]jobfile.JobfileService"},
 	{"tests/jobfile/invalid_services_keys.yaml", "services names must be valid identifiers"},
 	{"tests/jobfile/invalid_services_env_keys.yaml", "services[mysql].env[0/2] must be a valid environment variable identifier"},
+	{"tests/jobfile/invalid_tasks_per_node.yaml", "tasks-per-node must be >= 0 (0 means server default)"},
 }
 
 func TestJobValidate(t *testing.T) {

@@ -48,7 +48,7 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 			serverStatus.Nodes = append(serverStatus.Nodes, &proto.NodeStatus{
 				Name:   event.Node,
 				Status: event.Status.AsProto(),
-				Slots:  make([]*proto.NodeStatus_Slot, serverStatus.Scheduler.TasksPerNodes),
+				Slots:  make([]*proto.NodeStatus_Slot, event.NumSlots),
 			})
 		case schedulerpkg.EventNodeStatusUpdated:
 			for _, node := range serverStatus.Nodes {

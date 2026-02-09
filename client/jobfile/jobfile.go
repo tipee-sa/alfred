@@ -14,13 +14,15 @@ const JobfileVersion = "1"
 type Jobfile struct {
 	path string
 
-	Version  string
-	Name     string
-	Steps    []JobfileImage
-	Env      map[string]string
-	Secrets  map[string]string
-	Services map[string]JobfileService
-	Tasks    []string
+	Version      string
+	Name         string
+	Flavor       string `yaml:"flavor"`
+	TasksPerNode int    `yaml:"tasks-per-node"`
+	Steps        []JobfileImage
+	Env          map[string]string
+	Secrets      map[string]string
+	Services     map[string]JobfileService
+	Tasks        []string
 }
 
 type JobfileImage struct {
@@ -54,6 +56,10 @@ func (jobfile Jobfile) Validate() error {
 
 	if !nameRegex.MatchString(jobfile.Name) {
 		return fmt.Errorf("name must be a valid identifier")
+	}
+
+	if jobfile.TasksPerNode < 0 {
+		return fmt.Errorf("tasks-per-node must be >= 0 (0 means server default)")
 	}
 
 	for _, step := range jobfile.Steps {

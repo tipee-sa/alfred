@@ -27,12 +27,13 @@ func createScheduler() error {
 
 	config := schedulerpkg.Config{
 		ArtifactPreserver:           preserveArtifacts,
+		DefaultFlavor:               viper.GetString(flags.OpenstackFlavor),
+		DefaultTasksPerNode:         viper.GetInt(flags.TasksPerNode),
 		Logger:                      log.Base.With("component", "scheduler"),
 		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
 		SecretLoader:                loadSecret,
-		TasksPerNode:                viper.GetInt(flags.TasksPerNode),
 	}
 	if err := schedulerpkg.Validate(config); err != nil {
 		return fmt.Errorf("invalid scheduler config: %w", err)

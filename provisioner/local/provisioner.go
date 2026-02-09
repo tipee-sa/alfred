@@ -34,7 +34,7 @@ func New(config Config) (*Provisioner, error) {
 	}, nil
 }
 
-func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
+func (p *Provisioner) Provision(nodeName string, flavor string) (scheduler.Node, error) {
 	p.nextNodeNumber += 1
 
 	node := &Node{

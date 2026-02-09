@@ -10,8 +10,9 @@ type Event interface{}
 // Nodes
 
 type EventNodeCreated struct {
-	Node   string
-	Status NodeStatus
+	Node     string
+	Status   NodeStatus
+	NumSlots int
 }
 
 type EventNodeStatusUpdated struct {
