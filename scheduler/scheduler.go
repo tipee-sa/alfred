@@ -46,7 +46,6 @@ type Scheduler struct {
 	listeners      map[chan Event]bool
 	listenersMutex sync.RWMutex
 
-	shutdown bool
 	// stop is closed (not sent to) by Shutdown() to unblock the Run() select.
 	stop chan any
 
@@ -134,21 +133,23 @@ func (s *Scheduler) forwardEvents() {
 // Schedule is called from gRPC handlers (any goroutine). It increments the WaitGroup
 // for each task, then sends the job to the input channel. The send blocks until Run()
 // reads it, which is fine — Run() is always selecting on input.
+//
+// Uses select on s.input and s.stop to avoid deadlocking when the scheduler is shutting
+// down (Run() has exited, so nobody reads from s.input).
 func (s *Scheduler) Schedule(job *Job) (string, error) {
 	job.id = namegen.Get()
 	nbTasks := len(job.Tasks)
 
-	if s.shutdown {
+	s.log.Info("Scheduling job", "name", job.FQN(), "tasks", nbTasks)
+	s.wg.Add(nbTasks)
+
+	select {
+	case s.input <- job:
+		return job.FQN(), nil
+	case <-s.stop:
+		s.wg.Add(-nbTasks) // undo the Add above
 		return job.FQN(), fmt.Errorf("scheduler is shutting down, ignoring job '%s' (%d tasks)", job.Name, nbTasks)
 	}
-
-	s.log.Info("Scheduling job", "name", job.FQN(), "tasks", nbTasks)
-	s.broadcast(EventJobScheduled{Job: job.FQN(), About: job.About, Tasks: job.Tasks})
-
-	s.wg.Add(nbTasks)
-	s.input <- job // blocks until Run() reads it
-
-	return job.FQN(), nil
 }
 
 // Wait blocks until all tasks have finished (wg counter reaches 0) and the provisioner
@@ -186,8 +187,9 @@ func (s *Scheduler) Run() {
 
 	for {
 		select {
-		// New job submitted: enqueue all its tasks and trigger a scheduling pass.
+		// New job submitted: broadcast the job event, enqueue all its tasks, and trigger a scheduling pass.
 		case job := <-s.input:
+			s.broadcast(EventJobScheduled{Job: job.FQN(), About: job.About, Tasks: job.Tasks})
 			for _, name := range job.Tasks {
 				task := &Task{
 					Job:  job,
@@ -220,7 +222,6 @@ func (s *Scheduler) Run() {
 		// concurrently, then exit the loop. The caller (server) waits via Wait().
 		case <-s.stop:
 			s.log.Info("Shutting down scheduler")
-			s.shutdown = true
 			s.provisioner.Shutdown()
 
 			s.log.Info("Terminating online nodes")
@@ -246,13 +247,15 @@ func (s *Scheduler) requestTick(intent string) {
 	}
 }
 
-// after schedules a function to be executed after a delay
-// This function is safe to call from multiple goroutines
-// The function is run on the main scheduler goroutine
+// after schedules a function to be executed after a delay on the main scheduler goroutine.
+// This function is safe to call from multiple goroutines.
+// If the scheduler shuts down before the timer fires, the function is silently dropped.
 func (s *Scheduler) after(d time.Duration, f func()) {
-	// TODO: what to do with that if the scheduler is shut down?
 	time.AfterFunc(d, func() {
-		s.deferred <- f
+		select {
+		case s.deferred <- f:
+		case <-s.stop:
+		}
 	})
 }
 
@@ -292,6 +295,9 @@ func (s *Scheduler) resizePool() {
 		if nodeState.status == NodeStatusOnline && lo.EveryBy(nodeState.tasks, func(task *Task) bool {
 			return task == nil
 		}) {
+			// Mark as terminating here (on the main goroutine) before spawning the
+			// background goroutine, to avoid a data race on nodeState.status.
+			nodeState.UpdateStatus(NodeStatusTerminating)
 			go s.watchNodeTermination(nodeState) // async: blocks on node.Terminate()
 		}
 	}
@@ -423,25 +429,38 @@ func (s *Scheduler) resizePool() {
 // or minutes (OpenStack VM creation + SSH connection).
 // On success: marks node online and requests a tick so tasks can be assigned.
 // On failure: schedules a deferred discard after ProvisioningFailureCooldown.
+//
+// State mutations (nodeState.node, nodeState.status) are sent to the main goroutine
+// via the deferred channel to avoid data races with the main loop.
 func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	nodeState.log.Info("Provisioning node")
-	nodeState.UpdateStatus(NodeStatusProvisioning)
 
 	if node, err := s.provisioner.Provision(nodeState.nodeName); err != nil {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
-		nodeState.UpdateStatus(NodeStatusFailedProvisioning)
 
-		// Schedule cleanup on the main goroutine (via deferred channel) after cooldown
-		s.after(s.config.ProvisioningFailureCooldown, func() {
-			nodeState.log.Info("Discarding failed node")
-			nodeState.UpdateStatus(NodeStatusDiscarded)
-			s.requestTick("discarded node (because of failed provisioning) should be removed")
-		})
+		select {
+		case s.deferred <- func() {
+			nodeState.UpdateStatus(NodeStatusFailedProvisioning)
+			// Schedule cleanup on the main goroutine (via deferred channel) after cooldown
+			s.after(s.config.ProvisioningFailureCooldown, func() {
+				nodeState.log.Info("Discarding failed node")
+				nodeState.UpdateStatus(NodeStatusDiscarded)
+				s.requestTick("discarded node (because of failed provisioning) should be removed")
+			})
+		}:
+		case <-s.stop:
+		}
 	} else {
-		nodeState.node = node
 		nodeState.log.Info("Node is online")
-		nodeState.UpdateStatus(NodeStatusOnline)
-		s.requestTick("online node should be ready for duty")
+
+		select {
+		case s.deferred <- func() {
+			nodeState.node = node
+			nodeState.UpdateStatus(NodeStatusOnline)
+			s.requestTick("online node should be ready for duty")
+		}:
+		case <-s.stop:
+		}
 	}
 }
 
@@ -510,36 +529,49 @@ func (s *Scheduler) watchTaskExecution(nodeState *nodeState, slot int, task *Tas
 		s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
 	}
 
-	// Free the node slot so another task can use it
-	s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
-	nodeState.tasks[slot] = nil
-
-	s.wg.Done()                                                        // matches wg.Add in Schedule()
-	s.requestTick("executed task should give its slot to another task") // trigger rescheduling
+	// Free the node slot on the main goroutine (via deferred channel) to avoid a data race
+	// with scheduleTaskOnOnlineNode() which reads nodeState.tasks from the main loop.
+	// wg.Done() is unconditional and outside the select so Wait() never hangs.
+	select {
+	case s.deferred <- func() {
+		s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
+		nodeState.tasks[slot] = nil
+		s.requestTick("executed task should give its slot to another task")
+	}:
+	case <-s.stop:
+	}
+	s.wg.Done() // matches wg.Add in Schedule()
 }
 
 // watchNodeTermination runs in its own goroutine (spawned from resizePool when a node
 // has all empty slots). It blocks on node.Terminate() which cleans up the node (no-op
 // for local Docker, VM deletion for OpenStack).
 //
-// WARNING: this modifies s.nodes from a background goroutine. This is currently safe
-// because resizePool won't re-process a TERMINATING node, but it's a subtle invariant.
+// The s.nodes mutation is sent to the main goroutine via the deferred channel to avoid
+// a data race with resizePool() which iterates s.nodes on the main loop.
 func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 	nodeState.log.Info("Terminating node")
-	nodeState.UpdateStatus(NodeStatusTerminating)
+	// Note: UpdateStatus(NodeStatusTerminating) is called by resizePool on the main goroutine
+	// before spawning this goroutine, to avoid a data race on nodeState.status.
 
-	if err := nodeState.node.Terminate(); err != nil {
-		// TODO: retry
-		nodeState.log.Error("Termination of node failed", "error", err)
-		nodeState.UpdateStatus(NodeStatusFailedTerminating)
-	} else {
-		nodeState.log.Info("Node terminated")
-		nodeState.UpdateStatus(NodeStatusTerminated)
+	err := nodeState.node.Terminate()
+
+	select {
+	case s.deferred <- func() {
+		if err != nil {
+			// TODO: retry
+			nodeState.log.Error("Termination of node failed", "error", err)
+			nodeState.UpdateStatus(NodeStatusFailedTerminating)
+		} else {
+			nodeState.log.Info("Node terminated")
+			nodeState.UpdateStatus(NodeStatusTerminated)
+		}
+		s.nodes = lo.Without(s.nodes, nodeState)
+		s.broadcast(EventNodeTerminated{Node: nodeState.nodeName})
+		s.requestTick("terminated node should give its slot to another node")
+	}:
+	case <-s.stop:
 	}
-
-	s.nodes = lo.Without(s.nodes, nodeState)
-	s.broadcast(EventNodeTerminated{Node: nodeState.nodeName})
-	s.requestTick("terminated node should give its slot to another node")
 }
 
 func (s *Scheduler) emptyNodesQueue() {
