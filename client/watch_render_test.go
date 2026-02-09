@@ -1,0 +1,486 @@
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gammadia/alfred/proto"
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// --- visualLineCount tests ---
+
+func TestVisualLineCount_ShortLine(t *testing.T) {
+	assert.Equal(t, 1, visualLineCount("hello", 80))
+}
+
+func TestVisualLineCount_ExactWidth(t *testing.T) {
+	s := strings.Repeat("a", 80)
+	assert.Equal(t, 1, visualLineCount(s, 80))
+}
+
+func TestVisualLineCount_OneCharOver(t *testing.T) {
+	s := strings.Repeat("a", 81)
+	assert.Equal(t, 2, visualLineCount(s, 80))
+}
+
+func TestVisualLineCount_WrapsToThreeLines(t *testing.T) {
+	s := strings.Repeat("a", 200)
+	assert.Equal(t, 3, visualLineCount(s, 80))
+}
+
+func TestVisualLineCount_MultiLineWithWrapping(t *testing.T) {
+	// First line: 100 chars (wraps to 2 visual lines at width 80)
+	// Second line: 10 chars (1 visual line)
+	s := strings.Repeat("a", 100) + "\n" + strings.Repeat("b", 10)
+	assert.Equal(t, 3, visualLineCount(s, 80))
+}
+
+func TestVisualLineCount_EmptyString(t *testing.T) {
+	// Empty string splits into one empty line
+	assert.Equal(t, 1, visualLineCount("", 80))
+}
+
+func TestVisualLineCount_ZeroWidthFallback(t *testing.T) {
+	// termWidth <= 0 should fall back to 80
+	s := strings.Repeat("a", 81)
+	assert.Equal(t, 2, visualLineCount(s, 0))
+	assert.Equal(t, 2, visualLineCount(s, -1))
+}
+
+func TestVisualLineCount_EmojisAtBoundary(t *testing.T) {
+	// Each emoji is 1 grapheme cluster. Build a line of exactly 80 emojis.
+	s := strings.Repeat("🔥", 80)
+	assert.Equal(t, 1, visualLineCount(s, 80))
+
+	// 81 emojis should wrap
+	s = strings.Repeat("🔥", 81)
+	assert.Equal(t, 2, visualLineCount(s, 80))
+}
+
+func TestVisualLineCount_MultiCodepointEmoji(t *testing.T) {
+	// Family emoji (multiple codepoints, 1 grapheme cluster)
+	family := "👨‍👩‍👧‍👦"
+	s := strings.Repeat(family, 80)
+	assert.Equal(t, 1, visualLineCount(s, 80))
+
+	s = strings.Repeat(family, 81)
+	assert.Equal(t, 2, visualLineCount(s, 80))
+}
+
+// --- emojiLabel tests ---
+
+func TestEmojiLabel_SingleCodepoint(t *testing.T) {
+	// "✅" is 1 rune → 1 space after
+	result := emojiLabel("✅")
+	assert.Equal(t, "✅ ", result)
+}
+
+func TestEmojiLabel_MultiRuneEmoji(t *testing.T) {
+	// "⚙️" is 2 runes (⚙ + VS16) → 2 spaces after
+	result := emojiLabel("⚙️")
+	assert.Equal(t, "⚙️  ", result)
+}
+
+func TestEmojiLabel_FlagEmoji(t *testing.T) {
+	// "🏁" is 1 rune → 1 space
+	result := emojiLabel("🏁")
+	assert.Equal(t, "🏁 ", result)
+}
+
+// --- formatItems tests ---
+
+func TestFormatItems_Empty(t *testing.T) {
+	assert.Equal(t, "", formatItems([]string{}, false, false))
+	assert.Equal(t, "", formatItems(nil, false, false))
+}
+
+func TestFormatItems_FewItems_First(t *testing.T) {
+	items := []string{"task-a", "task-b", "task-c"}
+	result := formatItems(items, false, false)
+	assert.Contains(t, result, "task-a task-b task-c")
+	assert.NotContains(t, result, "…")
+	assert.Contains(t, result, "3")
+}
+
+func TestFormatItems_FewItems_Last(t *testing.T) {
+	items := []string{"task-a", "task-b", "task-c"}
+	result := formatItems(items, true, false)
+	assert.Contains(t, result, "task-a task-b task-c")
+	assert.NotContains(t, result, "…")
+	assert.Contains(t, result, "3")
+}
+
+func TestFormatItems_ManyItems_First(t *testing.T) {
+	items := make([]string, 25)
+	for i := range items {
+		items[i] = "task"
+	}
+	result := formatItems(items, false, false)
+	assert.Contains(t, result, " …")
+	assert.Contains(t, result, "25")
+}
+
+func TestFormatItems_ManyItems_Last(t *testing.T) {
+	items := make([]string, 25)
+	for i := range items {
+		items[i] = "task"
+	}
+	result := formatItems(items, true, false)
+	assert.Contains(t, result, "… ")
+	assert.Contains(t, result, "25")
+}
+
+func TestFormatItems_Verbose_ShowsAll(t *testing.T) {
+	items := make([]string, 25)
+	for i := range items {
+		items[i] = "task"
+	}
+	result := formatItems(items, false, true)
+	assert.NotContains(t, result, "…")
+	assert.Equal(t, 25, strings.Count(result, "task"))
+}
+
+func TestFormatItems_LongItemsTruncated(t *testing.T) {
+	// Items whose combined width exceeds 180 chars should be truncated further
+	items := make([]string, 15)
+	for i := range items {
+		items[i] = strings.Repeat("x", 15) // 15*15 = 225 chars + spaces > 180
+	}
+	result := formatItems(items, false, false)
+	// Should have ellipsis since items are truncated
+	assert.Contains(t, result, "…")
+}
+
+// --- renderTimestamp tests ---
+
+func TestRenderTimestamp_Completed(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now: func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		CompletedAt: timestamppb.New(now),
+	}
+	result := r.renderTimestamp(msg)
+	assert.Contains(t, result, "🏁")
+	assert.Contains(t, result, "5m0s")
+}
+
+func TestRenderTimestamp_RunningShort(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now: func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-10 * time.Minute)),
+	}
+	result := r.renderTimestamp(msg)
+	assert.Contains(t, result, "⏱️")
+	assert.Contains(t, result, "10m0s")
+}
+
+func TestRenderTimestamp_RunningSlow(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now: func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-90 * time.Minute)),
+	}
+	result := r.renderTimestamp(msg)
+	assert.Contains(t, result, "🐢")
+}
+
+func TestRenderTimestamp_RunningVerySlow(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now: func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-150 * time.Minute)),
+	}
+	result := r.renderTimestamp(msg)
+	assert.Contains(t, result, "🧟")
+}
+
+// --- renderStats tests ---
+
+func TestRenderStats_ExitCode42_IsFailure(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	exitCode42 := int32(42)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "test-task", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode42, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "⚠️")
+	assert.NotContains(t, stats, "💥")
+}
+
+func TestRenderStats_OtherExitCode_IsCrashed(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	exitCode1 := int32(1)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "test-task", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode1, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "💥")
+	assert.NotContains(t, stats, "⚠️")
+}
+
+func TestRenderStats_SectionOrdering(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	exitCode42 := int32(42)
+	exitCode1 := int32(1)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "queued-task", Status: proto.TaskStatus_QUEUED},
+			{Name: "running-task", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-1 * time.Minute))},
+			{Name: "aborted-task", Status: proto.TaskStatus_ABORTED, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
+			{Name: "crashed-task", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode1, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
+			{Name: "failed-task", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode42, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
+			{Name: "done-task", Status: proto.TaskStatus_COMPLETED, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+
+	// Verify ordering: ⏳ ⚙️ 🛑 💥 ⚠️ ✅
+	lines := strings.Split(stats, "\n")
+	assert.Len(t, lines, 6)
+	assert.Contains(t, lines[0], "⏳")
+	assert.Contains(t, lines[1], "⚙️")
+	assert.Contains(t, lines[2], "🛑")
+	assert.Contains(t, lines[3], "💥")
+	assert.Contains(t, lines[4], "⚠️")
+	assert.Contains(t, lines[5], "✅")
+}
+
+func TestRenderStats_EmptyTasks(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now),
+		Tasks:       []*proto.TaskStatus{},
+	}
+	taskNames, stats := r.renderStats(msg)
+	assert.Empty(t, taskNames)
+	assert.Equal(t, "", stats)
+}
+
+func TestRenderStats_OnlyRunning(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "task-a", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-1 * time.Minute))},
+			{Name: "task-b", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
+		},
+	}
+	taskNames, stats := r.renderStats(msg)
+	assert.Equal(t, []string{"task-a", "task-b"}, taskNames)
+	assert.Contains(t, stats, "⚙️")
+	assert.NotContains(t, stats, "⏳")
+	assert.NotContains(t, stats, "✅")
+	// Should be a single line (only running section)
+	assert.NotContains(t, stats, "\n")
+}
+
+func TestRenderStats_TaskNames(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now),
+		Tasks: []*proto.TaskStatus{
+			{Name: "alpha", Status: proto.TaskStatus_QUEUED},
+			{Name: "beta", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now)},
+			{Name: "gamma", Status: proto.TaskStatus_COMPLETED, StartedAt: timestamppb.New(now)},
+		},
+	}
+	taskNames, _ := r.renderStats(msg)
+	assert.Equal(t, []string{"alpha", "beta", "gamma"}, taskNames)
+}
+
+func TestRenderStats_SlowRunningTask(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-45 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "slow-task", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-45 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "🐢")
+}
+
+func TestRenderStats_VerySlowRunningTask(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-90 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "zombie-task", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-90 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "🧟")
+}
+
+func TestRenderStats_LongQueuedTask(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:     func() time.Time { return now },
+		verbose: false,
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-3 * time.Hour)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "stuck-task", Status: proto.TaskStatus_QUEUED},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "😴")
+}
+
+// --- renderOutput tests ---
+
+func TestRenderOutput_MixedStatuses(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	exitCode1 := int32(1)
+	r := &watchRenderer{
+		jobName:   "test-job",
+		verbose:   false,
+		termWidth: func() int { return 300 },
+		now:       func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "queued", Status: proto.TaskStatus_QUEUED},
+			{Name: "running", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-1 * time.Minute))},
+			{Name: "done", Status: proto.TaskStatus_COMPLETED, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+			{Name: "crashed", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode1, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
+		},
+	}
+	output, displayLines := r.renderOutput(msg)
+	assert.Contains(t, output, "Job 'test-job' running")
+	assert.Contains(t, output, "⏳")
+	assert.Contains(t, output, "⚙️")
+	assert.Contains(t, output, "✅")
+	assert.Contains(t, output, "💥")
+	// 1 header + 4 stat lines - 1 = 4 displayLines (at wide terminal, no wrapping)
+	assert.Equal(t, 4, displayLines)
+}
+
+func TestRenderOutput_OnlyRunning(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		jobName:   "my-job",
+		verbose:   false,
+		termWidth: func() int { return 300 },
+		now:       func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-1 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "task-1", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-30 * time.Second))},
+		},
+	}
+	output, displayLines := r.renderOutput(msg)
+	assert.Contains(t, output, "⚙️")
+	// 1 header + 1 stat line - 1 = 1
+	assert.Equal(t, 1, displayLines)
+}
+
+func TestRenderOutput_CompletedJob(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		jobName:   "done-job",
+		verbose:   false,
+		termWidth: func() int { return 300 },
+		now:       func() time.Time { return now },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-10 * time.Minute)),
+		CompletedAt: timestamppb.New(now),
+		Tasks: []*proto.TaskStatus{
+			{Name: "task-1", Status: proto.TaskStatus_COMPLETED, StartedAt: timestamppb.New(now.Add(-10 * time.Minute))},
+		},
+	}
+	output, _ := r.renderOutput(msg)
+	assert.Contains(t, output, "🏁")
+	assert.Contains(t, output, "10m0s")
+}
+
+func TestRenderOutput_DisplayLinesAccountsForWrapping(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	// Create enough running tasks to produce a long ⚙️ line
+	tasks := make([]*proto.TaskStatus, 15)
+	for i := range tasks {
+		tasks[i] = &proto.TaskStatus{
+			Name:      strings.Repeat("x", 10),
+			Status:    proto.TaskStatus_RUNNING,
+			StartedAt: timestamppb.New(now.Add(-1 * time.Minute)),
+		}
+	}
+
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-1 * time.Minute)),
+		Tasks:       tasks,
+	}
+
+	rNarrow := &watchRenderer{
+		jobName:   "wrap-test",
+		verbose:   false,
+		termWidth: func() int { return 80 },
+		now:       func() time.Time { return now },
+	}
+	rWide := &watchRenderer{
+		jobName:   "wrap-test",
+		verbose:   false,
+		termWidth: func() int { return 300 },
+		now:       func() time.Time { return now },
+	}
+
+	_, linesNarrow := rNarrow.renderOutput(msg)
+	_, linesWide := rWide.renderOutput(msg)
+	assert.Greater(t, linesNarrow, linesWide, "narrow terminal should produce more display lines due to wrapping")
+}
