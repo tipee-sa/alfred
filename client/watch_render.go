@@ -66,7 +66,7 @@ func formatItems(items []string, last bool, verbose bool) string {
 		} else {
 			nItems = items[:min(nbItems, displayItems)]
 		}
-		if uniseg.GraphemeClusterCount(strings.Join(nItems, " ")) <= lineLength {
+		if uniseg.StringWidth(strings.Join(nItems, " ")) <= lineLength {
 			break
 		}
 		displayItems -= 1
@@ -87,7 +87,7 @@ func visualLineCount(s string, termWidth int) int {
 	}
 	count := 0
 	for _, line := range strings.Split(s, "\n") {
-		w := uniseg.GraphemeClusterCount(line)
+		w := uniseg.StringWidth(line)
 		if w <= termWidth {
 			count++
 		} else {

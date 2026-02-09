@@ -51,22 +51,22 @@ func TestVisualLineCount_ZeroWidthFallback(t *testing.T) {
 }
 
 func TestVisualLineCount_EmojisAtBoundary(t *testing.T) {
-	// Each emoji is 1 grapheme cluster. Build a line of exactly 80 emojis.
-	s := strings.Repeat("🔥", 80)
+	// Each emoji is 2 display columns wide. 40 emojis = 80 columns = exactly fits.
+	s := strings.Repeat("🔥", 40)
 	assert.Equal(t, 1, visualLineCount(s, 80))
 
-	// 81 emojis should wrap
-	s = strings.Repeat("🔥", 81)
+	// 41 emojis = 82 columns → wraps to 2 lines
+	s = strings.Repeat("🔥", 41)
 	assert.Equal(t, 2, visualLineCount(s, 80))
 }
 
 func TestVisualLineCount_MultiCodepointEmoji(t *testing.T) {
-	// Family emoji (multiple codepoints, 1 grapheme cluster)
+	// Family emoji (multiple codepoints, 1 grapheme cluster, 2 display columns)
 	family := "👨‍👩‍👧‍👦"
-	s := strings.Repeat(family, 80)
+	s := strings.Repeat(family, 40)
 	assert.Equal(t, 1, visualLineCount(s, 80))
 
-	s = strings.Repeat(family, 81)
+	s = strings.Repeat(family, 41)
 	assert.Equal(t, 2, visualLineCount(s, 80))
 }
 
