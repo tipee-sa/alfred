@@ -14,6 +14,7 @@ service Alfred {
     rpc LoadImage (stream LoadImageMessage) returns (stream LoadImageResponse);
     rpc ScheduleJob (ScheduleJobRequest) returns (ScheduleJobResponse);
     rpc Ping (PingRequest) returns (PingResponse);
+    rpc StreamTaskLogs (StreamTaskLogsRequest) returns (stream StreamTaskLogsChunk);
     rpc WatchJob (WatchJobRequest) returns (stream JobStatus);
     rpc WatchJobs (WatchJobsRequest) returns (stream JobsList);
 }
@@ -64,6 +65,17 @@ message DownloadArtifactRequest {
 }
 
 message DownloadArtifactChunk {
+    bytes data = 1;
+    uint32 length = 2;
+}
+
+message StreamTaskLogsRequest {
+    string job = 1;
+    string task = 2;
+    int32 tail_lines = 3;
+}
+
+message StreamTaskLogsChunk {
     bytes data = 1;
     uint32 length = 2;
 }

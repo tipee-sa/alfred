@@ -31,6 +31,7 @@ type RunTaskConfig struct {
 	SecretLoader        SecretLoader
 	OnWorkspaceReady    func(archiver func() (io.ReadCloser, error))
 	OnWorkspaceTeardown func()
+	OnLogReaderReady    func(logReader func(lines int) (io.ReadCloser, error))
 }
 
 type Node interface {

@@ -97,6 +97,7 @@ var alfredCmd = &cobra.Command{
 func init() {
 	alfredCmd.AddCommand(artifactCmd)
 	alfredCmd.AddCommand(cancelCmd)
+	alfredCmd.AddCommand(logsCmd)
 	alfredCmd.AddCommand(psCmd)
 	alfredCmd.AddCommand(runCmd)
 	alfredCmd.AddCommand(selfUpdateCmd)

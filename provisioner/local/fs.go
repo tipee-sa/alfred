@@ -1,7 +1,9 @@
 package local
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -54,13 +56,63 @@ func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) err
 	return cmd.Run()
 }
 
-func (f *fs) Archive(p string) (rc io.ReadCloser, err error) {
-	cmd := exec.Command("tar", "--create", "--use-compress-program", "zstd --compress --adapt=min=5,max=8", "--file", "-", "--directory", f.root, strings.TrimLeft(p, "/"))
-	if rc, err = cmd.StdoutPipe(); err != nil {
-		return
+func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
+	entries, err := os.ReadDir(f.HostPath(dir))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory '%s': %w", dir, err)
 	}
-	err = cmd.Start()
-	return
+
+	var logFiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
+			logFiles = append(logFiles, path.Join(f.HostPath(dir), entry.Name()))
+		}
+	}
+	if len(logFiles) == 0 {
+		return nil, fmt.Errorf("no log files found in '%s'", dir)
+	}
+
+	args := append([]string{"-n", fmt.Sprintf("%d", lines)}, logFiles...)
+	cmd := exec.Command("tail", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &archiveReader{Reader: stdout, cmd: cmd, stderr: &stderr}, nil
+}
+
+func (f *fs) Archive(p string) (io.ReadCloser, error) {
+	cmd := exec.Command("tar", "--create", "--use-compress-program", "zstd --compress --adapt=min=5,max=8", "--file", "-", "--directory", f.root, strings.TrimLeft(p, "/"))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err = cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &archiveReader{Reader: stdout, cmd: cmd, stderr: &stderr}, nil
+}
+
+// archiveReader wraps a stdout pipe so that Close() waits for the subprocess
+// and surfaces any tar/zstd errors (which would otherwise be lost as a silent EOF).
+type archiveReader struct {
+	io.Reader
+	cmd    *exec.Cmd
+	stderr *bytes.Buffer
+}
+
+func (r *archiveReader) Close() error {
+	if err := r.cmd.Wait(); err != nil {
+		return fmt.Errorf("archive command failed: %w: %s", err, r.stderr.String())
+	}
+	return nil
 }
 
 func (f *fs) Delete(p string) error {

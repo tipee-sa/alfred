@@ -1,6 +1,7 @@
 package openstack
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -85,12 +86,39 @@ func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) err
 	))
 }
 
+func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
+	session, err := f.ssh.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSH session: %w", err)
+	}
+
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+
+	out := lo.Must(session.StdoutPipe())
+	// The test -n check ensures we fail with "no log files found" (via stderr)
+	// instead of silently returning an empty stream when no .log files exist.
+	if err = session.Start(fmt.Sprintf(
+		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -n %d`,
+		shellescape.Quote(f.HostPath(dir)),
+		lines,
+	)); err != nil {
+		session.Close()
+		return nil, err
+	}
+
+	return &sshReadCloser{Reader: out, session: session, stderr: &stderr, label: "tail"}, nil
+}
+
 // Archive returns a .tar.zst of the given path
 func (f *fs) Archive(p string) (io.ReadCloser, error) {
 	session, err := f.ssh.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH session: %w", err)
 	}
+
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
 
 	out := lo.Must(session.StdoutPipe())
 	if err = session.Start(fmt.Sprintf(
@@ -99,10 +127,11 @@ func (f *fs) Archive(p string) (io.ReadCloser, error) {
 		shellescape.Quote(f.root),
 		shellescape.Quote(strings.TrimLeft(p, "/")),
 	)); err != nil {
+		session.Close()
 		return nil, err
 	}
 
-	return splitReadCloser{out, session}, nil
+	return &sshReadCloser{Reader: out, session: session, stderr: &stderr, label: "archive"}, nil
 }
 
 func (f *fs) Delete(p string) error {
@@ -119,7 +148,20 @@ func (f *fs) Scope(p string) internal.WorkspaceFS {
 	return &internal.ScopedFS{Parent: f, Prefix: p}
 }
 
-type splitReadCloser struct {
+// sshReadCloser wraps an SSH session's stdout pipe so that Close() waits for
+// the remote command and surfaces errors from stderr.
+type sshReadCloser struct {
 	io.Reader
-	io.Closer
+	session *ssh.Session
+	stderr  *bytes.Buffer
+	label   string
+}
+
+func (r *sshReadCloser) Close() error {
+	err := r.session.Wait()
+	r.session.Close()
+	if err != nil {
+		return fmt.Errorf("remote %s command failed: %w: %s", r.label, err, r.stderr.String())
+	}
+	return nil
 }

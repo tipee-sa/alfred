@@ -70,6 +70,11 @@ type Scheduler struct {
 	// Written by watchTaskExecution() callbacks, read by ArchiveLiveArtifact().
 	liveArchivers   map[string]func() (io.ReadCloser, error)
 	liveArchiversMu sync.RWMutex
+
+	// liveLogReaders allows reading step logs from still-running tasks.
+	// Written by watchTaskExecution() callbacks, read by ReadLiveTaskLogs().
+	liveLogReaders   map[string]func(int) (io.ReadCloser, error)
+	liveLogReadersMu sync.RWMutex
 }
 
 type cancelRequest struct {
@@ -98,7 +103,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		cancellations: make(chan cancelRequest),
 		taskCancels:   make(map[string]context.CancelFunc),
 
-		liveArchivers: make(map[string]func() (io.ReadCloser, error)),
+		liveArchivers:  make(map[string]func() (io.ReadCloser, error)),
+		liveLogReaders: make(map[string]func(int) (io.ReadCloser, error)),
 	}
 
 	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
@@ -690,10 +696,34 @@ func (s *Scheduler) ArchiveLiveArtifact(jobFQN, taskName string) (io.ReadCloser,
 	s.liveArchiversMu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("no live artifact available for %s", key)
+		return nil, fmt.Errorf("no live archiver registered for %q (task may not be running or workspace not ready yet)", key)
 	}
 
-	return archiver()
+	s.log.Debug("Invoking live archiver", "key", key)
+	rc, err := archiver()
+	if err != nil {
+		return nil, fmt.Errorf("live archiver for %q failed: %w", key, err)
+	}
+	return rc, nil
+}
+
+func (s *Scheduler) ReadLiveTaskLogs(jobFQN, taskName string, lines int) (io.ReadCloser, error) {
+	key := jobFQN + "/" + taskName
+
+	s.liveLogReadersMu.RLock()
+	logReader, ok := s.liveLogReaders[key]
+	s.liveLogReadersMu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("no live log reader registered for %q (task may not be running or workspace not ready yet)", key)
+	}
+
+	s.log.Debug("Invoking live log reader", "key", key)
+	rc, err := logReader(lines)
+	if err != nil {
+		return nil, fmt.Errorf("live log reader for %q failed: %w", key, err)
+	}
+	return rc, nil
 }
 
 // watchTaskExecution runs in its own goroutine (one per task, spawned from scheduleTaskOnOnlineNode).
@@ -724,10 +754,19 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 			defer s.liveArchiversMu.Unlock()
 			s.liveArchivers[key] = archiver
 		},
+		OnLogReaderReady: func(logReader func(lines int) (io.ReadCloser, error)) {
+			s.liveLogReadersMu.Lock()
+			defer s.liveLogReadersMu.Unlock()
+			s.liveLogReaders[key] = logReader
+		},
 		OnWorkspaceTeardown: func() {
 			s.liveArchiversMu.Lock()
-			defer s.liveArchiversMu.Unlock()
 			delete(s.liveArchivers, key)
+			s.liveArchiversMu.Unlock()
+
+			s.liveLogReadersMu.Lock()
+			delete(s.liveLogReaders, key)
+			s.liveLogReadersMu.Unlock()
 		},
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1043,4 +1044,120 @@ func TestMaxNodesGlobalCap(t *testing.T) {
 		}
 	}
 	assert.True(t, hasJobCompleted, "job should complete despite MaxNodes cap")
+}
+
+// --- Live log reader tests ---
+
+// callbackMockNode is a mock node that invokes RunTaskConfig callbacks,
+// simulating what RunContainer does for workspace/log reader registration.
+type callbackMockNode struct {
+	name        string
+	taskDone    chan struct{}
+	terminateCh chan struct{}
+}
+
+func (n *callbackMockNode) Name() string { return n.name }
+
+func (n *callbackMockNode) RunTask(ctx context.Context, _ *Task, config RunTaskConfig) (int, error) {
+	// Simulate workspace setup: register live archiver and log reader
+	if config.OnWorkspaceReady != nil {
+		config.OnWorkspaceReady(func() (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader("archive data")), nil
+		})
+	}
+	if config.OnLogReaderReady != nil {
+		config.OnLogReaderReady(func(lines int) (io.ReadCloser, error) {
+			return io.NopCloser(strings.NewReader(fmt.Sprintf("log output (tail %d lines)\n", lines))), nil
+		})
+	}
+	defer func() {
+		if config.OnWorkspaceTeardown != nil {
+			config.OnWorkspaceTeardown()
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	case <-n.taskDone:
+		return 0, nil
+	}
+}
+
+func (n *callbackMockNode) Terminate() error {
+	<-n.terminateCh
+	return nil
+}
+
+func TestReadLiveTaskLogs(t *testing.T) {
+	nodes := make(chan *callbackMockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+		n := &callbackMockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	s := newTestScheduler(prov)
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("my-task")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node := <-nodes
+	ev := waitForEvent[EventTaskRunning](t, events)
+
+	// Give callbacks a moment to register
+	time.Sleep(50 * time.Millisecond)
+
+	// Read live logs while task is running
+	rc, err := s.ReadLiveTaskLogs(ev.Job, "my-task", 25)
+	require.NoError(t, err)
+
+	data, readErr := io.ReadAll(rc)
+	require.NoError(t, readErr)
+	require.NoError(t, rc.Close())
+
+	assert.Equal(t, "log output (tail 25 lines)\n", string(data))
+
+	// Complete the task
+	close(node.taskDone)
+	waitForEvent[EventJobCompleted](t, events)
+
+	// Give teardown callback a moment to clean up
+	time.Sleep(50 * time.Millisecond)
+
+	// After task completion, live log reader should be unregistered
+	_, err = s.ReadLiveTaskLogs(ev.Job, "my-task", 10)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no live log reader registered")
+
+	close(node.terminateCh)
+}
+
+func TestReadLiveTaskLogsNotRunning(t *testing.T) {
+	prov := newMockProvisioner()
+	s := newTestScheduler(prov)
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	_, err := s.ReadLiveTaskLogs("nonexistent-job", "nonexistent-task", 10)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no live log reader registered")
 }
