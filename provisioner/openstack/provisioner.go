@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gammadia/alfred/namegen"
@@ -40,7 +41,7 @@ type Provisioner struct {
 	wg sync.WaitGroup
 
 	// True if Shutdown() has been called
-	shutdown bool
+	shutdown atomic.Bool
 }
 
 // Provisioner implements scheduler.Provisioner
@@ -156,11 +157,10 @@ func (p *Provisioner) Provision(nodeName string, flavor string) (scheduler.Node,
 }
 
 func (p *Provisioner) Shutdown() {
-	if p.shutdown {
+	if !p.shutdown.CompareAndSwap(false, true) {
 		p.log.Debug("Ignoring duplicate call to Shutdown()")
 		return
 	}
-	p.shutdown = true
 	p.deleteKeypair()
 	p.wg.Done() // Remove the provisioner itself from the WaitGroup
 }
