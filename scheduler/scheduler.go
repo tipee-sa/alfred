@@ -146,9 +146,8 @@ func (s *Scheduler) forwardEvents() {
 		for channel := range s.listeners {
 			select {
 			case channel <- event:
-				// Event sent
 			default:
-				s.log.Debug("Listener queue full, dropping message")
+				s.log.Warn("Listener queue full, dropping event", "event", fmt.Sprintf("%T", event))
 			}
 		}
 	}
@@ -485,7 +484,11 @@ func (s *Scheduler) resizePool() {
 	// Prune nodesQueue entries for types with zero remaining demand
 	s.nodesQueue = lo.Filter(s.nodesQueue, func(ns *nodeState, _ int) bool {
 		key := nodeTypeKey{flavor: ns.flavor, tasksPerNode: ns.tasksPerNode}
-		return tasksByType[key] > 0
+		keep := tasksByType[key] > 0
+		if !keep {
+			s.broadcast(EventNodeTerminated{Node: ns.nodeName})
+		}
+		return keep
 	})
 }
 
@@ -846,7 +849,11 @@ func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 
 func (s *Scheduler) removeAllQueuedNodesOfType(flavor string, tasksPerNode int) {
 	s.nodesQueue = lo.Filter(s.nodesQueue, func(ns *nodeState, _ int) bool {
-		return ns.flavor != flavor || ns.tasksPerNode != tasksPerNode
+		keep := ns.flavor != flavor || ns.tasksPerNode != tasksPerNode
+		if !keep {
+			s.broadcast(EventNodeTerminated{Node: ns.nodeName})
+		}
+		return keep
 	})
 }
 
@@ -855,6 +862,7 @@ func (s *Scheduler) removeQueuedNodesOfType(flavor string, tasksPerNode int, cou
 	for i := len(s.nodesQueue) - 1; i >= 0 && removed < count; i-- {
 		ns := s.nodesQueue[i]
 		if ns.flavor == flavor && ns.tasksPerNode == tasksPerNode {
+			s.broadcast(EventNodeTerminated{Node: ns.nodeName})
 			s.nodesQueue = append(s.nodesQueue[:i], s.nodesQueue[i+1:]...)
 			removed++
 		}
@@ -862,10 +870,9 @@ func (s *Scheduler) removeQueuedNodesOfType(flavor string, tasksPerNode int, cou
 }
 
 func (s *Scheduler) emptyNodesQueue() {
-	if len(s.nodesQueue) < 1 {
-		return
+	for _, ns := range s.nodesQueue {
+		s.broadcast(EventNodeTerminated{Node: ns.nodeName})
 	}
-	s.log.Debug("Emptying nodes queue", "nodes", len(s.nodesQueue))
 	s.nodesQueue = nil
 }
 

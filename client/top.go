@@ -41,13 +41,13 @@ var topCmd = &cobra.Command{
 		// Nodes table
 		nodesTable := tview.NewTable().
 			SetFixed(1, 0).
-			SetSelectable(false, false)
+			SetSelectable(true, false)
 		nodesTable.SetBorder(true).SetTitle(" Nodes ")
 
 		// Jobs table
 		jobsTable := tview.NewTable().
 			SetFixed(1, 0).
-			SetSelectable(false, false)
+			SetSelectable(true, false)
 		jobsTable.SetBorder(true).SetTitle(" Jobs ")
 
 		// Layout
@@ -56,10 +56,24 @@ var topCmd = &cobra.Command{
 			AddItem(nodesTable, 0, 1, false).
 			AddItem(jobsTable, 0, 1, false)
 
+		// Focus cycling: Tab switches between nodes and jobs tables
+		focusables := []tview.Primitive{nodesTable, jobsTable}
+		focusIndex := 0
+		app.SetFocus(nodesTable)
+
 		// Input handling
 		app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 			if event.Rune() == 'q' {
 				app.Stop()
+				return nil
+			}
+			if event.Key() == tcell.KeyTab || event.Key() == tcell.KeyBacktab {
+				if event.Key() == tcell.KeyBacktab {
+					focusIndex = (focusIndex + len(focusables) - 1) % len(focusables)
+				} else {
+					focusIndex = (focusIndex + 1) % len(focusables)
+				}
+				app.SetFocus(focusables[focusIndex])
 				return nil
 			}
 			return event
@@ -130,7 +144,11 @@ var topCmd = &cobra.Command{
 			nodes := make([]*proto.NodeStatus, len(lastStatus.Nodes))
 			copy(nodes, lastStatus.Nodes)
 			sort.Slice(nodes, func(i, j int) bool {
-				return nodeStatusOrder(nodes[i].Status) < nodeStatusOrder(nodes[j].Status)
+				oi, oj := nodeStatusOrder(nodes[i].Status), nodeStatusOrder(nodes[j].Status)
+				if oi != oj {
+					return oi < oj
+				}
+				return nodes[i].Name < nodes[j].Name
 			})
 
 			for row, node := range nodes {
