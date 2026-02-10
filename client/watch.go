@@ -55,6 +55,29 @@ var watchCmd = &cobra.Command{
 			now: time.Now,
 		}
 
+		// Verbose mode: one-shot dump of current state, no refresh loop.
+		// Useful when the output is too large for in-place terminal updates.
+		if verbose {
+			spinner.FinalMSG = ""
+			spinner.Stop()
+
+			msg, err := c.Recv()
+			if err != nil {
+				return fmt.Errorf("failed to receive job status: %w", err)
+			}
+
+			taskNames, stats := renderer.renderStats(msg)
+			timestamp := renderer.renderTimestamp(msg)
+			status := "running"
+			statusColor := color.HiYellowString("⚙")
+			if msg.CompletedAt != nil {
+				status = "completed"
+				statusColor = color.HiGreenString("✓")
+			}
+			fmt.Fprintf(os.Stderr, "%s Job '%s' %s (%s%d, %s)\n%s\n", statusColor, args[0], status, emojiLabel("📝"), len(taskNames), timestamp, stats)
+			return nil
+		}
+
 		// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
 		// Without this, we couldn't multiplex between incoming messages and the ticker.
 		// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
