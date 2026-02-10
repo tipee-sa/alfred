@@ -72,7 +72,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("no log files found in '%s'", dir)
 	}
 
-	args := append([]string{"-n", fmt.Sprintf("%d", lines)}, logFiles...)
+	args := append([]string{"-v", "-n", fmt.Sprintf("%d", lines)}, logFiles...)
 	cmd := exec.Command("tail", args...)
 	output, err := cmd.Output()
 	if err != nil {

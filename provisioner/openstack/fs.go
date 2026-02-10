@@ -99,7 +99,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	// Using session.Output avoids SSH stdout pipe EOF delivery issues that cause
 	// the streaming read loop to hang.
 	output, err := session.Output(fmt.Sprintf(
-		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -n %d`,
+		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -v -n %d`,
 		shellescape.Quote(f.HostPath(dir)),
 		lines,
 	))

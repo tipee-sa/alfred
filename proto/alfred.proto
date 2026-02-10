@@ -74,6 +74,7 @@ message StreamTaskLogsRequest {
     string job = 1;
     string task = 2;
     int32 tail_lines = 3;
+    bool follow = 4;
 }
 
 message StreamTaskLogsChunk {
