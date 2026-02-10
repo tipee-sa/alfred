@@ -90,7 +90,7 @@ func TestWatchLoop_ContextCancelled_BeforeStart_ReturnsNil(t *testing.T) {
 
 	assert.NoError(t, err, "context cancellation should be a clean exit")
 	assert.True(t, cleanStopCalled, "onCleanStop should be called")
-	assert.Contains(t, buf.String(), "Interrupted")
+	assert.NotContains(t, buf.String(), "Interrupted", "should not print Interrupted message")
 }
 
 func TestWatchLoop_ContextCancelled_BeforeStart_DoesNotCallOnFailStop(t *testing.T) {
@@ -125,7 +125,7 @@ func TestWatchLoop_ContextCancelled_AfterStart_RestoresCursor(t *testing.T) {
 	output := buf.String()
 	assert.Contains(t, output, cursorHide, "cursor should have been hidden")
 	assert.Contains(t, output, cursorShow, "cursor should be restored")
-	assert.Contains(t, output, "Interrupted")
+	assert.NotContains(t, output, "Interrupted", "should not print Interrupted message")
 }
 
 func TestWatchLoop_ContextCancelled_AfterStart_CursorShowAfterHide(t *testing.T) {

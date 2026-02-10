@@ -160,20 +160,21 @@ func runWatchLoop(
 					fmt.Fprintf(w, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), len(taskNames), timestamp, stats)
 					return nil
 				}
+				if ctx.Err() == context.Canceled {
+					if !started && onCleanStop != nil {
+						onCleanStop()
+					}
+					// Keep current output visible, just move past it and restore cursor
+					if started {
+						fmt.Fprint(w, "\n")
+					}
+					return nil
+				}
 				if started {
 					if displayLines > 0 {
 						fmt.Fprintf(w, "\033[%dA\r\033[J", displayLines)
 					}
 					fmt.Fprint(w, "\033[?25h")
-				}
-				if ctx.Err() == context.Canceled {
-					if !started && onCleanStop != nil {
-						onCleanStop()
-					}
-					fmt.Fprintf(w, "%s Interrupted\n", color.HiYellowString("!"))
-					return nil
-				}
-				if started {
 					fmt.Fprintf(w, "%s Waiting for job data\n", color.HiRedString("✗"))
 				} else if onFailStop != nil {
 					onFailStop()
