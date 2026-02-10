@@ -147,11 +147,15 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			if options.Verbose {
 				cmd.Stderr = os.Stderr
 			}
-			if output, err := cmd.Output(); err != nil {
+			output, err := cmd.Output()
+			if err != nil {
+				var exitErr *exec.ExitError
+				if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+					panic(fmt.Errorf("%w\n%s", err, strings.TrimRight(string(exitErr.Stderr), "\n")))
+				}
 				panic(err)
-			} else {
-				return strings.TrimRight(string(output), "\n\r")
 			}
+			return strings.TrimRight(string(output), "\n\r")
 		},
 		"shell": func(script string) string {
 			cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
@@ -159,11 +163,15 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 			if options.Verbose {
 				cmd.Stderr = os.Stderr
 			}
-			if output, err := cmd.Output(); err != nil {
+			output, err := cmd.Output()
+			if err != nil {
+				var exitErr *exec.ExitError
+				if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+					panic(fmt.Errorf("%w\n%s", err, strings.TrimRight(string(exitErr.Stderr), "\n")))
+				}
 				panic(err)
-			} else {
-				return strings.TrimRight(string(output), "\n\r")
 			}
+			return strings.TrimRight(string(output), "\n\r")
 		},
 	}).Parse(source)
 	if err != nil {
@@ -189,7 +197,7 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 
 // buildImage builds the main Docker image for the job and returns its ID.
 func buildImage(dockerfile string, dir string, buildOptions []string, readOptions ReadOptions) (string, error) {
-	args := []string{"build", ".", "-f", dockerfile}
+	args := []string{"build", "--platform", "linux/amd64", ".", "-f", dockerfile}
 	args = append(args, buildOptions...)
 
 	// Create a temporary file to store the image ID (@see --iidfile flag).
