@@ -10,7 +10,6 @@ import (
 
 	"github.com/alessio/shellescape"
 	"github.com/gammadia/alfred/provisioner/internal"
-	"github.com/samber/lo"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -111,7 +110,11 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(output)), nil
 }
 
-// Archive returns a .tar.zst of the given path
+// Archive returns a .tar.zst of the given path.
+// Uses io.Pipe + session.Stdout instead of session.StdoutPipe() because
+// StdoutPipe() has the caller read directly from the SSH channel, which
+// hangs on long-lived connections. Setting session.Stdout lets the SSH
+// library manage channel reading via an internal goroutine.
 func (f *fs) Archive(p string) (io.ReadCloser, error) {
 	session, err := f.ssh.NewSession()
 	if err != nil {
@@ -121,7 +124,9 @@ func (f *fs) Archive(p string) (io.ReadCloser, error) {
 	var stderr bytes.Buffer
 	session.Stderr = &stderr
 
-	out := lo.Must(session.StdoutPipe())
+	pr, pw := io.Pipe()
+	session.Stdout = pw
+
 	if err = session.Start(fmt.Sprintf(
 		"tar --create --use-compress-program=%s --file - --directory %s %s",
 		shellescape.Quote("zstd --compress --adapt=min=5,max=8"),
@@ -132,7 +137,19 @@ func (f *fs) Archive(p string) (io.ReadCloser, error) {
 		return nil, err
 	}
 
-	return &sshReadCloser{Reader: out, session: session, stderr: &stderr, label: "archive"}, nil
+	// Background goroutine waits for the command to complete (which also waits
+	// for the library's internal stdout copy goroutine to finish), then closes
+	// the pipe writer so the reader gets EOF.
+	go func() {
+		if err := session.Wait(); err != nil {
+			pw.CloseWithError(fmt.Errorf("remote archive command failed: %w: %s", err, stderr.String()))
+		} else {
+			pw.Close()
+		}
+		session.Close()
+	}()
+
+	return pr, nil
 }
 
 func (f *fs) Delete(p string) error {

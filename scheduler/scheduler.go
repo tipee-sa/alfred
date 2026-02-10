@@ -704,6 +704,7 @@ func (s *Scheduler) ArchiveLiveArtifact(jobFQN, taskName string) (io.ReadCloser,
 	if err != nil {
 		return nil, fmt.Errorf("live archiver for %q failed: %w", key, err)
 	}
+	s.log.Debug("Live archiver returned reader successfully", "key", key)
 	return rc, nil
 }
 
@@ -718,11 +719,12 @@ func (s *Scheduler) ReadLiveTaskLogs(jobFQN, taskName string, lines int) (io.Rea
 		return nil, fmt.Errorf("no live log reader registered for %q (task may not be running or workspace not ready yet)", key)
 	}
 
-	s.log.Debug("Invoking live log reader", "key", key)
+	s.log.Debug("Invoking live log reader", "key", key, "lines", lines)
 	rc, err := logReader(lines)
 	if err != nil {
 		return nil, fmt.Errorf("live log reader for %q failed: %w", key, err)
 	}
+	s.log.Debug("Live log reader returned reader successfully", "key", key)
 	return rc, nil
 }
 

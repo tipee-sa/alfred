@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/gammadia/alfred/proto"
-	"github.com/gammadia/alfred/server/config"
 	"github.com/gammadia/alfred/server/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -36,6 +34,7 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 		log.Debug("Reading logs from finalized artifact", "job", req.Job, "task", req.Task)
 		r, err := extractLogsFromArtifact(artifact, tailLines)
 		if err != nil {
+			log.Error("Failed to extract logs from artifact", "job", req.Job, "task", req.Task, "artifact", artifact, "error", err)
 			return fmt.Errorf("failed to extract logs from artifact: %w", err)
 		}
 		reader = r
@@ -47,6 +46,7 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 			log.Warn("Logs not found", "job", req.Job, "task", req.Task, "liveError", liveErr)
 			return status.Errorf(codes.NotFound, "logs not found for task %s/%s", req.Job, req.Task)
 		}
+		log.Debug("Live log reader obtained, starting read loop", "job", req.Job, "task", req.Task)
 		reader = liveReader
 	}
 	defer func() {
@@ -55,21 +55,27 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 		}
 	}()
 
-	chunk := make([]byte, config.MaxPacketSize-1024*1024)
+	totalBytes := 0
+	chunk := make([]byte, 32*1024)
 	for {
-		n, err := io.ReadFull(reader, chunk)
-		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-			if err == io.EOF {
-				return nil
+		n, err := reader.Read(chunk)
+		if n > 0 {
+			totalBytes += n
+			if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
+				Data:   chunk[:n],
+				Length: uint32(n),
+			}); sendErr != nil {
+				log.Error("Failed to send log chunk", "job", req.Job, "task", req.Task, "totalBytes", totalBytes, "error", sendErr)
+				return fmt.Errorf("failed to send log chunk: %w", sendErr)
 			}
-			return fmt.Errorf("failed to read log chunk: %w", err)
 		}
-
-		if err = srv.Send(&proto.StreamTaskLogsChunk{
-			Data:   chunk[:n],
-			Length: uint32(n),
-		}); err != nil {
-			return fmt.Errorf("failed to send log chunk: %w", err)
+		if err == io.EOF {
+			log.Debug("Log stream complete", "job", req.Job, "task", req.Task, "totalBytes", totalBytes)
+			return nil
+		}
+		if err != nil {
+			log.Error("Failed to read log chunk", "job", req.Job, "task", req.Task, "totalBytes", totalBytes, "error", err)
+			return fmt.Errorf("failed to read log chunk: %w", err)
 		}
 	}
 }
@@ -115,38 +121,14 @@ func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser,
 	}
 	sort.Strings(logFiles)
 
-	// Tail the log files
+	// Tail the log files and collect output
 	args := append([]string{"-n", fmt.Sprintf("%d", tailLines)}, logFiles...)
 	tailCmd := exec.Command("tail", args...)
-	var tailStderr bytes.Buffer
-	tailCmd.Stderr = &tailStderr
-	stdout, err := tailCmd.StdoutPipe()
+	output, err := tailCmd.Output()
+	os.RemoveAll(tmpDir)
 	if err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, err
-	}
-	if err = tailCmd.Start(); err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, err
+		return nil, fmt.Errorf("tail command failed: %w", err)
 	}
 
-	return &artifactLogReader{Reader: stdout, cmd: tailCmd, stderr: &tailStderr, tmpDir: tmpDir}, nil
-}
-
-// artifactLogReader wraps a tail command's stdout pipe. Close() waits for the
-// command to finish and cleans up the temp directory.
-type artifactLogReader struct {
-	io.Reader
-	cmd    *exec.Cmd
-	stderr *bytes.Buffer
-	tmpDir string
-}
-
-func (r *artifactLogReader) Close() error {
-	err := r.cmd.Wait()
-	os.RemoveAll(r.tmpDir)
-	if err != nil {
-		return fmt.Errorf("tail command failed: %w: %s", err, r.stderr.String())
-	}
-	return nil
+	return io.NopCloser(bytes.NewReader(output)), nil
 }
