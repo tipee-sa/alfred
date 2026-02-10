@@ -127,7 +127,13 @@ var topCmd = &cobra.Command{
 				return
 			}
 
-			for row, node := range lastStatus.Nodes {
+			nodes := make([]*proto.NodeStatus, len(lastStatus.Nodes))
+			copy(nodes, lastStatus.Nodes)
+			sort.Slice(nodes, func(i, j int) bool {
+				return nodeStatusOrder(nodes[i].Status) < nodeStatusOrder(nodes[j].Status)
+			})
+
+			for row, node := range nodes {
 				// Name
 				nodesTable.SetCell(row+1, 0, tview.NewTableCell(node.Name).
 					SetTextColor(tcell.ColorWhite).
@@ -314,6 +320,23 @@ var topCmd = &cobra.Command{
 
 		return app.SetRoot(layout, true).Run()
 	},
+}
+
+func nodeStatusOrder(status proto.NodeStatus_Status) int {
+	switch status {
+	case proto.NodeStatus_ONLINE:
+		return 0
+	case proto.NodeStatus_TERMINATING, proto.NodeStatus_FAILED_TERMINATING:
+		return 1
+	case proto.NodeStatus_PROVISIONING:
+		return 2
+	case proto.NodeStatus_QUEUED:
+		return 3
+	case proto.NodeStatus_TERMINATED, proto.NodeStatus_DISCARDED, proto.NodeStatus_FAILED_PROVISIONING:
+		return 4
+	default:
+		return 5
+	}
 }
 
 func nodeStatusColor(status proto.NodeStatus_Status) tcell.Color {
