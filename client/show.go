@@ -33,10 +33,7 @@ var showCmd = &cobra.Command{
 		if job.Jobfile != "" {
 			cmd.Println()
 			cmd.Println(fmt.Sprintf("--- %s ---", color.HiWhiteString("Jobfile")))
-			cmd.Print(job.Jobfile)
-			if len(job.Jobfile) > 0 && job.Jobfile[len(job.Jobfile)-1] != '\n' {
-				cmd.Println()
-			}
+			cmd.Print(stripJobfileNoise(job.Jobfile))
 		}
 
 		return nil
@@ -98,6 +95,40 @@ func formatCommandLine(command string, maxWidth int) string {
 	lines = append(lines, line)
 
 	return strings.Join(lines, "\n")
+}
+
+// stripJobfileNoise removes comment lines and collapses consecutive blank lines
+// from the rendered jobfile, producing a cleaner display output.
+func stripJobfileNoise(source string) string {
+	lines := strings.Split(source, "\n")
+	var result []string
+	lastBlank := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "" {
+			if lastBlank {
+				continue
+			}
+			lastBlank = true
+		} else {
+			lastBlank = false
+		}
+		result = append(result, line)
+	}
+	// Trim leading/trailing blank lines
+	for len(result) > 0 && strings.TrimSpace(result[0]) == "" {
+		result = result[1:]
+	}
+	for len(result) > 0 && strings.TrimSpace(result[len(result)-1]) == "" {
+		result = result[:len(result)-1]
+	}
+	if len(result) == 0 {
+		return ""
+	}
+	return strings.Join(result, "\n") + "\n"
 }
 
 // shellFields splits a shell-quoted string into tokens, respecting single quotes

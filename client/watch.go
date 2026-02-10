@@ -178,9 +178,13 @@ func runWatchLoop(
 					} else if onCleanStop != nil {
 						onCleanStop()
 					}
-					taskNames, stats := renderer.renderStats(lastMsg)
-					timestamp := renderer.renderTimestamp(lastMsg)
-					fmt.Fprintf(w, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), len(taskNames), timestamp, stats)
+					if lastMsg != nil {
+						taskNames, stats := renderer.renderStats(lastMsg)
+						timestamp := renderer.renderTimestamp(lastMsg)
+						fmt.Fprintf(w, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), len(taskNames), timestamp, stats)
+					} else {
+						fmt.Fprintf(w, "%s Job '%s' completed\n", color.HiGreenString("✓"), jobName)
+					}
 					return nil
 				}
 				if ctx.Err() == context.Canceled {

@@ -128,10 +128,11 @@ func RunContainer(
 			if err != nil {
 				return -1, fmt.Errorf("failed to pull docker image for service '%s': %w", service.Name, err)
 			}
-			defer reader.Close()
 
-			// Wait for the pull to finish
+			// Wait for the pull to finish, then close immediately (not deferred,
+			// since we're inside a loop and don't want to accumulate open readers)
 			_, _ = io.Copy(io.Discard, reader)
+			reader.Close()
 
 			// We might not be handling pull error properly, but parsing the JSON response is a pain
 			// Let's just assume it worked, and if it didn't, the container create will fail

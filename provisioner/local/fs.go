@@ -57,7 +57,8 @@ func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) err
 }
 
 func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
-	entries, err := os.ReadDir(f.HostPath(dir))
+	hostDir := f.HostPath(dir)
+	entries, err := os.ReadDir(hostDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory '%s': %w", dir, err)
 	}
@@ -65,7 +66,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	var logFiles []string
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
-			logFiles = append(logFiles, path.Join(f.HostPath(dir), entry.Name()))
+			logFiles = append(logFiles, entry.Name())
 		}
 	}
 	if len(logFiles) == 0 {
@@ -74,6 +75,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 
 	args := append([]string{"-v", "-n", fmt.Sprintf("%d", lines)}, logFiles...)
 	cmd := exec.Command("tail", args...)
+	cmd.Dir = hostDir
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tail command failed: %w", err)

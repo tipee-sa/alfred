@@ -104,3 +104,34 @@ func TestShellFields_AdjacentQuotes(t *testing.T) {
 	// e.g. prefix'quoted part' → prefixquoted part (single token)
 	assert.Equal(t, []string{"prefixquoted part"}, shellFields("prefix'quoted part'"))
 }
+
+func TestStripJobfileNoise_RemovesComments(t *testing.T) {
+	input := "# This is a comment\nname: my-job\n# Another comment\ntasks:\n  - task1\n"
+	assert.Equal(t, "name: my-job\ntasks:\n  - task1\n", stripJobfileNoise(input))
+}
+
+func TestStripJobfileNoise_CollapsesBlankLines(t *testing.T) {
+	input := "name: my-job\n\n\n\ntasks:\n  - task1\n"
+	assert.Equal(t, "name: my-job\n\ntasks:\n  - task1\n", stripJobfileNoise(input))
+}
+
+func TestStripJobfileNoise_TrimsLeadingTrailingBlanks(t *testing.T) {
+	input := "\n\nname: my-job\n\n"
+	assert.Equal(t, "name: my-job\n", stripJobfileNoise(input))
+}
+
+func TestStripJobfileNoise_CommentsAndBlanks(t *testing.T) {
+	input := "# header\n\nname: my-job\n\n# middle comment\n\ntasks:\n  - t1\n\n# footer\n"
+	assert.Equal(t, "name: my-job\n\ntasks:\n  - t1\n", stripJobfileNoise(input))
+}
+
+func TestStripJobfileNoise_Empty(t *testing.T) {
+	assert.Equal(t, "", stripJobfileNoise(""))
+	assert.Equal(t, "", stripJobfileNoise("# only comments\n"))
+	assert.Equal(t, "", stripJobfileNoise("\n\n\n"))
+}
+
+func TestStripJobfileNoise_PreservesInlineHashes(t *testing.T) {
+	input := "image: redis:7 # not a comment line\n"
+	assert.Equal(t, "image: redis:7 # not a comment line\n", stripJobfileNoise(input))
+}

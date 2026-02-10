@@ -2,6 +2,7 @@ package sossh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,13 +22,7 @@ var _ net.Conn = (*SSHSocatConn)(nil)
 
 func (c *SSHSocatConn) Close() error {
 	c.cancel()
-	if err := c.ReadCloser.Close(); err != nil {
-		return fmt.Errorf("failed to close ReadCloser: %w", err)
-	}
-	if err := c.WriteCloser.Close(); err != nil {
-		return fmt.Errorf("failed to close WriteCloser: %w", err)
-	}
-	return nil
+	return errors.Join(c.ReadCloser.Close(), c.WriteCloser.Close())
 }
 
 func (c *SSHSocatConn) LocalAddr() net.Addr {

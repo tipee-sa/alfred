@@ -1,11 +1,11 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"sort"
 	"strings"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/log"
+	"github.com/klauspost/compress/zstd"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -72,7 +73,7 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 	// Wait for logs to become available (task may be queued or starting up)
 	var allContent []byte
 	for {
-		content, err := readAllLiveLogs(job, task)
+		content, err := readLiveLogs(job, task, tailLines)
 		if err == nil {
 			allContent = content
 			break
@@ -100,18 +101,22 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 	}
 
 	// Send only the last tailLines lines as initial output
-	tail := lastNLines(allContent, tailLines)
-	if len(tail) > 0 {
+	if len(allContent) > 0 {
 		if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
-			Data:   tail,
-			Length: uint32(len(tail)),
+			Data:   allContent,
+			Length: uint32(len(allContent)),
 		}); sendErr != nil {
 			log.Error("Failed to send initial follow chunk", "job", job, "task", task, "error", sendErr)
 			return fmt.Errorf("failed to send initial follow chunk: %w", sendErr)
 		}
 	}
-	knownBytes := len(allContent)
-	log.Debug("Follow mode started", "job", job, "task", task, "initialBytes", knownBytes, "sentBytes", len(tail))
+	log.Debug("Follow mode started", "job", job, "task", task, "sentBytes", len(allContent))
+
+	// Track last known content for delta detection.
+	// On each poll we read the last N lines. Since logs are append-only, new content
+	// appears at the end. We find the overlap with the previous read and send only
+	// the new bytes.
+	lastContent := allContent
 
 	// Poll for new content
 	for {
@@ -120,14 +125,31 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 			log.Debug("Follow mode: client disconnected", "job", job, "task", task)
 			return nil
 		case <-ticker.C:
-			content, err := readAllLiveLogs(job, task)
+			// Read a generous window: enough to cover new output plus overlap with last read.
+			// 10,000 lines covers ~10s of output for even the most verbose tasks.
+			content, err := readLiveLogs(job, task, 10000)
 			if err != nil {
 				// Live reader gone — task has finished and workspace is being torn down.
-				log.Debug("Follow mode: live reader gone, ending stream", "job", job, "task", task, "knownBytes", knownBytes)
+				// Try to send any remaining content from the finalized artifact.
+				log.Debug("Follow mode: live reader gone, checking artifact for final content", "job", job, "task", task)
+				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
+				if _, statErr := os.Stat(artifact); statErr == nil {
+					if r, extractErr := extractLogsFromArtifact(artifact, 1000000); extractErr == nil {
+						finalContent, _ := io.ReadAll(r)
+						r.Close()
+						delta := findNewContent(lastContent, finalContent)
+						if len(delta) > 0 {
+							_ = srv.Send(&proto.StreamTaskLogsChunk{
+								Data:   delta,
+								Length: uint32(len(delta)),
+							})
+						}
+					}
+				}
 				return nil
 			}
-			if len(content) > knownBytes {
-				delta := content[knownBytes:]
+			delta := findNewContent(lastContent, content)
+			if len(delta) > 0 {
 				if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
 					Data:   delta,
 					Length: uint32(len(delta)),
@@ -135,15 +157,56 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 					log.Error("Failed to send follow delta", "job", job, "task", task, "error", sendErr)
 					return fmt.Errorf("failed to send follow delta: %w", sendErr)
 				}
-				knownBytes = len(content)
+				lastContent = content
 			}
 		}
 	}
 }
 
-// readAllLiveLogs reads the complete live log content for a task.
-func readAllLiveLogs(job, task string) ([]byte, error) {
-	reader, err := scheduler.ReadLiveTaskLogs(job, task, 1000000)
+// findNewContent compares two snapshots of tailed log output and returns only the
+// bytes that are new in `current` relative to `previous`. Since logs are append-only,
+// the end of `previous` should appear somewhere in `current`, and everything after
+// that overlap is new content.
+func findNewContent(previous, current []byte) []byte {
+	if len(previous) == 0 {
+		return current
+	}
+	if bytes.Equal(previous, current) {
+		return nil
+	}
+
+	// If current contains all of previous (same prefix), the delta is the suffix.
+	// This is the common case when the tail window is large enough.
+	if len(current) >= len(previous) && bytes.Equal(current[:len(previous)], previous) {
+		return current[len(previous):]
+	}
+
+	// The tail window shifted: previous content is no longer a prefix of current.
+	// Find where the end of previous appears in current by searching for progressively
+	// shorter suffixes of previous. Start with the last few lines (robust against
+	// partial line matches).
+	prevStr := string(previous)
+	lastNewline := strings.LastIndex(prevStr, "\n")
+	if lastNewline > 0 {
+		// Try last 3 lines as fingerprint for reliable matching
+		lines := strings.Split(prevStr[:lastNewline], "\n")
+		for take := min(len(lines), 3); take >= 1; take-- {
+			fingerprint := strings.Join(lines[len(lines)-take:], "\n") + "\n"
+			idx := bytes.Index(current, []byte(fingerprint))
+			if idx >= 0 {
+				return current[idx+len(fingerprint):]
+			}
+		}
+	}
+
+	// No overlap found — the gap between polls was too large. Send everything as new
+	// content (may cause some duplication on the client, but no data loss).
+	return current
+}
+
+// readLiveLogs reads live log content for a task, tailing up to the given number of lines.
+func readLiveLogs(job, task string, lines int) ([]byte, error) {
+	reader, err := scheduler.ReadLiveTaskLogs(job, task, lines)
 	if err != nil {
 		return nil, err
 	}
@@ -204,55 +267,94 @@ func streamReader(srv proto.Alfred_StreamTaskLogsServer, reader io.Reader, job, 
 	}
 }
 
+// extractLogsFromArtifact reads .log files from a tar.zst artifact archive,
+// applies tail -n to each file, and returns a reader with the combined output
+// (matching the format of `tail -v -n <lines> file1.log file2.log ...`).
 func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser, error) {
-	tmpDir, err := os.MkdirTemp("", "alfred-logs-*")
+	f, err := os.Open(artifactPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp dir: %w", err)
+		return nil, fmt.Errorf("failed to open artifact %q: %w", artifactPath, err)
 	}
 
-	// Extract only .log files from the tar.zst archive
-	extractCmd := exec.Command("tar",
-		"--extract",
-		"--use-compress-program", "zstd --decompress",
-		"--file", artifactPath,
-		"--directory", tmpDir,
-		"--strip-components=2",
-		"--wildcards", "*.log",
-	)
-	var extractStderr bytes.Buffer
-	extractCmd.Stderr = &extractStderr
-	if err := extractCmd.Run(); err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("failed to extract logs: %w: %s", err, extractStderr.String())
-	}
-
-	// Find and sort .log files
-	entries, err := os.ReadDir(tmpDir)
+	zr, err := zstd.NewReader(f)
 	if err != nil {
-		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("failed to read temp dir: %w", err)
+		f.Close()
+		return nil, fmt.Errorf("failed to create zstd reader for %q: %w", artifactPath, err)
 	}
 
-	var logFiles []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".log") {
-			logFiles = append(logFiles, path.Join(tmpDir, entry.Name()))
+	tr := tar.NewReader(zr)
+
+	// Collect all .log entries from the archive. We buffer them in memory
+	// because tar entries must be read sequentially (no random access).
+	type logEntry struct {
+		name    string // basename, e.g. "taskname-step-0.log"
+		content []byte
+	}
+	var logEntries []logEntry
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			zr.Close()
+			f.Close()
+			return nil, fmt.Errorf("failed to read tar entry in %q: %w", artifactPath, err)
+		}
+
+		// Skip directories and non-.log files
+		if header.Typeflag == tar.TypeDir {
+			continue
+		}
+		basename := path.Base(header.Name)
+		if !strings.HasSuffix(basename, ".log") {
+			continue
+		}
+
+		// Read the log content; cap at 10MB per file as a safety limit
+		const maxLogSize = 10 * 1024 * 1024
+		if header.Size > maxLogSize {
+			log.Warn("Log file exceeds 10MB, truncating", "file", header.Name, "size", header.Size, "artifact", artifactPath)
+		}
+		limitedReader := io.LimitReader(tr, maxLogSize)
+		content, err := io.ReadAll(limitedReader)
+		if err != nil {
+			zr.Close()
+			f.Close()
+			return nil, fmt.Errorf("failed to read log entry %q from %q: %w", header.Name, artifactPath, err)
+		}
+
+		logEntries = append(logEntries, logEntry{name: basename, content: content})
+	}
+
+	zr.Close()
+	f.Close()
+
+	if len(logEntries) == 0 {
+		return nil, fmt.Errorf("no .log files found in artifact %q", artifactPath)
+	}
+
+	// Sort by filename to get step order (step-0.log, step-1.log, ...)
+	sort.Slice(logEntries, func(i, j int) bool {
+		return logEntries[i].name < logEntries[j].name
+	})
+
+	// Format output like `tail -v -n <lines>`: each file gets a header line,
+	// followed by its last N lines.
+	var buf bytes.Buffer
+	for i, entry := range logEntries {
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		fmt.Fprintf(&buf, "==> %s <==\n", entry.name)
+		tail := lastNLines(entry.content, tailLines)
+		buf.Write(tail)
+		// Ensure each file ends with a newline
+		if len(tail) > 0 && tail[len(tail)-1] != '\n' {
+			buf.WriteByte('\n')
 		}
 	}
-	if len(logFiles) == 0 {
-		os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("no log files found in artifact")
-	}
-	sort.Strings(logFiles)
 
-	// Tail the log files and collect output
-	args := append([]string{"-v", "-n", fmt.Sprintf("%d", tailLines)}, logFiles...)
-	tailCmd := exec.Command("tail", args...)
-	output, err := tailCmd.Output()
-	os.RemoveAll(tmpDir)
-	if err != nil {
-		return nil, fmt.Errorf("tail command failed: %w", err)
-	}
-
-	return io.NopCloser(bytes.NewReader(output)), nil
+	return io.NopCloser(bytes.NewReader(buf.Bytes())), nil
 }

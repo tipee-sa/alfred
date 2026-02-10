@@ -79,7 +79,7 @@ var topCmd = &cobra.Command{
 			return event
 		})
 
-		// State for rendering
+		// State for rendering — only accessed from tview's event loop (via QueueUpdateDraw)
 		var lastStatus *proto.Status
 
 		updateHeader := func() {
@@ -312,6 +312,9 @@ var topCmd = &cobra.Command{
 			}
 		}()
 
+		// done is closed when the app stops, to signal goroutines to exit.
+		done := make(chan struct{})
+
 		// Goroutine to feed status updates into tview's event loop
 		go func() {
 			for result := range statusCh {
@@ -319,8 +322,11 @@ var topCmd = &cobra.Command{
 					app.Stop()
 					return
 				}
-				lastStatus = result.status
-				app.QueueUpdateDraw(updateAll)
+				status := result.status
+				app.QueueUpdateDraw(func() {
+					lastStatus = status
+					updateAll()
+				})
 			}
 		}()
 
@@ -328,17 +334,24 @@ var topCmd = &cobra.Command{
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
-			for range ticker.C {
-				if lastStatus != nil {
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
 					app.QueueUpdateDraw(func() {
-						updateHeader()
-						updateJobs()
+						if lastStatus != nil {
+							updateHeader()
+							updateJobs()
+						}
 					})
 				}
 			}
 		}()
 
-		return app.SetRoot(layout, true).Run()
+		err = app.SetRoot(layout, true).Run()
+		close(done)
+		return err
 	},
 }
 

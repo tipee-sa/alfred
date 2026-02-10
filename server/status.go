@@ -51,13 +51,19 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 				Slots:  make([]*proto.NodeStatus_Slot, event.NumSlots),
 			})
 		case schedulerpkg.EventNodeStatusUpdated:
+			found := false
 			for _, node := range serverStatus.Nodes {
 				if node.Name == event.Node {
 					node.Status = event.Status.AsProto()
+					found = true
 					break
 				}
 			}
+			if !found {
+				log.Warn("EventNodeStatusUpdated references unknown node", "node", event.Node)
+			}
 		case schedulerpkg.EventNodeSlotUpdated:
+			found := false
 			for _, node := range serverStatus.Nodes {
 				if node.Name == event.Node {
 					var task *proto.NodeStatus_Slot_Task
@@ -67,19 +73,32 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 							Name: event.Task.Name,
 						}
 					}
-					node.Slots[event.Slot] = &proto.NodeStatus_Slot{
-						Id:   uint32(event.Slot),
-						Task: task,
+					if event.Slot < 0 || event.Slot >= len(node.Slots) {
+						log.Warn("EventNodeSlotUpdated has out-of-range slot", "node", event.Node, "slot", event.Slot, "numSlots", len(node.Slots))
+					} else {
+						node.Slots[event.Slot] = &proto.NodeStatus_Slot{
+							Id:   uint32(event.Slot),
+							Task: task,
+						}
 					}
+					found = true
 					break
 				}
 			}
+			if !found {
+				log.Warn("EventNodeSlotUpdated references unknown node", "node", event.Node)
+			}
 		case schedulerpkg.EventNodeTerminated:
+			found := false
 			for i, node := range serverStatus.Nodes {
 				if node.Name == event.Node {
 					serverStatus.Nodes = append(serverStatus.Nodes[:i], serverStatus.Nodes[i+1:]...)
+					found = true
 					break
 				}
+			}
+			if !found {
+				log.Warn("EventNodeTerminated references unknown node", "node", event.Node)
 			}
 
 		// Job events
@@ -94,77 +113,40 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 				StartedBy:   event.StartedBy,
 			})
 		case schedulerpkg.EventJobCompleted:
-			for _, job := range serverStatus.Jobs {
-				if job.Name == event.Job {
-					job.CompletedAt = timestamppb.Now()
-					break
-				}
+			if job := findJob(event.Job); job != nil {
+				job.CompletedAt = timestamppb.Now()
 			}
+			pruneCompletedJobs()
 
 		// Tasks events
 		case schedulerpkg.EventTaskQueued:
-			for _, job := range serverStatus.Jobs {
-				if job.Name == event.Job {
-					job.Tasks = append(job.Tasks, &proto.TaskStatus{
-						Name:   event.Task,
-						Status: proto.TaskStatus_QUEUED,
-					})
-					break
-				}
+			if job := findJob(event.Job); job != nil {
+				job.Tasks = append(job.Tasks, &proto.TaskStatus{
+					Name:   event.Task,
+					Status: proto.TaskStatus_QUEUED,
+				})
 			}
 		case schedulerpkg.EventTaskRunning:
-			for _, job := range serverStatus.Jobs {
-				if job.Name == event.Job {
-					for _, task := range job.Tasks {
-						if task.Name == event.Task {
-							task.Status = proto.TaskStatus_RUNNING
-							task.StartedAt = timestamppb.Now()
-							break
-						}
-					}
-					break
-				}
+			if task := findTask(event.Job, event.Task); task != nil {
+				task.Status = proto.TaskStatus_RUNNING
+				task.StartedAt = timestamppb.Now()
 			}
 		case schedulerpkg.EventTaskAborted:
-			for _, job := range serverStatus.Jobs {
-				if job.Name == event.Job {
-					for _, task := range job.Tasks {
-						if task.Name == event.Task {
-							task.Status = proto.TaskStatus_ABORTED
-							task.EndedAt = timestamppb.Now()
-							break
-						}
-					}
-					break
-				}
+			if task := findTask(event.Job, event.Task); task != nil {
+				task.Status = proto.TaskStatus_ABORTED
+				task.EndedAt = timestamppb.Now()
 			}
 		case schedulerpkg.EventTaskFailed:
-			for _, job := range serverStatus.Jobs {
-				if job.Name == event.Job {
-					for _, task := range job.Tasks {
-						if task.Name == event.Task {
-							task.Status = proto.TaskStatus_FAILED
-							task.ExitCode = lo.ToPtr(int32(event.ExitCode))
-							task.EndedAt = timestamppb.Now()
-							break
-						}
-					}
-					break
-				}
+			if task := findTask(event.Job, event.Task); task != nil {
+				task.Status = proto.TaskStatus_FAILED
+				task.ExitCode = lo.ToPtr(int32(event.ExitCode))
+				task.EndedAt = timestamppb.Now()
 			}
 		case schedulerpkg.EventTaskCompleted:
-			for _, job := range serverStatus.Jobs {
-				if job.Name == event.Job {
-					for _, task := range job.Tasks {
-						if task.Name == event.Task {
-							task.Status = proto.TaskStatus_COMPLETED
-							task.ExitCode = lo.ToPtr(int32(0))
-							task.EndedAt = timestamppb.Now()
-							break
-						}
-					}
-					break
-				}
+			if task := findTask(event.Job, event.Task); task != nil {
+				task.Status = proto.TaskStatus_COMPLETED
+				task.ExitCode = lo.ToPtr(int32(0))
+				task.EndedAt = timestamppb.Now()
 			}
 		}
 
@@ -185,6 +167,66 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 		}
 		clientListenersMutex.RUnlock()
 	}
+}
+
+// maxCompletedJobs is the maximum number of completed jobs to retain in memory.
+// Oldest completed jobs are pruned first. Running/incomplete jobs are never pruned.
+const maxCompletedJobs = 1000
+
+// pruneCompletedJobs removes the oldest completed jobs when the count exceeds maxCompletedJobs.
+// Must be called with serverStatusMutex held.
+func pruneCompletedJobs() {
+	// Count completed jobs
+	completed := 0
+	for _, job := range serverStatus.Jobs {
+		if job.CompletedAt != nil {
+			completed++
+		}
+	}
+
+	excess := completed - maxCompletedJobs
+	if excess <= 0 {
+		return
+	}
+
+	// Remove the oldest completed jobs (they appear first in the slice since jobs are appended chronologically)
+	pruned := 0
+	serverStatus.Jobs = lo.Filter(serverStatus.Jobs, func(job *proto.JobStatus, _ int) bool {
+		if pruned < excess && job.CompletedAt != nil {
+			pruned++
+			return false
+		}
+		return true
+	})
+	log.Debug("Pruned old completed jobs", "pruned", pruned, "remaining", len(serverStatus.Jobs))
+}
+
+// findJob returns the job with the given name from serverStatus, or nil with a warning.
+// Must be called with serverStatusMutex held.
+func findJob(name string) *proto.JobStatus {
+	for _, job := range serverStatus.Jobs {
+		if job.Name == name {
+			return job
+		}
+	}
+	log.Warn("Event references unknown job", "job", name)
+	return nil
+}
+
+// findTask returns the task with the given name within the given job, or nil with a warning.
+// Must be called with serverStatusMutex held.
+func findTask(jobName, taskName string) *proto.TaskStatus {
+	job := findJob(jobName)
+	if job == nil {
+		return nil
+	}
+	for _, task := range job.Tasks {
+		if task.Name == taskName {
+			return task
+		}
+	}
+	log.Warn("Event references unknown task", "job", jobName, "task", taskName)
+	return nil
 }
 
 // addClientListener registers a new event listener with an optional filter.

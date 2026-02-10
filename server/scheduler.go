@@ -62,12 +62,13 @@ func preserveArtifacts(reader io.Reader, task *schedulerpkg.Task) error {
 	if err != nil {
 		return fmt.Errorf("failed to create artifact file: %w", err)
 	}
+	defer file.Close()
 
 	if _, err := io.Copy(file, reader); err != nil {
 		return fmt.Errorf("failed to copy artifact file: %w", err)
 	}
 
-	return nil
+	return file.Close()
 }
 
 func loadSecret(secret string) ([]byte, error) {

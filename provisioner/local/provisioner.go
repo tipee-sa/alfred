@@ -12,8 +12,6 @@ type Provisioner struct {
 	config Config
 	docker *client.Client
 	fs     *fs
-
-	nextNodeNumber int
 }
 
 // Provisioner implements scheduler.Provisioner
@@ -29,14 +27,10 @@ func New(config Config) (*Provisioner, error) {
 		config: config,
 		docker: docker,
 		fs:     newFs(config.Workspace),
-
-		nextNodeNumber: 0,
 	}, nil
 }
 
 func (p *Provisioner) Provision(nodeName string, flavor string) (scheduler.Node, error) {
-	p.nextNodeNumber += 1
-
 	node := &Node{
 		name:        nodeName,
 		provisioner: p,
@@ -48,10 +42,5 @@ func (p *Provisioner) Provision(nodeName string, flavor string) (scheduler.Node,
 	return node, nil
 }
 
-func (p *Provisioner) Shutdown() {
-	// TODO
-}
-
-func (p *Provisioner) Wait() {
-	// TODO
-}
+func (p *Provisioner) Shutdown() {}
+func (p *Provisioner) Wait()     {}

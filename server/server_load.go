@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -59,11 +60,18 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 	cmd.WaitDelay = 10 * time.Second
 	cmd.Stderr = os.Stderr
 
-	writer := lo.Must(cmd.StdinPipe())
+	writer, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	defer writer.Close()
+	// Ensure the subprocess is reaped on all exit paths (closes stdin first to unblock it)
+	defer func() {
+		writer.Close()
+		cmd.Wait()
+	}()
 
 	for {
 		msg, err = srv.Recv()
@@ -73,6 +81,9 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 
 		switch msg := msg.Message.(type) {
 		case *proto.LoadImageMessage_Data_:
+			if uint32(len(msg.Data.Chunk)) < msg.Data.Length {
+				return status.Errorf(codes.InvalidArgument, "chunk length %d exceeds data size %d", msg.Data.Length, len(msg.Data.Chunk))
+			}
 			log.Debug("Got image load chunk", "length", msg.Data.Length)
 			if _, err = writer.Write(msg.Data.Chunk[:msg.Data.Length]); err != nil {
 				return err

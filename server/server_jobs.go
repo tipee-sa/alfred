@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/gammadia/alfred/proto"
 	schedulerpkg "github.com/gammadia/alfred/scheduler"
@@ -11,14 +12,31 @@ import (
 )
 
 func (s *server) CancelJob(ctx context.Context, req *proto.CancelJobRequest) (*proto.CancelJobResponse, error) {
+	if !safeJobNameRegex.MatchString(req.Name) {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid job name %q", req.Name)
+	}
 	return &proto.CancelJobResponse{}, scheduler.CancelJob(req.Name)
 }
 
 func (s *server) CancelTask(ctx context.Context, req *proto.CancelTaskRequest) (*proto.CancelTaskResponse, error) {
+	if err := validateJobTask(req.Job, req.Task); err != nil {
+		return nil, err
+	}
 	return &proto.CancelTaskResponse{}, scheduler.CancelTask(req.Job, req.Task)
 }
 
 func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) (*proto.ScheduleJobResponse, error) {
+	if in.Job == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "job is required")
+	}
+	if !safeJobNameRegex.MatchString(in.Job.Name) {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid job name %q", in.Job.Name)
+	}
+	for _, task := range in.Job.Tasks {
+		if !safeTaskNameRegex.MatchString(task) {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid task name %q", task)
+		}
+	}
 	jobName, err := scheduler.Schedule(&schedulerpkg.Job{
 		Job:         in.Job,
 		Jobfile:     in.Jobfile,
@@ -145,8 +163,9 @@ func (s *server) WatchJobs(req *proto.WatchJobsRequest, srv proto.Alfred_WatchJo
 	}
 }
 
-// WatchStatus streams the full server status (nodes, jobs, tasks, scheduler config)
-// on every event. Used by the `top` command. nil filter accepts all event types.
+// WatchStatus streams the full server status (nodes, jobs, tasks, scheduler config).
+// Used by the `top` command. Events are throttled: incoming events set a dirty flag,
+// and the status is sent at most once per second to avoid overwhelming slow clients.
 func (s *server) WatchStatus(req *proto.WatchStatusRequest, srv proto.Alfred_WatchStatusServer) error {
 	channel, cancel := addClientListener(nil)
 	defer cancel()
@@ -159,15 +178,35 @@ func (s *server) WatchStatus(req *proto.WatchStatusRequest, srv proto.Alfred_Wat
 		return srv.Send(statusToSend)
 	}
 
+	// Send initial state immediately
 	if err := sync(); err != nil {
 		return err
 	}
+
+	dirty := false
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-srv.Context().Done():
 			return nil
 		case <-channel:
+			dirty = true
+			// Drain any additional queued events to coalesce into a single update
+		drain:
+			for {
+				select {
+				case <-channel:
+				default:
+					break drain
+				}
+			}
+		case <-ticker.C:
+			if !dirty {
+				continue
+			}
+			dirty = false
 			if err := sync(); err != nil {
 				return err
 			}

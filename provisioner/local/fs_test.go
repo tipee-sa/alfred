@@ -42,6 +42,29 @@ func TestTailLogs(t *testing.T) {
 	assert.NotContains(t, output, "line1-b")
 }
 
+func TestTailLogsHeadersUseBasenames(t *testing.T) {
+	root := t.TempDir()
+	f := newFs(root)
+
+	logDir := "job-hdr/output"
+	require.NoError(t, os.MkdirAll(path.Join(root, logDir), 0755))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-0.log"), []byte("hello\n"), 0644))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-1.log"), []byte("world\n"), 0644))
+
+	rc, err := f.TailLogs(logDir, 10)
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+
+	output := string(data)
+	// Headers must use basenames, not full paths (matches extractLogsFromArtifact format)
+	assert.Contains(t, output, "==> task-step-0.log <==")
+	assert.Contains(t, output, "==> task-step-1.log <==")
+	assert.NotContains(t, output, root, "headers should not contain the full filesystem path")
+}
+
 func TestTailLogsSingleFile(t *testing.T) {
 	root := t.TempDir()
 	f := newFs(root)
