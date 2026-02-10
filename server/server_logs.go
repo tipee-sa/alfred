@@ -61,15 +61,42 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 }
 
 // followLiveLogs implements the follow (-f) mode for live task logs.
-// It sends the initial tail output, then polls every 2 seconds for new content
-// using byte-offset delta detection (log output is append-only because steps
-// run sequentially and log files are append-only).
+// It waits for logs to become available, sends the initial tail output,
+// then polls every 10 seconds for new content using byte-offset delta
+// detection (log output is append-only because steps run sequentially
+// and log files are append-only).
 func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task string, tailLines int) error {
-	// Get ALL content to establish the current byte offset
-	allContent, err := readAllLiveLogs(job, task)
-	if err != nil {
-		log.Warn("Logs not found for follow", "job", job, "task", task, "error", err)
-		return status.Errorf(codes.NotFound, "no logs (yet) for task %s/%s", job, task)
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	// Wait for logs to become available (task may be queued or starting up)
+	var allContent []byte
+	for {
+		content, err := readAllLiveLogs(job, task)
+		if err == nil {
+			allContent = content
+			break
+		}
+
+		// Also check if the task already completed while we were waiting
+		artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
+		if _, statErr := os.Stat(artifact); statErr == nil {
+			log.Debug("Follow mode: task completed while waiting for logs", "job", job, "task", task)
+			r, extractErr := extractLogsFromArtifact(artifact, tailLines)
+			if extractErr != nil {
+				return fmt.Errorf("failed to extract logs from artifact: %w", extractErr)
+			}
+			defer r.Close()
+			return streamReader(srv, r, job, task)
+		}
+
+		log.Debug("Follow mode: waiting for logs", "job", job, "task", task)
+		select {
+		case <-srv.Context().Done():
+			log.Debug("Follow mode: client disconnected while waiting", "job", job, "task", task)
+			return nil
+		case <-ticker.C:
+		}
 	}
 
 	// Send only the last tailLines lines as initial output
@@ -87,9 +114,6 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 	log.Debug("Follow mode started", "job", job, "task", task, "initialBytes", knownBytes, "sentBytes", len(tail))
 
 	// Poll for new content
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
 	for {
 		select {
 		case <-srv.Context().Done():

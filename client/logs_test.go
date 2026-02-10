@@ -79,7 +79,7 @@ func TestRecvLogsLoop_WritesChunksToWriter(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(context.Background(), recv, &buf)
+	err := recvLogsLoop(context.Background(), recv, &buf, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, "line1\nline2\nline3\n", buf.String())
@@ -89,7 +89,7 @@ func TestRecvLogsLoop_EOF_ReturnsNil(t *testing.T) {
 	recv := mockRecv(recvErr(io.EOF))
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(context.Background(), recv, &buf)
+	err := recvLogsLoop(context.Background(), recv, &buf, nil)
 
 	assert.NoError(t, err)
 	assert.Empty(t, buf.String())
@@ -106,7 +106,7 @@ func TestRecvLogsLoop_ContextCancelled_ReturnsNil(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(ctx, recv, &buf)
+	err := recvLogsLoop(ctx, recv, &buf, nil)
 
 	assert.NoError(t, err, "context cancellation should be a clean exit")
 	assert.Equal(t, "some output\n", buf.String(), "chunks received before cancellation should be written")
@@ -120,7 +120,7 @@ func TestRecvLogsLoop_StreamError_ReturnsError(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(context.Background(), recv, &buf)
+	err := recvLogsLoop(context.Background(), recv, &buf, nil)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "connection lost")
@@ -138,7 +138,7 @@ func TestRecvLogsLoop_MultipleChunks_Reassembled(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(context.Background(), recv, &buf)
+	err := recvLogsLoop(context.Background(), recv, &buf, nil)
 
 	assert.NoError(t, err)
 	expected := "==> step-1.log <==\noutput line 1\noutput line 2\n\n==> step-2.log <==\noutput line A\n"
@@ -154,7 +154,7 @@ func TestRecvLogsLoop_EmptyChunks_Ignored(t *testing.T) {
 	)
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(context.Background(), recv, &buf)
+	err := recvLogsLoop(context.Background(), recv, &buf, nil)
 
 	assert.NoError(t, err)
 	assert.Equal(t, "real data\n", buf.String())
@@ -164,7 +164,7 @@ func TestRecvLogsLoop_ImmediateEOF(t *testing.T) {
 	recv := mockRecv(recvErr(io.EOF))
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(context.Background(), recv, &buf)
+	err := recvLogsLoop(context.Background(), recv, &buf, nil)
 
 	assert.NoError(t, err)
 	assert.Empty(t, buf.String())
@@ -177,7 +177,7 @@ func TestRecvLogsLoop_ImmediateContextCancel(t *testing.T) {
 	recv := mockRecv(recvErr(errors.New("canceled")))
 
 	var buf bytes.Buffer
-	err := recvLogsLoop(ctx, recv, &buf)
+	err := recvLogsLoop(ctx, recv, &buf, nil)
 
 	assert.NoError(t, err, "immediate cancellation should be clean")
 	assert.Empty(t, buf.String())

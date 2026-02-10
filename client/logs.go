@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/gammadia/alfred/client/ui"
 	"github.com/gammadia/alfred/proto"
 	"github.com/spf13/cobra"
 )
@@ -37,20 +38,36 @@ var logsCmd = &cobra.Command{
 			return fmt.Errorf("failed to request logs: %w", err)
 		}
 
-		return recvLogsLoop(cmd.Context(), c.Recv, os.Stdout)
+		var spinner *ui.Spinner
+		if follow {
+			spinner = ui.NewSpinner("Waiting for logs")
+		}
+
+		return recvLogsLoop(cmd.Context(), c.Recv, os.Stdout, spinner)
 	},
 }
 
 // recvLogsLoop reads log chunks from the stream and writes them to w.
 // Returns nil on EOF or context cancellation, error on stream failure.
-func recvLogsLoop(ctx context.Context, recv func() (*proto.StreamTaskLogsChunk, error), w io.Writer) error {
+// If a spinner is provided, it is stopped when the first chunk arrives.
+func recvLogsLoop(ctx context.Context, recv func() (*proto.StreamTaskLogsChunk, error), w io.Writer, spinner *ui.Spinner) error {
 	for {
 		chunk, err := recv()
 		if err != nil {
 			if err == io.EOF || ctx.Err() != nil {
+				if spinner != nil {
+					spinner.FinalMSG = ""
+					spinner.Stop()
+				}
 				return nil
 			}
 			return fmt.Errorf("failed to receive logs: %w", err)
+		}
+
+		if spinner != nil {
+			spinner.FinalMSG = ""
+			spinner.Stop()
+			spinner = nil
 		}
 
 		w.Write(chunk.Data)
