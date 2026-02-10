@@ -275,12 +275,12 @@ func TestRenderStats_SectionOrdering(t *testing.T) {
 	}
 	_, stats := r.renderStats(msg)
 
-	// Verify ordering: ⏳ ⚙️ 🛑 💥 ⚠️ ✅
+	// Verify ordering: ⏳ ⚙️ ⛔ 💥 ⚠️ ✅
 	lines := strings.Split(stats, "\n")
 	assert.Len(t, lines, 6)
 	assert.Contains(t, lines[0], "⏳")
 	assert.Contains(t, lines[1], "⚙️")
-	assert.Contains(t, lines[2], "🛑")
+	assert.Contains(t, lines[2], "⛔")
 	assert.Contains(t, lines[3], "💥")
 	assert.Contains(t, lines[4], "⚠️")
 	assert.Contains(t, lines[5], "✅")

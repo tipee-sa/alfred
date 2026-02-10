@@ -163,7 +163,7 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 		statItems = append(statItems, emojiLabel("⚙️")+formatItems(running, false, r.verbose))
 	}
 	if len(aborted) > 0 {
-		statItems = append(statItems, emojiLabel("🛑")+formatItems(aborted, true, r.verbose))
+		statItems = append(statItems, emojiLabel("⛔")+formatItems(aborted, true, r.verbose))
 	}
 	if len(crashed) > 0 {
 		statItems = append(statItems, emojiLabel("💥")+formatItems(crashed, true, r.verbose))
