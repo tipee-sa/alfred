@@ -66,15 +66,20 @@ var watchCmd = &cobra.Command{
 				return fmt.Errorf("failed to receive job status: %w", err)
 			}
 
-			taskNames, stats := renderer.renderStats(msg)
+			_, stats := renderer.renderStats(msg)
 			timestamp := renderer.renderTimestamp(msg)
+			processed, total := taskProgressCount(msg.Tasks)
+			pct := 0
+			if total > 0 {
+				pct = processed * 100 / total
+			}
 			status := "running"
 			statusColor := color.HiYellowString("⚙")
 			if msg.CompletedAt != nil {
 				status = "completed"
 				statusColor = color.HiGreenString("✓")
 			}
-			fmt.Fprintf(os.Stderr, "%s Job '%s' %s (%s%d, %s)\n%s\n", statusColor, args[0], status, emojiLabel("📝"), len(taskNames), timestamp, stats)
+			fmt.Fprintf(os.Stderr, "%s Job '%s' %s (%s%d/%d %d%%, %s)\n%s\n", statusColor, args[0], status, emojiLabel("📝"), processed, total, pct, timestamp, stats)
 			return nil
 		}
 
@@ -179,9 +184,14 @@ func runWatchLoop(
 						onCleanStop()
 					}
 					if lastMsg != nil {
-						taskNames, stats := renderer.renderStats(lastMsg)
+						_, stats := renderer.renderStats(lastMsg)
 						timestamp := renderer.renderTimestamp(lastMsg)
-						fmt.Fprintf(w, "%s Job '%s' completed (%s%d, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), len(taskNames), timestamp, stats)
+						processed, total := taskProgressCount(lastMsg.Tasks)
+						pct := 0
+						if total > 0 {
+							pct = processed * 100 / total
+						}
+						fmt.Fprintf(w, "%s Job '%s' completed (%s%d/%d %d%%, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), processed, total, pct, timestamp, stats)
 					} else {
 						fmt.Fprintf(w, "%s Job '%s' completed\n", color.HiGreenString("✓"), jobName)
 					}

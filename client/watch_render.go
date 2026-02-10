@@ -40,20 +40,35 @@ func emojiLabel(emoji string) string {
 	return emoji + strings.Repeat(" ", utf8.RuneCountInString(emoji))
 }
 
+// taskProgressCount returns the number of processed (completed/failed/aborted) tasks
+// and the total number of tasks.
+func taskProgressCount(tasks []*proto.TaskStatus) (processed, total int) {
+	total = len(tasks)
+	for _, t := range tasks {
+		switch t.Status {
+		case proto.TaskStatus_COMPLETED, proto.TaskStatus_FAILED, proto.TaskStatus_ABORTED:
+			processed++
+		}
+	}
+	return
+}
+
 // formatItems formats a list of task names for display, truncating if needed.
 // When last is true, the last N items are shown (with "… " prefix); otherwise the first N.
 // When verbose is true, all items are shown without truncation.
-func formatItems(items []string, last bool, verbose bool) string {
+func formatItems(items []string, last bool, verbose bool, lineLength int) string {
 	nbItems := len(items)
 	if nbItems < 1 {
 		return ""
 	}
 
-	// Try to display the first or last 20 items, as long as displaying them doesn't exceed 180 characters...
+	// Try to display the first or last 20 items, as long as displaying them doesn't exceed lineLength characters...
 	// ... except in verbose mode, where we display everything (it might be ugly while it's running, but it's
 	// very useful once it's finished).
 	displayItems := 20
-	lineLength := 180
+	if lineLength <= 0 {
+		lineLength = 180
+	}
 	if verbose {
 		displayItems = math.MaxInt32
 		lineLength = math.MaxInt32
@@ -155,24 +170,30 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 		}
 	}
 
+	maxLineWidth := r.termWidth() * 95 / 100
 	statItems := []string{}
+	addStat := func(emoji string, items []string, last bool) {
+		prefix := emojiLabel(emoji)
+		availWidth := max(maxLineWidth-uniseg.StringWidth(prefix), 40)
+		statItems = append(statItems, prefix+formatItems(items, last, r.verbose, availWidth))
+	}
 	if len(queued) > 0 {
-		statItems = append(statItems, emojiLabel("⏳")+formatItems(queued, false, r.verbose))
+		addStat("⏳", queued, false)
 	}
 	if len(running) > 0 {
-		statItems = append(statItems, emojiLabel("⚙️")+formatItems(running, false, r.verbose))
+		addStat("⚙️", running, false)
 	}
 	if len(aborted) > 0 {
-		statItems = append(statItems, emojiLabel("⛔")+formatItems(aborted, true, r.verbose))
+		addStat("⛔", aborted, true)
 	}
 	if len(crashed) > 0 {
-		statItems = append(statItems, emojiLabel("💥")+formatItems(crashed, true, r.verbose))
+		addStat("💥", crashed, true)
 	}
 	if len(failures) > 0 {
-		statItems = append(statItems, emojiLabel("⚠️")+formatItems(failures, true, r.verbose))
+		addStat("⚠️", failures, true)
 	}
 	if len(completed) > 0 {
-		statItems = append(statItems, emojiLabel("✅")+formatItems(completed, true, r.verbose))
+		addStat("✅", completed, true)
 	}
 
 	stats = strings.Join(statItems, "\n")
@@ -183,8 +204,13 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 // and the number of display lines (for cursor repositioning).
 func (r *watchRenderer) renderOutput(msg *proto.JobStatus) (output string, displayLines int) {
 	timestamp := r.renderTimestamp(msg)
-	taskNames, stats := r.renderStats(msg)
-	header := fmt.Sprintf("Job '%s' running (%s%d, %s)", r.jobName, emojiLabel("📝"), len(taskNames), timestamp)
+	_, stats := r.renderStats(msg)
+	processed, total := taskProgressCount(msg.Tasks)
+	pct := 0
+	if total > 0 {
+		pct = processed * 100 / total
+	}
+	header := fmt.Sprintf("Job '%s' running (%s%d/%d %d%%, %s)", r.jobName, emojiLabel("📝"), processed, total, pct, timestamp)
 	output = header
 	if stats != "" {
 		output += "\n" + stats

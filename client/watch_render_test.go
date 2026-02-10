@@ -99,16 +99,37 @@ func TestEmojiLabel_FlagEmoji(t *testing.T) {
 	assert.Equal(t, "🏁 ", result)
 }
 
+// --- taskProgressCount tests ---
+
+func TestTaskProgressCount(t *testing.T) {
+	tasks := []*proto.TaskStatus{
+		{Status: proto.TaskStatus_QUEUED},
+		{Status: proto.TaskStatus_RUNNING},
+		{Status: proto.TaskStatus_COMPLETED},
+		{Status: proto.TaskStatus_FAILED},
+		{Status: proto.TaskStatus_ABORTED},
+	}
+	processed, total := taskProgressCount(tasks)
+	assert.Equal(t, 3, processed)
+	assert.Equal(t, 5, total)
+}
+
+func TestTaskProgressCount_Empty(t *testing.T) {
+	processed, total := taskProgressCount(nil)
+	assert.Equal(t, 0, processed)
+	assert.Equal(t, 0, total)
+}
+
 // --- formatItems tests ---
 
 func TestFormatItems_Empty(t *testing.T) {
-	assert.Equal(t, "", formatItems([]string{}, false, false))
-	assert.Equal(t, "", formatItems(nil, false, false))
+	assert.Equal(t, "", formatItems([]string{}, false, false, 180))
+	assert.Equal(t, "", formatItems(nil, false, false, 180))
 }
 
 func TestFormatItems_FewItems_First(t *testing.T) {
 	items := []string{"task-a", "task-b", "task-c"}
-	result := formatItems(items, false, false)
+	result := formatItems(items, false, false, 180)
 	assert.Contains(t, result, "task-a task-b task-c")
 	assert.NotContains(t, result, "…")
 	assert.Contains(t, result, "3")
@@ -116,7 +137,7 @@ func TestFormatItems_FewItems_First(t *testing.T) {
 
 func TestFormatItems_FewItems_Last(t *testing.T) {
 	items := []string{"task-a", "task-b", "task-c"}
-	result := formatItems(items, true, false)
+	result := formatItems(items, true, false, 180)
 	assert.Contains(t, result, "task-a task-b task-c")
 	assert.NotContains(t, result, "…")
 	assert.Contains(t, result, "3")
@@ -127,7 +148,7 @@ func TestFormatItems_ManyItems_First(t *testing.T) {
 	for i := range items {
 		items[i] = "task"
 	}
-	result := formatItems(items, false, false)
+	result := formatItems(items, false, false, 180)
 	assert.Contains(t, result, " …")
 	assert.Contains(t, result, "25")
 }
@@ -137,7 +158,7 @@ func TestFormatItems_ManyItems_Last(t *testing.T) {
 	for i := range items {
 		items[i] = "task"
 	}
-	result := formatItems(items, true, false)
+	result := formatItems(items, true, false, 180)
 	assert.Contains(t, result, "… ")
 	assert.Contains(t, result, "25")
 }
@@ -147,7 +168,7 @@ func TestFormatItems_Verbose_ShowsAll(t *testing.T) {
 	for i := range items {
 		items[i] = "task"
 	}
-	result := formatItems(items, false, true)
+	result := formatItems(items, false, true, 180)
 	assert.NotContains(t, result, "…")
 	assert.Equal(t, 25, strings.Count(result, "task"))
 }
@@ -158,7 +179,7 @@ func TestFormatItems_LongItemsTruncated(t *testing.T) {
 	for i := range items {
 		items[i] = strings.Repeat("x", 15) // 15*15 = 225 chars + spaces > 180
 	}
-	result := formatItems(items, false, false)
+	result := formatItems(items, false, false, 180)
 	// Should have ellipsis since items are truncated
 	assert.Contains(t, result, "…")
 }
@@ -222,8 +243,9 @@ func TestRenderStats_ExitCode42_IsFailure(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	exitCode42 := int32(42)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
@@ -240,8 +262,9 @@ func TestRenderStats_OtherExitCode_IsCrashed(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	exitCode1 := int32(1)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
@@ -259,8 +282,9 @@ func TestRenderStats_SectionOrdering(t *testing.T) {
 	exitCode42 := int32(42)
 	exitCode1 := int32(1)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
@@ -289,8 +313,9 @@ func TestRenderStats_SectionOrdering(t *testing.T) {
 func TestRenderStats_EmptyTasks(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now),
@@ -304,8 +329,9 @@ func TestRenderStats_EmptyTasks(t *testing.T) {
 func TestRenderStats_OnlyRunning(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
@@ -326,8 +352,9 @@ func TestRenderStats_OnlyRunning(t *testing.T) {
 func TestRenderStats_TaskNames(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now),
@@ -344,8 +371,9 @@ func TestRenderStats_TaskNames(t *testing.T) {
 func TestRenderStats_SlowRunningTask(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-45 * time.Minute)),
@@ -362,8 +390,9 @@ func TestRenderStats_SlowRunningTask(t *testing.T) {
 func TestRenderStats_VerySlowRunningTask(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-90 * time.Minute)),
@@ -378,8 +407,9 @@ func TestRenderStats_VerySlowRunningTask(t *testing.T) {
 func TestRenderStats_LongQueuedTask(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	r := &watchRenderer{
-		now:     func() time.Time { return now },
-		verbose: false,
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
 	}
 	msg := &proto.JobStatus{
 		ScheduledAt: timestamppb.New(now.Add(-3 * time.Hour)),
@@ -461,7 +491,7 @@ func TestRenderOutput_CompletedJob(t *testing.T) {
 	assert.Contains(t, output, "10m0s")
 }
 
-func TestRenderOutput_DisplayLinesAccountsForWrapping(t *testing.T) {
+func TestRenderOutput_TruncationPreventsWrapping(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	// Create enough running tasks to produce a long ⚙️ line
 	tasks := make([]*proto.TaskStatus, 15)
@@ -493,5 +523,5 @@ func TestRenderOutput_DisplayLinesAccountsForWrapping(t *testing.T) {
 
 	_, linesNarrow := rNarrow.renderOutput(msg)
 	_, linesWide := rWide.renderOutput(msg)
-	assert.Greater(t, linesNarrow, linesWide, "narrow terminal should produce more display lines due to wrapping")
+	assert.Equal(t, linesNarrow, linesWide, "width-aware truncation should prevent wrapping")
 }

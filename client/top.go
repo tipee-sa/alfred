@@ -278,8 +278,13 @@ var topCmd = &cobra.Command{
 					SetTextColor(elapsedColor).
 					SetExpansion(1))
 
-				// Task count
-				jobsTable.SetCell(row+1, 4, tview.NewTableCell(fmt.Sprintf("%d", len(job.Tasks))).
+				// Task progress
+				processed, total := taskProgressCount(job.Tasks)
+				pct := 0
+				if total > 0 {
+					pct = processed * 100 / total
+				}
+				jobsTable.SetCell(row+1, 4, tview.NewTableCell(fmt.Sprintf("%d / %d (%d%%)", processed, total, pct)).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(1))
 
