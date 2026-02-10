@@ -118,6 +118,7 @@ var topCmd = &cobra.Command{
 
 		updateNodes := func() {
 			nodesTable.Clear()
+			nodesTable.ScrollToBeginning()
 
 			maxNodes := uint32(0)
 			if lastStatus != nil && lastStatus.Scheduler != nil {
@@ -188,6 +189,7 @@ var topCmd = &cobra.Command{
 
 		updateJobs := func() {
 			jobsTable.Clear()
+			jobsTable.ScrollToBeginning()
 
 			jobCount := 0
 			if lastStatus != nil {
