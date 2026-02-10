@@ -25,7 +25,11 @@ var psCmd = &cobra.Command{
 		}
 
 		for _, j := range msg.Jobs {
-			cmd.Printf("%s  %s\n", j.ScheduledAt.AsTime().Truncate(time.Second), color.HiCyanString(j.Name))
+			if j.StartedBy != "" {
+				cmd.Printf("%s  %-10s  %s\n", j.ScheduledAt.AsTime().Truncate(time.Second), j.StartedBy, color.HiCyanString(j.Name))
+			} else {
+				cmd.Printf("%s              %s\n", j.ScheduledAt.AsTime().Truncate(time.Second), color.HiCyanString(j.Name))
+			}
 		}
 
 		return nil
