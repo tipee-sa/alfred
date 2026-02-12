@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -524,4 +525,91 @@ func TestRenderOutput_TruncationPreventsWrapping(t *testing.T) {
 	_, linesNarrow := rNarrow.renderOutput(msg)
 	_, linesWide := rWide.renderOutput(msg)
 	assert.Equal(t, linesNarrow, linesWide, "width-aware truncation should prevent wrapping")
+}
+
+func TestSafeStringWidth(t *testing.T) {
+	// Pure ASCII: same as uniseg
+	assert.Equal(t, 5, safeStringWidth("hello"))
+	// Single emoji (width 2 per uniseg) → 3 with safety margin
+	assert.Equal(t, 3, safeStringWidth("📝"))
+	// Emoji label: emoji(3) + space(1) = 4
+	assert.Equal(t, 4, safeStringWidth(emojiLabel("📝")))
+	// Mixed: "⏳ hello" = emoji(3) + space(1) + 5 = 9
+	assert.Equal(t, 9, safeStringWidth("⏳ hello"))
+	// Multiple emojis: each gets +1
+	assert.Equal(t, 6, safeStringWidth("📝📝"))
+	// Ellipsis is narrow (width 1), no extra margin
+	assert.Equal(t, 1, safeStringWidth("…"))
+}
+
+func TestRenderStats_LineWidthWithEmojiMargin(t *testing.T) {
+	// Reproduces the real-world scenario: many queued tasks where the stat line
+	// is close to terminal width. safeStringWidth accounts for terminals rendering
+	// emojis wider than uniseg.StringWidth reports.
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	taskNames := []string{
+		"activsante", "acver", "acvf", "adamautomation", "adc", "adcflowers",
+		"admimmobilier", "adn", "adnv", "aigc", "aiglon", "aignep", "ailleurs",
+		"aisge", "aismle", "aists", "aja-aigle", "akadoc", "aletsch", "alfa",
+	}
+	tasks := make([]*proto.TaskStatus, len(taskNames))
+	for i, name := range taskNames {
+		tasks[i] = &proto.TaskStatus{Name: name, Status: proto.TaskStatus_QUEUED}
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now),
+		Tasks:       tasks,
+	}
+
+	for _, termWidth := range []int{80, 120, 140, 147, 148, 150, 160, 200} {
+		t.Run(fmt.Sprintf("termWidth=%d", termWidth), func(t *testing.T) {
+			r := &watchRenderer{
+				jobName:   "test-job",
+				verbose:   false,
+				termWidth: func() int { return termWidth },
+				now:       func() time.Time { return now },
+			}
+			_, stats := r.renderStats(msg)
+			for i, line := range strings.Split(stats, "\n") {
+				lineWidth := safeStringWidth(line)
+				assert.LessOrEqual(t, lineWidth, termWidth-1,
+					"line %d exceeds safe width at termWidth=%d: %q (safeWidth=%d)", i, termWidth, line, lineWidth)
+			}
+		})
+	}
+}
+
+func TestRenderStats_LineWidthWithSlowTaskEmojis(t *testing.T) {
+	// Worst case: many running tasks with slow-task emoji decorations.
+	// Each task label gets a 🐢 emoji, so the line has many emojis.
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	tasks := make([]*proto.TaskStatus, 20)
+	for i := range tasks {
+		tasks[i] = &proto.TaskStatus{
+			Name:      fmt.Sprintf("task-%d", i),
+			Status:    proto.TaskStatus_RUNNING,
+			StartedAt: timestamppb.New(now.Add(-45 * time.Minute)), // triggers 🐢 label
+		}
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-45 * time.Minute)),
+		Tasks:       tasks,
+	}
+
+	for _, termWidth := range []int{80, 120, 200, 300} {
+		t.Run(fmt.Sprintf("termWidth=%d", termWidth), func(t *testing.T) {
+			r := &watchRenderer{
+				jobName:   "test-job",
+				verbose:   false,
+				termWidth: func() int { return termWidth },
+				now:       func() time.Time { return now },
+			}
+			_, stats := r.renderStats(msg)
+			for i, line := range strings.Split(stats, "\n") {
+				lineWidth := safeStringWidth(line)
+				assert.LessOrEqual(t, lineWidth, termWidth-1,
+					"line %d exceeds safe width at termWidth=%d: %q (safeWidth=%d)", i, termWidth, line, lineWidth)
+			}
+		})
+	}
 }
