@@ -258,6 +258,7 @@ func RunContainer(
 						[]string{
 							fmt.Sprintf("ALFRED_TASK=%s", task.Name),
 							fmt.Sprintf("ALFRED_TASK_FQN=%s", task.FQN()),
+							fmt.Sprintf("ALFRED_NB_SLOTS_FOR_TASK=%d", task.Slots),
 							"ALFRED_SHARED=/alfred/shared",
 							"ALFRED_OUTPUT=/alfred/output",
 						}...,

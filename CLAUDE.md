@@ -142,7 +142,7 @@ The core execution engine for every task:
 6. **Cleanup**: Deferred in LIFO order (workspace, containers, network)
 
 Special env vars injected into step containers: `ALFRED_TASK`, `ALFRED_TASK_FQN`,
-`ALFRED_SHARED`, `ALFRED_OUTPUT`.
+`ALFRED_NB_SLOTS_FOR_TASK`, `ALFRED_SHARED`, `ALFRED_OUTPUT`.
 
 ### Event System
 
@@ -213,8 +213,13 @@ services:
       retries: 10
 tasks:
   - task-name-1
+  - { name: heavy-task, slots: 8 }
   - task-name-2
 ```
+
+Tasks can be plain strings (defaulting to 1 slot) or objects with `name` and `slots` fields.
+Each task consumes N slots on a node (default 1). The server's `--slots-per-node` flag sets
+the total capacity per node.
 
 Jobfiles support Go templates with slim-sprig functions. Available data: `.Env` (map),
 `.Args` ([]string), `.Params` (map from `--param KEY=VALUE`). Custom functions:
@@ -229,7 +234,7 @@ Jobfiles support Go templates with slim-sprig functions. Available data: `.Env` 
 | `--log-format` | `json` | `ALFRED_LOG_FORMAT` | json or text |
 | `--provisioner` | `local` | `ALFRED_PROVISIONER` | local or openstack |
 | `--max-nodes` | `(CPU+1)/2` | `ALFRED_MAX_NODES` | Max provisioned nodes |
-| `--tasks-per-node` | `2` | `ALFRED_TASKS_PER_NODE` | Concurrent tasks per node |
+| `--slots-per-node` | `2` | `ALFRED_SLOTS_PER_NODE` | Slot capacity per node |
 | `--provisioning-delay` | `20s` | `ALFRED_PROVISIONING_DELAY` | Delay between node creations |
 | `--node-workspace` | `var/node-workspace` | `ALFRED_NODE_WORKSPACE` | Workspace directory |
 | `--server-data` | `var/server-data` | `ALFRED_SERVER_DATA` | Artifacts + secrets directory |
@@ -304,10 +309,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **Local provisioner != OpenStack provisioner**: The local provisioner doesn't create N nodes
   running Y tasks each. Instead it creates N*Y Docker containers each running 1 task. Every
   task gets its own Docker network, workspace, and service containers — even though they all
-  share the same Docker daemon. This means `max-nodes * tasks-per-node` networks are created
+  share the same Docker daemon. This means `max-nodes * slots-per-node` networks are created
   concurrently.
 - **Docker network limit**: Docker can only create ~31 default bridge networks (due to
   available /16 address pools). With the local provisioner and an ambitious config (e.g.,
-  `--max-nodes=8 --tasks-per-node=4`), you'll hit "could not find an available, non-overlapping
+  `--max-nodes=8 --slots-per-node=4`), you'll hit "could not find an available, non-overlapping
   IPv4 address pool among the defaults to assign to the network". Keep local configs small
   or configure Docker with additional address pools.

@@ -32,9 +32,12 @@ message Job {
     repeated Env env = 4;
     repeated Env secrets = 5;
     repeated Service services = 6;
-    repeated string tasks = 7;
-    string flavor = 8;
-    uint32 tasks_per_node = 9;
+    repeated Task tasks = 7;
+
+    message Task {
+        string name = 1;
+        uint32 slots = 2;
+    }
 
     message Service {
         string name = 1;
@@ -155,7 +158,7 @@ message Status {
     message Scheduler {
         string provisioner = 1;
         uint32 max_nodes = 2;
-        uint32 tasks_per_nodes = 3;
+        uint32 slots_per_node = 3;
         string log_level = 4;
         google.protobuf.Duration provisioning_delay = 5;
     }

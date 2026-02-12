@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gammadia/alfred/proto"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,17 +19,12 @@ import (
 // --- Mock provisioner ---
 
 type mockProvisioner struct {
-	provisionFunc func(nodeName string, flavor string) (Node, error)
+	provisionFunc func(nodeName string) (Node, error)
 	shutdownOnce  sync.Once
 	shutdownCh    chan struct{}
 
 	mu         sync.Mutex
-	provisions []provisionCall
-}
-
-type provisionCall struct {
-	Name   string
-	Flavor string
+	provisions []string
 }
 
 func newMockProvisioner() *mockProvisioner {
@@ -37,13 +33,13 @@ func newMockProvisioner() *mockProvisioner {
 	}
 }
 
-func (p *mockProvisioner) Provision(nodeName string, flavor string) (Node, error) {
+func (p *mockProvisioner) Provision(nodeName string) (Node, error) {
 	p.mu.Lock()
-	p.provisions = append(p.provisions, provisionCall{Name: nodeName, Flavor: flavor})
+	p.provisions = append(p.provisions, nodeName)
 	p.mu.Unlock()
 
 	if p.provisionFunc != nil {
-		return p.provisionFunc(nodeName, flavor)
+		return p.provisionFunc(nodeName)
 	}
 	return &mockNode{
 		name:        nodeName,
@@ -60,10 +56,10 @@ func (p *mockProvisioner) Wait() {
 	<-p.shutdownCh
 }
 
-func (p *mockProvisioner) getProvisions() []provisionCall {
+func (p *mockProvisioner) getProvisions() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	result := make([]provisionCall, len(p.provisions))
+	result := make([]string, len(p.provisions))
 	copy(result, p.provisions)
 	return result
 }
@@ -99,8 +95,7 @@ func (n *mockNode) Terminate() error {
 func newTestConfig() Config {
 	return Config{
 		ArtifactPreserver:           func(io.Reader, *Task) error { return nil },
-		DefaultFlavor:               "default",
-		DefaultTasksPerNode:         1,
+		SlotsPerNode:                1,
 		Logger:                      slog.New(slog.NewTextHandler(nopWriter{}, &slog.HandlerOptions{Level: slog.LevelError})),
 		MaxNodes:                    4,
 		ProvisioningDelay:           0,
@@ -114,18 +109,17 @@ func newTestScheduler(prov Provisioner) *Scheduler {
 }
 
 func newTestJob(tasks ...string) *Job {
-	return &Job{Job: &proto.Job{Name: "test", Tasks: tasks}}
+	return &Job{Job: &proto.Job{Name: "test", Tasks: lo.Map(tasks, func(name string, _ int) *proto.Job_Task {
+		return &proto.Job_Task{Name: name}
+	})}}
 }
 
-func newTestJobWithFlavor(name string, flavor string, tasksPerNode uint32, tasks ...string) *Job {
-	return &Job{
-		Job: &proto.Job{
-			Name:         name,
-			Tasks:        tasks,
-			Flavor:       flavor,
-			TasksPerNode: tasksPerNode,
-		},
+func newTestJobWithSlots(name string, tasks map[string]uint32) *Job {
+	var jobTasks []*proto.Job_Task
+	for taskName, slots := range tasks {
+		jobTasks = append(jobTasks, &proto.Job_Task{Name: taskName, Slots: slots})
 	}
+	return &Job{Job: &proto.Job{Name: name, Tasks: jobTasks}}
 }
 
 type nopWriter struct{}
@@ -261,7 +255,7 @@ func TestConcurrentTaskCompletion(t *testing.T) {
 	nodeReady := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -276,7 +270,7 @@ func TestConcurrentTaskCompletion(t *testing.T) {
 	}
 
 	config := newTestConfig()
-	config.DefaultTasksPerNode = 2 // 2 slots per node
+	config.SlotsPerNode = 2 // 2 slots per node
 	s := New(prov, config)
 
 	events, unsub := s.Subscribe()
@@ -314,7 +308,7 @@ func TestNodeTerminationRace(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -364,7 +358,7 @@ func TestSchedulerBasic(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -401,7 +395,7 @@ func TestMultipleTasksSingleJob(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -445,7 +439,7 @@ func TestProvisioningFailure(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, fmt.Errorf("provisioning failed")
@@ -489,7 +483,7 @@ func TestCancelRunningTask(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -530,7 +524,7 @@ func TestCancelQueuedTask(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -576,7 +570,7 @@ func TestCancelJob(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -587,7 +581,7 @@ func TestCancelJob(t *testing.T) {
 	}
 
 	config := newTestConfig()
-	config.DefaultTasksPerNode = 2
+	config.SlotsPerNode = 2
 	config.MaxNodes = 1
 	s := New(prov, config)
 
@@ -627,7 +621,7 @@ func TestShutdownCancelsRunningTasks(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -668,7 +662,7 @@ func TestShutdownDrainsQueuedTasks(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -711,7 +705,7 @@ func TestCancelQueuedTaskFreesResources(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -767,14 +761,12 @@ func TestCancelNonexistentTask(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- Flavor / tasks-per-node tests ---
-// These use instant-completing mockNodes (via default provisionFunc) since
-// they test scheduling logic, not async task lifecycle.
+// --- Slot-based tests ---
 
 // instantMockProvisioner returns a provisioner whose nodes complete tasks immediately.
 func instantMockProvisioner() *mockProvisioner {
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		return &instantMockNode{name: nodeName}, nil
 	}
 	return prov
@@ -788,206 +780,6 @@ func (n *instantMockNode) RunTask(_ context.Context, _ *Task, _ RunTaskConfig) (
 }
 func (n *instantMockNode) Terminate() error { return nil }
 
-func TestDefaultsApplied(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	config.DefaultFlavor = "my-default"
-	config.DefaultTasksPerNode = 3
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	job := newTestJobWithFlavor("test-job", "", 0, "task-a")
-	_, err := s.Schedule(job)
-	require.NoError(t, err)
-
-	assert.Equal(t, "my-default", job.Flavor)
-	assert.Equal(t, uint32(3), job.TasksPerNode)
-
-	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventJobCompleted)
-		return ok
-	})
-}
-
-func TestFlavorMatching(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	job := newTestJobWithFlavor("flavored-job", "a16", 1, "task-x")
-	_, err := s.Schedule(job)
-	require.NoError(t, err)
-
-	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventJobCompleted)
-		return ok
-	})
-
-	provisions := prov.getProvisions()
-	require.Len(t, provisions, 1)
-	assert.Equal(t, "a16", provisions[0].Flavor)
-}
-
-func TestTasksPerNodeSlotCount(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	job := newTestJobWithFlavor("single-slot", "flavor-a", 1, "task-a")
-	_, err := s.Schedule(job)
-	require.NoError(t, err)
-
-	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventJobCompleted)
-		return ok
-	})
-
-	for _, e := range events {
-		if nc, ok := e.(EventNodeCreated); ok {
-			assert.Equal(t, 1, nc.NumSlots)
-			break
-		}
-	}
-}
-
-func TestMixedWorkload(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	config.DefaultTasksPerNode = 2
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	jobA := newTestJobWithFlavor("job-a", "flavor-small", 1, "task-1")
-	jobB := newTestJobWithFlavor("job-b", "flavor-big", 2, "task-2")
-
-	_, err := s.Schedule(jobA)
-	require.NoError(t, err)
-	_, err = s.Schedule(jobB)
-	require.NoError(t, err)
-
-	completedJobs := 0
-	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		if _, ok := e.(EventJobCompleted); ok {
-			completedJobs++
-		}
-		return completedJobs >= 2
-	})
-
-	assert.Equal(t, 2, completedJobs, "expected 2 job completions")
-
-	flavors := make(map[string]bool)
-	for _, p := range prov.getProvisions() {
-		flavors[p.Flavor] = true
-	}
-	assert.True(t, flavors["flavor-small"], "expected flavor-small to be provisioned")
-	assert.True(t, flavors["flavor-big"], "expected flavor-big to be provisioned")
-}
-
-func TestJobWithExplicitValuesOverridesDefaults(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	config.DefaultFlavor = "default-f"
-	config.DefaultTasksPerNode = 4
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	job := newTestJobWithFlavor("override", "custom-f", 2, "task-a")
-	_, err := s.Schedule(job)
-	require.NoError(t, err)
-
-	assert.Equal(t, "custom-f", job.Flavor)
-	assert.Equal(t, uint32(2), job.TasksPerNode)
-
-	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventJobCompleted)
-		return ok
-	})
-
-	provisions := prov.getProvisions()
-	require.Len(t, provisions, 1)
-	assert.Equal(t, "custom-f", provisions[0].Flavor)
-}
-
-func TestProvisionFlavorPassthrough(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	job := newTestJobWithFlavor("test", "custom-flavor-42", 1, "task-a")
-	_, err := s.Schedule(job)
-	require.NoError(t, err)
-
-	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventJobCompleted)
-		return ok
-	})
-
-	provisions := prov.getProvisions()
-	require.Len(t, provisions, 1)
-	assert.Equal(t, "custom-flavor-42", provisions[0].Flavor)
-}
-
-func TestIdleNodeTermination(t *testing.T) {
-	prov := instantMockProvisioner()
-	config := newTestConfig()
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	job := newTestJobWithFlavor("test", "flavor-a", 1, "task-a")
-	_, err := s.Schedule(job)
-	require.NoError(t, err)
-
-	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventJobCompleted)
-		return ok
-	})
-
-	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		_, ok := e.(EventNodeTerminated)
-		return ok
-	})
-
-	hasTerminated := false
-	for _, e := range events {
-		if _, ok := e.(EventNodeTerminated); ok {
-			hasTerminated = true
-			break
-		}
-	}
-	assert.True(t, hasTerminated, "expected node to be terminated after becoming idle")
-}
-
 func TestNodeSlotUpdatedHasCorrectJobName(t *testing.T) {
 	prov := instantMockProvisioner()
 	config := newTestConfig()
@@ -998,7 +790,7 @@ func TestNodeSlotUpdatedHasCorrectJobName(t *testing.T) {
 	go s.Run()
 	defer s.Shutdown()
 
-	job := newTestJobWithFlavor("my-job", "f", 1, "task-a")
+	job := &Job{Job: &proto.Job{Name: "my-job", Tasks: []*proto.Job_Task{{Name: "task-a"}}}}
 	_, err := s.Schedule(job)
 	require.NoError(t, err)
 
@@ -1027,7 +819,7 @@ func TestMaxNodesGlobalCap(t *testing.T) {
 	go s.Run()
 	defer s.Shutdown()
 
-	job := newTestJobWithFlavor("big-job", "flavor-a", 1, "t1", "t2", "t3", "t4", "t5")
+	job := newTestJob("t1", "t2", "t3", "t4", "t5")
 	_, err := s.Schedule(job)
 	require.NoError(t, err)
 
@@ -1044,6 +836,143 @@ func TestMaxNodesGlobalCap(t *testing.T) {
 		}
 	}
 	assert.True(t, hasJobCompleted, "job should complete despite MaxNodes cap")
+}
+
+func TestMultiSlotTaskAssignment(t *testing.T) {
+	prov := instantMockProvisioner()
+	config := newTestConfig()
+	config.SlotsPerNode = 4
+	s := New(prov, config)
+	ch, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer s.Shutdown()
+
+	// Task requiring 3 slots on a node with 4 slots
+	job := newTestJobWithSlots("test", map[string]uint32{"big-task": 3})
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	// Collect until node is terminated (slot frees happen after JobCompleted, before NodeTerminated)
+	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
+		_, ok := e.(EventNodeTerminated)
+		return ok
+	})
+
+	// Should see 3 slot updates (assign) + 3 slot updates (free) for the task
+	slotAssigns := 0
+	slotFrees := 0
+	for _, e := range events {
+		if su, ok := e.(EventNodeSlotUpdated); ok {
+			if su.Task != nil {
+				slotAssigns++
+			} else {
+				slotFrees++
+			}
+		}
+	}
+	assert.Equal(t, 3, slotAssigns, "expected 3 slot assignments for 3-slot task")
+	assert.Equal(t, 3, slotFrees, "expected 3 slot frees for 3-slot task")
+}
+
+func TestMultiSlotTaskFreeing(t *testing.T) {
+	var mu sync.Mutex
+	taskNodes := make(map[string]*mockNode)
+	nodeReady := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		return &perTaskNode{
+			mockNode:  n,
+			mu:        &mu,
+			taskNodes: taskNodes,
+			ready:     nodeReady,
+		}, nil
+	}
+
+	config := newTestConfig()
+	config.SlotsPerNode = 4
+	config.MaxNodes = 1
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	// Two tasks: one using 3 slots, one using 1 slot
+	// The 1-slot task should only run after the 3-slot task frees its slots
+	job := &Job{Job: &proto.Job{Name: "test", Tasks: []*proto.Job_Task{
+		{Name: "big", Slots: 3},
+		{Name: "small", Slots: 1},
+	}}}
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	// big task starts first (3 slots)
+	bigNode := waitForPerTaskNode(t, nodeReady)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// small task can also fit (only 1 slot needed, 1 remaining)
+	smallNode := waitForPerTaskNode(t, nodeReady)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Complete both
+	close(bigNode.taskDone)
+	close(smallNode.taskDone)
+
+	waitForEvent[EventJobCompleted](t, events)
+
+	mu.Lock()
+	for _, tn := range taskNodes {
+		close(tn.terminateCh)
+		break
+	}
+	mu.Unlock()
+}
+
+func TestIdleNodeTermination(t *testing.T) {
+	prov := instantMockProvisioner()
+	config := newTestConfig()
+	s := New(prov, config)
+	ch, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer s.Shutdown()
+
+	job := newTestJob("task-a")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
+		_, ok := e.(EventJobCompleted)
+		return ok
+	})
+
+	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
+		_, ok := e.(EventNodeTerminated)
+		return ok
+	})
+
+	hasTerminated := false
+	for _, e := range events {
+		if _, ok := e.(EventNodeTerminated); ok {
+			hasTerminated = true
+			break
+		}
+	}
+	assert.True(t, hasTerminated, "expected node to be terminated after becoming idle")
 }
 
 // --- Live log reader tests ---
@@ -1093,7 +1022,7 @@ func TestReadLiveTaskLogs(t *testing.T) {
 	nodes := make(chan *callbackMockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string, flavor string) (Node, error) {
+	prov.provisionFunc = func(nodeName string) (Node, error) {
 		n := &callbackMockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1160,4 +1089,253 @@ func TestReadLiveTaskLogsNotRunning(t *testing.T) {
 	_, err := s.ReadLiveTaskLogs("nonexistent-job", "nonexistent-task", 10)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no live log reader registered")
+}
+
+// --- Slot validation and edge case tests ---
+
+func TestScheduleRejectsTaskExceedingSlotsPerNode(t *testing.T) {
+	prov := newMockProvisioner()
+	config := newTestConfig()
+	config.SlotsPerNode = 2
+	s := New(prov, config)
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	// Task requiring 4 slots on a 2-slot node should be rejected
+	job := newTestJobWithSlots("test", map[string]uint32{"huge-task": 4})
+	_, err := s.Schedule(job)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "requires 4 slots but nodes only have 2")
+}
+
+func TestScheduleAcceptsTaskMatchingSlotsPerNode(t *testing.T) {
+	prov := instantMockProvisioner()
+	config := newTestConfig()
+	config.SlotsPerNode = 4
+	s := New(prov, config)
+	ch, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer s.Shutdown()
+
+	// Task requiring exactly 4 slots on a 4-slot node should work
+	job := newTestJobWithSlots("test", map[string]uint32{"exact-fit": 4})
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
+		_, ok := e.(EventJobCompleted)
+		return ok
+	})
+
+	hasJobCompleted := false
+	for _, e := range events {
+		if _, ok := e.(EventJobCompleted); ok {
+			hasJobCompleted = true
+		}
+	}
+	assert.True(t, hasJobCompleted, "task with slots == SlotsPerNode should complete")
+}
+
+func TestSlotsDefaultToOneWhenZero(t *testing.T) {
+	prov := instantMockProvisioner()
+	config := newTestConfig()
+	config.SlotsPerNode = 1
+	s := New(prov, config)
+	ch, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer s.Shutdown()
+
+	// Job_Task with Slots=0 (proto default when not set) should default to 1
+	job := &Job{Job: &proto.Job{Name: "test", Tasks: []*proto.Job_Task{
+		{Name: "task-a", Slots: 0},
+	}}}
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
+		_, ok := e.(EventNodeTerminated)
+		return ok
+	})
+
+	// Verify exactly 1 slot was assigned and 1 freed
+	slotAssigns := 0
+	slotFrees := 0
+	for _, e := range events {
+		if su, ok := e.(EventNodeSlotUpdated); ok {
+			if su.Task != nil {
+				slotAssigns++
+			} else {
+				slotFrees++
+			}
+		}
+	}
+	assert.Equal(t, 1, slotAssigns, "Slots=0 should default to 1 slot assignment")
+	assert.Equal(t, 1, slotFrees, "Slots=0 should default to 1 slot free")
+}
+
+func TestFragmentedSlotAssignment(t *testing.T) {
+	var mu sync.Mutex
+	taskNodes := make(map[string]*mockNode)
+	nodeReady := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		return &perTaskNode{
+			mockNode:  n,
+			mu:        &mu,
+			taskNodes: taskNodes,
+			ready:     nodeReady,
+		}, nil
+	}
+
+	config := newTestConfig()
+	config.SlotsPerNode = 4
+	config.MaxNodes = 1
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	// First job: two 1-slot tasks fill slots [0] and [1], leaving [2] and [3] free
+	job1 := &Job{Job: &proto.Job{Name: "job1", Tasks: []*proto.Job_Task{
+		{Name: "a", Slots: 1},
+		{Name: "b", Slots: 1},
+	}}}
+	_, err := s.Schedule(job1)
+	require.NoError(t, err)
+
+	tnA := waitForPerTaskNode(t, nodeReady)
+	tnB := waitForPerTaskNode(t, nodeReady)
+	waitForEvent[EventTaskRunning](t, events)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Complete task "a" — frees slot [0], leaving a fragmented node: [nil, b, nil, nil]
+	close(tnA.taskDone)
+	waitForEvent[EventTaskCompleted](t, events)
+
+	// Now schedule a 2-slot task — it should fit in the remaining free slots
+	job2 := &Job{Job: &proto.Job{Name: "job2", Tasks: []*proto.Job_Task{
+		{Name: "big", Slots: 2},
+	}}}
+	_, err = s.Schedule(job2)
+	require.NoError(t, err)
+
+	// The 2-slot task should start (enough free slots: 3 free, need 2)
+	waitForPerTaskNode(t, nodeReady)
+	ev := waitForEvent[EventTaskRunning](t, events)
+	assert.Equal(t, "big", ev.Task)
+
+	// Clean up: complete remaining tasks
+	close(tnB.taskDone)
+	waitForEvent[EventTaskCompleted](t, events)
+
+	mu.Lock()
+	for name, tn := range taskNodes {
+		if name == "big" {
+			close(tn.taskDone)
+		}
+	}
+	mu.Unlock()
+
+	// Wait for all jobs to complete
+	jobsCompleted := 0
+	for jobsCompleted < 2 {
+		waitForEvent[EventJobCompleted](t, events)
+		jobsCompleted++
+	}
+
+	mu.Lock()
+	for _, tn := range taskNodes {
+		select {
+		case <-tn.terminateCh:
+		default:
+			close(tn.terminateCh)
+		}
+		break
+	}
+	mu.Unlock()
+}
+
+func TestConcurrentMultiSlotTaskFreeing(t *testing.T) {
+	provisionedNodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		provisionedNodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.SlotsPerNode = 2
+	config.MaxNodes = 2
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	// Two 2-slot tasks — each fills an entire node
+	job := &Job{Job: &proto.Job{Name: "test", Tasks: []*proto.Job_Task{
+		{Name: "big-a", Slots: 2},
+		{Name: "big-b", Slots: 2},
+	}}}
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node1 := waitForNode(t, provisionedNodes)
+	node2 := waitForNode(t, provisionedNodes)
+	waitForEvent[EventTaskRunning](t, events)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Complete both simultaneously
+	close(node1.taskDone)
+	close(node2.taskDone)
+
+	waitForEvent[EventJobCompleted](t, events)
+
+	// Unblock termination so EventNodeTerminated can fire
+	close(node1.terminateCh)
+	close(node2.terminateCh)
+
+	// Wait for both nodes to be terminated (slots properly freed)
+	terminated := 0
+	deadline := time.After(10 * time.Second)
+	for terminated < 2 {
+		select {
+		case e := <-events:
+			if _, ok := e.(EventNodeTerminated); ok {
+				terminated++
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for node terminations, got %d/2", terminated)
+		}
+	}
 }

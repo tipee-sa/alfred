@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -115,4 +116,96 @@ func TestTaskProgress_OnlyAborted(t *testing.T) {
 		{Name: "t1", Status: proto.TaskStatus_ABORTED},
 	}
 	assert.Equal(t, "[gray]1 abort[-]", taskProgress(tasks))
+}
+
+// --- nodeSlotsSummary ---
+
+func makeSlot(job, name string) *proto.NodeStatus_Slot {
+	return &proto.NodeStatus_Slot{Task: &proto.NodeStatus_Slot_Task{Job: job, Name: name}}
+}
+
+func makeEmptySlot() *proto.NodeStatus_Slot {
+	return &proto.NodeStatus_Slot{}
+}
+
+func TestNodeSlotsSummary_Empty(t *testing.T) {
+	busy, running := nodeSlotsSummary([]*proto.NodeStatus_Slot{makeEmptySlot(), makeEmptySlot()})
+	assert.Equal(t, 0, busy)
+	assert.Equal(t, "", running)
+}
+
+func TestNodeSlotsSummary_NilSlots(t *testing.T) {
+	busy, running := nodeSlotsSummary([]*proto.NodeStatus_Slot{nil, nil})
+	assert.Equal(t, 0, busy)
+	assert.Equal(t, "", running)
+}
+
+func TestNodeSlotsSummary_SingleTask(t *testing.T) {
+	busy, running := nodeSlotsSummary([]*proto.NodeStatus_Slot{
+		makeSlot("job-1", "a2c"),
+		makeEmptySlot(),
+	})
+	assert.Equal(t, 1, busy)
+	assert.Equal(t, "a2c", running)
+}
+
+func TestNodeSlotsSummary_MultiSlotTask(t *testing.T) {
+	// "fase" occupies 8 of 16 slots
+	slots := make([]*proto.NodeStatus_Slot, 16)
+	for i := 0; i < 8; i++ {
+		slots[i] = makeSlot("job-1", "fase")
+	}
+	for i := 8; i < 16; i++ {
+		slots[i] = makeEmptySlot()
+	}
+	busy, running := nodeSlotsSummary(slots)
+	assert.Equal(t, 8, busy)
+	assert.Equal(t, "fase(8)", running)
+}
+
+func TestNodeSlotsSummary_MixedTasks(t *testing.T) {
+	// "fase" occupies 8 slots, "a2c" occupies 1 slot
+	slots := make([]*proto.NodeStatus_Slot, 16)
+	for i := 0; i < 8; i++ {
+		slots[i] = makeSlot("job-1", "fase")
+	}
+	slots[8] = makeSlot("job-1", "a2c")
+	for i := 9; i < 16; i++ {
+		slots[i] = makeEmptySlot()
+	}
+	busy, running := nodeSlotsSummary(slots)
+	assert.Equal(t, 9, busy)
+	assert.Equal(t, "fase(8) a2c", running)
+}
+
+func TestNodeSlotsSummary_TwoSingleSlotTasks(t *testing.T) {
+	busy, running := nodeSlotsSummary([]*proto.NodeStatus_Slot{
+		makeSlot("job-1", "task-a"),
+		makeSlot("job-1", "task-b"),
+	})
+	assert.Equal(t, 2, busy)
+	assert.Equal(t, "task-a task-b", running)
+}
+
+func TestNodeSlotsSummary_SameTaskDifferentJobs(t *testing.T) {
+	// Same task name from different jobs should be shown separately
+	busy, running := nodeSlotsSummary([]*proto.NodeStatus_Slot{
+		makeSlot("job-1", "build"),
+		makeSlot("job-2", "build"),
+	})
+	assert.Equal(t, 2, busy)
+	assert.Equal(t, "build build", running)
+}
+
+func TestNodeSlotsSummary_FullNode(t *testing.T) {
+	// All 4 slots occupied: 3 by "fase", 1 by "a2c"
+	slots := []*proto.NodeStatus_Slot{
+		makeSlot("job-1", "fase"),
+		makeSlot("job-1", "fase"),
+		makeSlot("job-1", "fase"),
+		makeSlot("job-1", "a2c"),
+	}
+	busy, running := nodeSlotsSummary(slots)
+	assert.Equal(t, 4, busy)
+	assert.Equal(t, fmt.Sprintf("fase(3) a2c"), running)
 }

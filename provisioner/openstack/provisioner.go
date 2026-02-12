@@ -110,10 +110,10 @@ func (p *Provisioner) GetName() string {
 	return p.name
 }
 
-func (p *Provisioner) Provision(nodeName string, flavor string) (scheduler.Node, error) {
-	flavorRef, err := p.resolveFlavor(flavor)
+func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
+	flavorRef, err := p.resolveFlavor(p.config.Flavor)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve flavor '%s': %w", flavor, err)
+		return nil, fmt.Errorf("failed to resolve flavor '%s': %w", p.config.Flavor, err)
 	}
 
 	name := fmt.Sprintf("alfred-%s", nodeName)

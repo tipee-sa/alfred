@@ -1,7 +1,0 @@
-version: "1"
-name: "test"
-flavor: "a8-ram32-disk50-perf2"
-tasks-per-node: 4
-steps:
-  - dockerfile: "a.dockerfile"
-    context: "."

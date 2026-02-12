@@ -43,12 +43,10 @@ type Node interface {
 type nodeState struct {
 	scheduler *Scheduler
 
-	node         Node
-	status       NodeStatus
-	flavor       string
-	tasksPerNode int
-	tasks        []*Task
-	log          *slog.Logger
+	node   Node
+	status NodeStatus
+	tasks  []*Task
+	log    *slog.Logger
 
 	nodeName      string
 	earliestStart time.Time

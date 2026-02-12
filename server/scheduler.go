@@ -28,8 +28,7 @@ func createScheduler() error {
 
 	config := schedulerpkg.Config{
 		ArtifactPreserver:           preserveArtifacts,
-		DefaultFlavor:               viper.GetString(flags.OpenstackFlavor),
-		DefaultTasksPerNode:         viper.GetInt(flags.TasksPerNode),
+		SlotsPerNode:                viper.GetInt(flags.SlotsPerNode),
 		Logger:                      log.Base.With("component", "scheduler"),
 		MaxNodes:                    viper.GetInt(flags.MaxNodes),
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
@@ -44,7 +43,7 @@ func createScheduler() error {
 
 	serverStatus.Scheduler.Provisioner = viper.GetString(flags.Provisioner)
 	serverStatus.Scheduler.MaxNodes = uint32(viper.GetInt(flags.MaxNodes))
-	serverStatus.Scheduler.TasksPerNodes = uint32(viper.GetInt(flags.TasksPerNode))
+	serverStatus.Scheduler.SlotsPerNode = uint32(viper.GetInt(flags.SlotsPerNode))
 	serverStatus.Scheduler.LogLevel = viper.GetString(flags.LogLevel)
 	serverStatus.Scheduler.ProvisioningDelay = durationpb.New(viper.GetDuration(flags.ProvisioningDelay))
 

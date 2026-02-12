@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/gammadia/alfred/proto"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,109 +37,82 @@ func (n *terminableNode) Terminate() error {
 	return nil
 }
 
-// failingProvisioner fails for specified flavors, succeeds for others.
-type failingProvisioner struct {
-	mu          sync.Mutex
-	provisions  []provisionCall
-	failFlavors map[string]error
-}
-
-func (p *failingProvisioner) Provision(nodeName string, flavor string) (Node, error) {
-	p.mu.Lock()
-	p.provisions = append(p.provisions, provisionCall{Name: nodeName, Flavor: flavor})
-	p.mu.Unlock()
-
-	if err, ok := p.failFlavors[flavor]; ok {
-		return nil, err
-	}
-	return &instantMockNode{name: nodeName}, nil
-}
-
-func (p *failingProvisioner) Shutdown() {}
-func (p *failingProvisioner) Wait()     {}
-
-func (p *failingProvisioner) getProvisions() []provisionCall {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	result := make([]provisionCall, len(p.provisions))
-	copy(result, p.provisions)
-	return result
-}
-
 // makeJob creates a Job with the given properties.
-func makeJob(name, flavor string, tasksPerNode uint32, taskNames ...string) *Job {
+func makeJob(name string, taskNames ...string) *Job {
 	return &Job{
 		Job: &proto.Job{
-			Name:         name,
-			Tasks:        taskNames,
-			Flavor:       flavor,
-			TasksPerNode: tasksPerNode,
+			Name: name,
+			Tasks: lo.Map(taskNames, func(n string, _ int) *proto.Job_Task {
+				return &proto.Job_Task{Name: n}
+			}),
 		},
 		id: "test",
 	}
 }
 
-// makeTasksForJob creates Task objects for every task name in the job.
+// makeJobWithSlots creates a Job with tasks having specific slot counts.
+func makeJobWithSlots(name string, tasks map[string]uint32) *Job {
+	var jobTasks []*proto.Job_Task
+	for taskName, slots := range tasks {
+		jobTasks = append(jobTasks, &proto.Job_Task{Name: taskName, Slots: slots})
+	}
+	return &Job{
+		Job: &proto.Job{Name: name, Tasks: jobTasks},
+		id:  "test",
+	}
+}
+
+// makeTasksForJob creates Task objects for every task in the job.
 func makeTasksForJob(job *Job) []*Task {
 	var tasks []*Task
-	for _, name := range job.Tasks {
+	for _, jobTask := range job.Tasks {
+		slots := int(jobTask.Slots)
+		if slots < 1 {
+			slots = 1
+		}
 		tasks = append(tasks, &Task{
-			Job:  job,
-			Name: name,
-			Log:  silentLogger,
+			Job:   job,
+			Name:  jobTask.Name,
+			Slots: slots,
+			Log:   silentLogger,
 		})
 	}
 	return tasks
 }
 
-// makeOnlineNode creates an online nodeState with the given type and a terminableNode.
-func makeOnlineNode(s *Scheduler, name, flavor string, tasksPerNode int) (*nodeState, *terminableNode) {
+// makeOnlineNode creates an online nodeState with the given slot count and a terminableNode.
+func makeOnlineNode(s *Scheduler, name string) (*nodeState, *terminableNode) {
 	node := newTerminableNode(name)
 	ns := &nodeState{
-		scheduler:    s,
-		node:         node,
-		status:       NodeStatusOnline,
-		flavor:       flavor,
-		tasksPerNode: tasksPerNode,
-		tasks:        make([]*Task, tasksPerNode),
-		log:          silentLogger,
-		nodeName:     name,
+		scheduler: s,
+		node:      node,
+		status:    NodeStatusOnline,
+		tasks:     make([]*Task, s.config.SlotsPerNode),
+		log:       silentLogger,
+		nodeName:  name,
 	}
 	return ns, node
 }
 
 // makeQueuedNode creates a queued nodeState in the nodesQueue.
-func makeQueuedNode(s *Scheduler, name, flavor string, tasksPerNode int, earliestStart time.Time) *nodeState {
+func makeQueuedNode(s *Scheduler, name string, earliestStart time.Time) *nodeState {
 	return &nodeState{
-		scheduler:    s,
-		status:       NodeStatusQueued,
-		flavor:       flavor,
-		tasksPerNode: tasksPerNode,
-		tasks:        make([]*Task, tasksPerNode),
-		log:          silentLogger,
-		nodeName:     name,
+		scheduler:     s,
+		status:        NodeStatusQueued,
+		tasks:         make([]*Task, s.config.SlotsPerNode),
+		log:           silentLogger,
+		nodeName:      name,
 		earliestStart: earliestStart,
 	}
 }
 
-// countNodesOfType counts nodes in a slice matching the given type.
-func countNodesOfType(nodes []*nodeState, flavor string, tasksPerNode int) int {
-	count := 0
-	for _, ns := range nodes {
-		if ns.flavor == flavor && ns.tasksPerNode == tasksPerNode {
-			count++
-		}
-	}
-	return count
-}
-
 // --- Tests ---
 
-func TestResizePool_IdleNodeTerminated_WhenNoMatchingTasks(t *testing.T) {
+func TestResizePool_IdleNodeTerminated_WhenNoQueuedTasks(t *testing.T) {
 	prov := instantMockProvisioner()
 	config := newTestConfig()
 	config.MaxNodes = 10
-	config.DefaultTasksPerNode = 1
+	config.SlotsPerNode = 1
 	s := New(prov, config)
 	ch, unsub := s.Subscribe()
 	defer unsub()
@@ -147,9 +120,9 @@ func TestResizePool_IdleNodeTerminated_WhenNoMatchingTasks(t *testing.T) {
 	go s.Run()
 	defer s.Shutdown()
 
-	// Schedule job with flavor "flavorA" — will create a flavorA node
-	jobA := newTestJobWithFlavor("job-a", "flavorA", 1, "task-a")
-	_, err := s.Schedule(jobA)
+	// Schedule a job — will create a node
+	job := newTestJob("task-a")
+	_, err := s.Schedule(job)
 	require.NoError(t, err)
 
 	// Wait for it to complete (node becomes idle)
@@ -158,87 +131,75 @@ func TestResizePool_IdleNodeTerminated_WhenNoMatchingTasks(t *testing.T) {
 		return ok
 	})
 
-	// Now schedule a job with DIFFERENT flavor — the idle flavorA node should be terminated
-	jobB := newTestJobWithFlavor("job-b", "flavorB", 1, "task-b")
-	_, err = s.Schedule(jobB)
-	require.NoError(t, err)
-
-	// Wait for the node termination event (the thing we're actually asserting on).
-	// This may arrive before or after jobB completes, so don't stop at EventJobCompleted.
+	// Wait for the idle node to be terminated
 	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
 		_, ok := e.(EventNodeTerminated)
 		return ok
 	})
 
-	// The flavorA node should have been terminated (no matching tasks)
 	hasNodeTerminated := false
 	for _, e := range events {
 		if _, ok := e.(EventNodeTerminated); ok {
 			hasNodeTerminated = true
 		}
 	}
-	assert.True(t, hasNodeTerminated, "idle node of wrong type should be terminated")
+	assert.True(t, hasNodeTerminated, "idle node should be terminated when no tasks are queued")
 }
 
-func TestResizePool_IdleNodeKept_WhenMatchingTasksQueued(t *testing.T) {
-	prov := &mockProvisioner{}
+func TestResizePool_IdleNodeKept_WhenTasksQueued(t *testing.T) {
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 10
 	s := New(prov, config)
 
-	// Create an idle online node of type (flavorA, 2)
-	ns, node := makeOnlineNode(s, "node-a", "flavorA", 2)
+	// Create an idle online node
+	ns, node := makeOnlineNode(s, "node-a")
 	s.nodes = append(s.nodes, ns)
 
-	// Queue tasks of the SAME type (flavorA, 2)
-	job := makeJob("job-a", "flavorA", 2, "task-1")
+	// Queue tasks
+	job := makeJob("job-a", "task-1")
 	s.tasksQueue = makeTasksForJob(job)
 
 	s.resizePool()
 
-	// The idle node should NOT be terminated (matching tasks exist)
+	// The idle node should NOT be terminated (queued tasks exist)
 	select {
 	case <-node.terminated:
-		t.Fatal("idle node with matching queued tasks should NOT have been terminated")
+		t.Fatal("idle node with queued tasks should NOT have been terminated")
 	case <-time.After(200 * time.Millisecond):
 		// Good: node was kept
 	}
 }
 
-func TestResizePool_CreatesNodesForMultipleTypes(t *testing.T) {
-	prov := &mockProvisioner{}
+func TestResizePool_CreatesNodes(t *testing.T) {
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 10
+	config.SlotsPerNode = 1
 	config.ProvisioningDelay = 0
 	s := New(prov, config)
 
-	// Queue tasks of two different types
-	jobA := makeJob("job-a", "small", 1, "a1", "a2")
-	jobB := makeJob("job-b", "big", 2, "b1", "b2")
-	s.tasksQueue = append(makeTasksForJob(jobA), makeTasksForJob(jobB)...)
+	// Queue 4 tasks
+	job := makeJob("job-a", "a1", "a2", "a3", "a4")
+	s.tasksQueue = makeTasksForJob(job)
 
 	s.resizePool()
 
-	// Both types should have nodes created
 	allNodes := append(s.nodes, s.nodesQueue...)
-	smallCount := countNodesOfType(allNodes, "small", 1)
-	bigCount := countNodesOfType(allNodes, "big", 2)
-
-	assert.GreaterOrEqual(t, smallCount, 1, "expected at least 1 node for type (small, 1)")
-	assert.GreaterOrEqual(t, bigCount, 1, "expected at least 1 node for type (big, 2)")
+	assert.GreaterOrEqual(t, len(allNodes), 1, "expected at least 1 node to be created")
 }
 
-func TestResizePool_RespectsMaxNodesAcrossTypes(t *testing.T) {
-	prov := &mockProvisioner{}
+func TestResizePool_RespectsMaxNodes(t *testing.T) {
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 3
+	config.SlotsPerNode = 1
 	config.ProvisioningDelay = 0
 	s := New(prov, config)
 
-	// Queue 5 tasks of type A (tpn=1, needs 5 nodes) and 5 of type B (tpn=1, needs 5 nodes)
-	jobA := makeJob("job-a", "flavorA", 1, "a1", "a2", "a3", "a4", "a5")
-	jobB := makeJob("job-b", "flavorB", 1, "b1", "b2", "b3", "b4", "b5")
-	s.tasksQueue = append(makeTasksForJob(jobA), makeTasksForJob(jobB)...)
+	// Queue 10 tasks (would need 10 nodes at slotsPerNode=1)
+	job := makeJob("job-a", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10")
+	s.tasksQueue = makeTasksForJob(job)
 
 	s.resizePool()
 
@@ -248,19 +209,17 @@ func TestResizePool_RespectsMaxNodesAcrossTypes(t *testing.T) {
 }
 
 func TestResizePool_DiscardedNodesRemoved(t *testing.T) {
-	prov := &mockProvisioner{}
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	s := New(prov, config)
 
 	// Create a discarded node
 	ns := &nodeState{
-		scheduler:    s,
-		status:       NodeStatusDiscarded,
-		flavor:       "f",
-		tasksPerNode: 1,
-		tasks:        make([]*Task, 1),
-		log:          silentLogger,
-		nodeName:     "dead-node",
+		scheduler: s,
+		status:    NodeStatusDiscarded,
+		tasks:     make([]*Task, 1),
+		log:       silentLogger,
+		nodeName:  "dead-node",
 	}
 	s.nodes = append(s.nodes, ns)
 
@@ -269,41 +228,14 @@ func TestResizePool_DiscardedNodesRemoved(t *testing.T) {
 	assert.Len(t, s.nodes, 0, "discarded node should have been removed")
 }
 
-func TestResizePool_NodesQueuePruned_WhenNoDemandForType(t *testing.T) {
-	prov := &mockProvisioner{}
-	config := newTestConfig()
-	config.MaxNodes = 10
-	s := New(prov, config)
-
-	// Put queued nodes of two types
-	future := time.Now().Add(10 * time.Minute)
-	s.nodesQueue = []*nodeState{
-		makeQueuedNode(s, "node-a1", "flavorA", 1, future),
-		makeQueuedNode(s, "node-a2", "flavorA", 1, future),
-		makeQueuedNode(s, "node-b1", "flavorB", 2, future),
-	}
-
-	// Only queue tasks for type B → type A nodes should be pruned
-	job := makeJob("job-b", "flavorB", 2, "task-1")
-	s.tasksQueue = makeTasksForJob(job)
-
-	s.resizePool()
-
-	// Only type B queued nodes should remain
-	for _, ns := range s.nodesQueue {
-		assert.Equal(t, "flavorB", ns.flavor, "only flavorB nodes should remain in queue")
-		assert.Equal(t, 2, ns.tasksPerNode, "only tpn=2 nodes should remain in queue")
-	}
-}
-
 func TestResizePool_NoActionWhenQueueEmpty(t *testing.T) {
-	prov := &mockProvisioner{}
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	s := New(prov, config)
 
 	// No tasks, one existing queued node
 	s.nodesQueue = []*nodeState{
-		makeQueuedNode(s, "node-1", "f", 1, time.Now().Add(time.Minute)),
+		makeQueuedNode(s, "node-1", time.Now().Add(time.Minute)),
 	}
 
 	s.resizePool()
@@ -314,22 +246,22 @@ func TestResizePool_NoActionWhenQueueEmpty(t *testing.T) {
 }
 
 func TestResizePool_NoNewNodesWhenAtMaxNodes(t *testing.T) {
-	prov := &mockProvisioner{}
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 2
 	s := New(prov, config)
 
 	// Already at MaxNodes with 2 online nodes
-	ns1, _ := makeOnlineNode(s, "node-1", "f", 1)
-	ns2, _ := makeOnlineNode(s, "node-2", "f", 1)
+	ns1, _ := makeOnlineNode(s, "node-1")
+	ns2, _ := makeOnlineNode(s, "node-2")
 	// Assign a running task to each so they don't get terminated
-	dummyTask := &Task{Job: makeJob("j", "f", 1, "t"), Name: "t", Log: silentLogger}
+	dummyTask := &Task{Job: makeJob("j", "t"), Name: "t", Slots: 1, Log: silentLogger}
 	ns1.tasks[0] = dummyTask
 	ns2.tasks[0] = dummyTask
 	s.nodes = []*nodeState{ns1, ns2}
 
 	// Queue more tasks
-	job := makeJob("job-x", "f", 1, "t1", "t2", "t3")
+	job := makeJob("job-x", "t1", "t2", "t3")
 	s.tasksQueue = makeTasksForJob(job)
 
 	initialNodes := len(s.nodes)
@@ -339,24 +271,22 @@ func TestResizePool_NoNewNodesWhenAtMaxNodes(t *testing.T) {
 	assert.Len(t, s.nodesQueue, 0, "queue should be empty at MaxNodes")
 }
 
-func TestResizePool_ProvisioningDelaySharedAcrossTypes(t *testing.T) {
-	prov := &mockProvisioner{}
+func TestResizePool_ProvisioningDelay(t *testing.T) {
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 10
+	config.SlotsPerNode = 1
 	config.ProvisioningDelay = 30 * time.Second
 	s := New(prov, config)
 
-	// Queue tasks of two different types, both needing 2 nodes
-	jobA := makeJob("job-a", "small", 1, "a1", "a2")
-	jobB := makeJob("job-b", "big", 1, "b1", "b2")
-	s.tasksQueue = append(makeTasksForJob(jobA), makeTasksForJob(jobB)...)
+	// Queue 4 tasks
+	job := makeJob("job-a", "a1", "a2", "a3", "a4")
+	s.tasksQueue = makeTasksForJob(job)
 
 	s.resizePool()
 
-	// With 30s provisioning delay, first node is immediate, rest are queued.
-	// Total should be 4 nodes (2 per type) but most should be in the queue.
 	allNodes := append(s.nodes, s.nodesQueue...)
-	assert.GreaterOrEqual(t, len(allNodes), 2, "should have created nodes for both types")
+	assert.GreaterOrEqual(t, len(allNodes), 2, "should have created multiple nodes")
 
 	// At most 1 node should be provisioning (the first one), rest queued
 	provisioningCount := 0
@@ -367,132 +297,84 @@ func TestResizePool_ProvisioningDelaySharedAcrossTypes(t *testing.T) {
 	}
 	// First node created doesn't get queued, so exactly 1 provisioning
 	assert.Equal(t, 1, provisioningCount,
-		"only 1 node should be provisioning immediately (provisioning delay applies globally)")
+		"only 1 node should be provisioning immediately (provisioning delay applies)")
 }
 
-func TestResizePool_ExcessQueuedNodesOfTypePruned(t *testing.T) {
-	prov := &mockProvisioner{}
+func TestResizePool_ExcessQueuedNodesPruned(t *testing.T) {
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 10
 	s := New(prov, config)
 
-	// Create a provisioning node of type A (already covering 1 task)
+	// Create a provisioning node (already covering 1 task)
 	provNode := &nodeState{
-		scheduler:    s,
-		status:       NodeStatusProvisioning,
-		flavor:       "flavorA",
-		tasksPerNode: 1,
-		tasks:        make([]*Task, 1),
-		log:          silentLogger,
-		nodeName:     "prov-node",
+		scheduler: s,
+		status:    NodeStatusProvisioning,
+		tasks:     make([]*Task, 1),
+		log:       silentLogger,
+		nodeName:  "prov-node",
 	}
 	s.nodes = []*nodeState{provNode}
 
-	// Also have 2 queued nodes of type A (from a previous tick when more tasks were queued)
+	// Also have 2 queued nodes (from a previous tick when more tasks were queued)
 	future := time.Now().Add(10 * time.Minute)
 	s.nodesQueue = []*nodeState{
-		makeQueuedNode(s, "queued-a1", "flavorA", 1, future),
-		makeQueuedNode(s, "queued-a2", "flavorA", 1, future),
+		makeQueuedNode(s, "queued-1", future),
+		makeQueuedNode(s, "queued-2", future),
 	}
 
-	// But only 1 task of type A remains (the other completed)
-	job := makeJob("job-a", "flavorA", 1, "task-1")
+	// But only 1 task remains
+	job := makeJob("job-a", "task-1")
 	s.tasksQueue = makeTasksForJob(job)
 
 	s.resizePool()
 
 	// Provisioning (1 node) covers 1 task. We have 1 task, so 0 more needed.
 	// The 2 excess queued nodes should be pruned.
-	queuedTypeA := countNodesOfType(s.nodesQueue, "flavorA", 1)
-	assert.Equal(t, 0, queuedTypeA, "excess queued nodes of type A should be pruned")
+	assert.Equal(t, 0, len(s.nodesQueue), "excess queued nodes should be pruned")
 }
 
 func TestResizePool_QueuePrunedWhenProvisioningCoversNeeds(t *testing.T) {
-	prov := &mockProvisioner{}
+	prov := &mockProvisioner{shutdownCh: make(chan struct{})}
 	config := newTestConfig()
 	config.MaxNodes = 10
+	config.SlotsPerNode = 2
 	s := New(prov, config)
 
-	// 2 provisioning nodes of type A
+	// 2 provisioning nodes (capacity = 2 * 2 = 4 slots)
 	for i := 0; i < 2; i++ {
 		s.nodes = append(s.nodes, &nodeState{
-			scheduler:    s,
-			status:       NodeStatusProvisioning,
-			flavor:       "flavorA",
-			tasksPerNode: 2,
-			tasks:        make([]*Task, 2),
-			log:          silentLogger,
-			nodeName:     fmt.Sprintf("prov-%d", i),
+			scheduler: s,
+			status:    NodeStatusProvisioning,
+			tasks:     make([]*Task, 2),
+			log:       silentLogger,
+			nodeName:  fmt.Sprintf("prov-%d", i),
 		})
 	}
 
-	// 3 queued nodes of type A (leftover from a previous burst)
+	// 3 queued nodes (leftover from a previous burst)
 	future := time.Now().Add(10 * time.Minute)
 	for i := 0; i < 3; i++ {
-		s.nodesQueue = append(s.nodesQueue, makeQueuedNode(s, fmt.Sprintf("queued-%d", i), "flavorA", 2, future))
+		s.nodesQueue = append(s.nodesQueue, makeQueuedNode(s, fmt.Sprintf("queued-%d", i), future))
 	}
 
-	// Only 3 tasks of type A (2 provisioning nodes × 2 tpn = 4 capacity > 3 tasks)
-	job := makeJob("job-a", "flavorA", 2, "t1", "t2", "t3")
+	// Only 3 tasks (3 slots needed, 4 slots incoming from provisioning)
+	job := makeJob("job-a", "t1", "t2", "t3")
 	s.tasksQueue = makeTasksForJob(job)
 
 	s.resizePool()
 
-	// Provisioning alone covers needs → all queued nodes of type A should be removed
-	queuedTypeA := countNodesOfType(s.nodesQueue, "flavorA", 2)
-	assert.Equal(t, 0, queuedTypeA, "queued nodes should be pruned when provisioning covers needs")
+	// Provisioning alone covers needs → all queued nodes should be removed
+	assert.Equal(t, 0, len(s.nodesQueue), "queued nodes should be pruned when provisioning covers needs")
 }
 
 // --- Full lifecycle tests ---
 
-func TestLifecycle_ProvisioningFailure_OneType_OtherSucceeds(t *testing.T) {
-	prov := &failingProvisioner{
-		failFlavors: map[string]error{
-			"bad-flavor": fmt.Errorf("flavor not found"),
-		},
-	}
-	config := newTestConfig()
-	config.DefaultTasksPerNode = 1
-	config.ProvisioningFailureCooldown = 50 * time.Millisecond
-	s := New(prov, config)
-	ch, unsub := s.Subscribe()
-	defer unsub()
-
-	go s.Run()
-	defer s.Shutdown()
-
-	// Schedule job with good flavor — should complete
-	goodJob := newTestJobWithFlavor("good-job", "good-flavor", 1, "task-1")
-	_, err := s.Schedule(goodJob)
-	require.NoError(t, err)
-
-	// Schedule job with bad flavor — will fail provisioning
-	badJob := newTestJobWithFlavor("bad-job", "bad-flavor", 1, "task-2")
-	_, err = s.Schedule(badJob)
-	require.NoError(t, err)
-
-	// The good job should complete
-	events := collectEventsUntil(ch, 10*time.Second, func(e Event) bool {
-		if ec, ok := e.(EventJobCompleted); ok {
-			return ec.Job == goodJob.FQN()
-		}
-		return false
-	})
-
-	hasGoodJobCompleted := false
-	for _, e := range events {
-		if ec, ok := e.(EventJobCompleted); ok && ec.Job == goodJob.FQN() {
-			hasGoodJobCompleted = true
-		}
-	}
-	assert.True(t, hasGoodJobCompleted, "good job should complete despite bad flavor failing")
-}
-
-func TestLifecycle_NodeReuseWithinSameType(t *testing.T) {
+func TestLifecycle_NodeReuse(t *testing.T) {
 	prov := instantMockProvisioner()
 	config := newTestConfig()
 	config.MaxNodes = 1
-	config.DefaultTasksPerNode = 1
+	config.SlotsPerNode = 1
 	s := New(prov, config)
 	ch, unsub := s.Subscribe()
 	defer unsub()
@@ -500,8 +382,8 @@ func TestLifecycle_NodeReuseWithinSameType(t *testing.T) {
 	go s.Run()
 	defer s.Shutdown()
 
-	// Schedule 3 tasks with tpn=1 and MaxNodes=1 → all must run on the same node sequentially
-	job := newTestJobWithFlavor("reuse-job", "flavor-x", 1, "t1", "t2", "t3")
+	// Schedule 3 tasks with slotsPerNode=1 and MaxNodes=1 → all must run on the same node sequentially
+	job := newTestJob("t1", "t2", "t3")
 	_, err := s.Schedule(job)
 	require.NoError(t, err)
 
@@ -517,20 +399,13 @@ func TestLifecycle_NodeReuseWithinSameType(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 3, completedTasks, "all 3 tasks should complete via node reuse")
-
-	// Only 1 node should have been provisioned (reused for all 3 tasks)
-	// Due to termination between reuses, there might be multiple provisions.
-	// But all should be for the same flavor.
-	for _, p := range prov.getProvisions() {
-		assert.Equal(t, "flavor-x", p.Flavor)
-	}
 }
 
-func TestLifecycle_TwoTypesRunConcurrently(t *testing.T) {
+func TestLifecycle_MixedSlotWorkload(t *testing.T) {
 	prov := instantMockProvisioner()
 	config := newTestConfig()
 	config.MaxNodes = 4
-	config.DefaultTasksPerNode = 1
+	config.SlotsPerNode = 4
 	config.ProvisioningDelay = 0
 	s := New(prov, config)
 	ch, unsub := s.Subscribe()
@@ -539,32 +414,25 @@ func TestLifecycle_TwoTypesRunConcurrently(t *testing.T) {
 	go s.Run()
 	defer s.Shutdown()
 
-	// Schedule two jobs of different types concurrently
-	jobA := newTestJobWithFlavor("type-a", "small", 1, "a1", "a2")
-	jobB := newTestJobWithFlavor("type-b", "large", 2, "b1", "b2")
-
-	_, err := s.Schedule(jobA)
+	// Mix of big and small tasks
+	job := &Job{Job: &proto.Job{Name: "mixed", Tasks: []*proto.Job_Task{
+		{Name: "big", Slots: 3},
+		{Name: "small-1", Slots: 1},
+		{Name: "small-2", Slots: 1},
+	}}}
+	_, err := s.Schedule(job)
 	require.NoError(t, err)
-	_, err = s.Schedule(jobB)
-	require.NoError(t, err)
 
-	// Wait for both to complete
-	completedJobs := 0
-	collectEventsUntil(ch, 10*time.Second, func(e Event) bool {
-		if _, ok := e.(EventJobCompleted); ok {
-			completedJobs++
-		}
-		return completedJobs >= 2
+	events := collectEventsUntil(ch, 10*time.Second, func(e Event) bool {
+		_, ok := e.(EventJobCompleted)
+		return ok
 	})
 
-	assert.Equal(t, 2, completedJobs, "both jobs should complete")
-
-	// Verify provisioning: "small" nodes and "large" nodes were both created
-	provisions := prov.getProvisions()
-	flavorsProvisioned := make(map[string]int)
-	for _, p := range provisions {
-		flavorsProvisioned[p.Flavor]++
+	hasJobCompleted := false
+	for _, e := range events {
+		if _, ok := e.(EventJobCompleted); ok {
+			hasJobCompleted = true
+		}
 	}
-	assert.Greater(t, flavorsProvisioned["small"], 0, "small flavor should have been provisioned")
-	assert.Greater(t, flavorsProvisioned["large"], 0, "large flavor should have been provisioned")
+	assert.True(t, hasJobCompleted, "job with mixed slot sizes should complete")
 }

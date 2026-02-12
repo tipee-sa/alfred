@@ -22,9 +22,10 @@ func (ts TaskStatus) AsProto() proto.TaskStatus_Status {
 }
 
 type Task struct {
-	Job  *Job
-	Name string
-	Log  *slog.Logger
+	Job   *Job
+	Name  string
+	Slots int
+	Log   *slog.Logger
 }
 
 func (t *Task) FQN() string {

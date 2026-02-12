@@ -15,6 +15,7 @@ import (
 	"github.com/gammadia/alfred/proto"
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,6 +74,9 @@ var runCmd = &cobra.Command{
 		})
 		if err != nil {
 			spinner.Fail()
+			if s, ok := status.FromError(err); ok {
+				return fmt.Errorf("server rejected job: %s", s.Message())
+			}
 			return err
 		} else {
 			spinner.Success()

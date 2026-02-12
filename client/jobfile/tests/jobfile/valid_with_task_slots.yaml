@@ -1,6 +1,9 @@
 version: "1"
 name: "test"
-flavor: "a16"
 steps:
   - dockerfile: "a.dockerfile"
     context: "."
+tasks:
+  - { name: fase, slots: 8 }
+  - { name: a2c }
+  - a2c-plain

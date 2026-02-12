@@ -99,11 +99,13 @@ var topCmd = &cobra.Command{
 
 			provisioner := ""
 			maxNodes := uint32(0)
+			slotsPerNode := uint32(0)
 			logLevel := ""
 			provisioningDelay := ""
 			if lastStatus.Scheduler != nil {
 				provisioner = lastStatus.Scheduler.Provisioner
 				maxNodes = lastStatus.Scheduler.MaxNodes
+				slotsPerNode = lastStatus.Scheduler.SlotsPerNode
 				logLevel = lastStatus.Scheduler.LogLevel
 				if lastStatus.Scheduler.ProvisioningDelay != nil {
 					provisioningDelay = lastStatus.Scheduler.ProvisioningDelay.AsDuration().String()
@@ -112,8 +114,8 @@ var topCmd = &cobra.Command{
 
 			fmt.Fprintf(header, " [yellow]Alfred[white] %s (%s)  |  Uptime: [green]%s[white]\n",
 				ping.Version, ping.Commit, uptime)
-			fmt.Fprintf(header, " Provisioner: [yellow]%s[white]  |  Max Nodes: [yellow]%d[white]  |  Log Level: [yellow]%s[white]  |  Provisioning Delay: [yellow]%s[white]",
-				provisioner, maxNodes, logLevel, provisioningDelay)
+			fmt.Fprintf(header, " Provisioner: [yellow]%s[white]  |  Max Nodes: [yellow]%d[white]  |  Slots/Node: [yellow]%d[white]  |  Log Level: [yellow]%s[white]  |  Provisioning Delay: [yellow]%s[white]",
+				provisioner, maxNodes, slotsPerNode, logLevel, provisioningDelay)
 		}
 
 		updateNodes := func() {
@@ -165,17 +167,7 @@ var topCmd = &cobra.Command{
 					SetExpansion(1))
 
 				// Slots occupancy
-				busy := 0
-				running := ""
-				for _, slot := range node.Slots {
-					if slot != nil && slot.Task != nil {
-						busy++
-						if running != "" {
-							running += " "
-						}
-						running += slot.Task.Name
-					}
-				}
+				busy, running := nodeSlotsSummary(node.Slots)
 				nodesTable.SetCell(row+1, 2, tview.NewTableCell(fmt.Sprintf("%d/%d", busy, len(node.Slots))).
 					SetTextColor(tcell.ColorWhite).
 					SetExpansion(0))
@@ -445,4 +437,34 @@ func taskProgress(tasks []*proto.TaskStatus) string {
 		result += p
 	}
 	return result
+}
+
+// nodeSlotsSummary returns the number of busy slots and a deduplicated summary string
+// of running tasks. Multi-slot tasks are shown with a parenthesized count, e.g. "fase(8) a2c".
+func nodeSlotsSummary(slots []*proto.NodeStatus_Slot) (int, string) {
+	type taskKey struct{ Job, Name string }
+	busy := 0
+	taskCounts := make(map[taskKey]int)
+	var taskOrder []taskKey
+	for _, slot := range slots {
+		if slot != nil && slot.Task != nil {
+			busy++
+			key := taskKey{slot.Task.Job, slot.Task.Name}
+			if taskCounts[key] == 0 {
+				taskOrder = append(taskOrder, key)
+			}
+			taskCounts[key]++
+		}
+	}
+	running := ""
+	for _, key := range taskOrder {
+		if running != "" {
+			running += " "
+		}
+		running += key.Name
+		if taskCounts[key] > 1 {
+			running += fmt.Sprintf("(%d)", taskCounts[key])
+		}
+	}
+	return busy, running
 }

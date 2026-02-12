@@ -33,8 +33,8 @@ func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) 
 		return nil, status.Errorf(codes.InvalidArgument, "invalid job name %q", in.Job.Name)
 	}
 	for _, task := range in.Job.Tasks {
-		if !safeTaskNameRegex.MatchString(task) {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid task name %q", task)
+		if !safeTaskNameRegex.MatchString(task.Name) {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid task name %q", task.Name)
 		}
 	}
 	jobName, err := scheduler.Schedule(&schedulerpkg.Job{
@@ -43,7 +43,10 @@ func (s *server) ScheduleJob(ctx context.Context, in *proto.ScheduleJobRequest) 
 		CommandLine: in.CommandLine,
 		StartedBy:   in.StartedBy,
 	})
-	return &proto.ScheduleJobResponse{Name: jobName}, err
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%s", err)
+	}
+	return &proto.ScheduleJobResponse{Name: jobName}, nil
 }
 
 // WatchJob is a server-streaming gRPC handler (one goroutine per connected client).

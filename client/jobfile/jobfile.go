@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const JobfileVersion = "1"
@@ -14,15 +16,34 @@ const JobfileVersion = "1"
 type Jobfile struct {
 	path string
 
-	Version      string
-	Name         string
-	Flavor       string `yaml:"flavor"`
-	TasksPerNode int    `yaml:"tasks-per-node"`
-	Steps        []JobfileImage
-	Env          map[string]string
-	Secrets      map[string]string
-	Services     map[string]JobfileService
-	Tasks        []string
+	Version  string
+	Name     string
+	Steps    []JobfileImage
+	Env      map[string]string
+	Secrets  map[string]string
+	Services map[string]JobfileService
+	Tasks    []JobfileTask
+}
+
+type JobfileTask struct {
+	Name  string `yaml:"name"`
+	Slots uint32 `yaml:"slots"`
+}
+
+func (t *JobfileTask) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		t.Name = value.Value
+		t.Slots = 1
+		return nil
+	}
+	type plain JobfileTask
+	if err := value.Decode((*plain)(t)); err != nil {
+		return err
+	}
+	if t.Slots == 0 {
+		t.Slots = 1
+	}
+	return nil
 }
 
 type JobfileImage struct {
@@ -56,10 +77,6 @@ func (jobfile Jobfile) Validate() error {
 
 	if !nameRegex.MatchString(jobfile.Name) {
 		return fmt.Errorf("name must be a valid identifier")
-	}
-
-	if jobfile.TasksPerNode < 0 {
-		return fmt.Errorf("tasks-per-node must be >= 0 (0 means server default)")
 	}
 
 	for _, step := range jobfile.Steps {

@@ -6,30 +6,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestValidateDefaultTasksPerNodeMustBePositive(t *testing.T) {
+func TestValidateSlotsPerNodeMustBePositive(t *testing.T) {
 	config := Config{
-		MaxNodes:            1,
-		DefaultTasksPerNode: 0,
+		MaxNodes:     1,
+		SlotsPerNode: 0,
 	}
 	err := Validate(config)
-	assert.EqualError(t, err, "default-tasks-per-node must be greater than 0")
+	assert.EqualError(t, err, "slots-per-node must be greater than 0")
 }
 
-func TestValidateDefaultTasksPerNodeOne(t *testing.T) {
+func TestValidateSlotsPerNodeOne(t *testing.T) {
 	config := Config{
-		MaxNodes:            1,
-		DefaultTasksPerNode: 1,
+		MaxNodes:     1,
+		SlotsPerNode: 1,
 	}
 	err := Validate(config)
 	assert.NoError(t, err)
-}
-
-func TestValidateEmptyDefaultFlavor(t *testing.T) {
-	config := Config{
-		MaxNodes:            1,
-		DefaultTasksPerNode: 1,
-		DefaultFlavor:       "",
-	}
-	err := Validate(config)
-	assert.NoError(t, err, "empty default flavor should be valid (used by local provisioner)")
 }
