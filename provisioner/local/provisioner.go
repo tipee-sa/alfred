@@ -18,7 +18,7 @@ type Provisioner struct {
 var _ scheduler.Provisioner = (*Provisioner)(nil)
 
 func New(config Config) (*Provisioner, error) {
-	docker, err := client.NewClientWithOpts()
+	docker, err := client.NewClientWithOpts(client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("failed to init docker client: %w", err)
 	}

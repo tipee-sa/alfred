@@ -11,11 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/gammadia/alfred/proto"
@@ -53,7 +52,7 @@ func RunContainer(
 
 	// Setup network to link main container with services
 	networkName := fmt.Sprintf("alfred-%s", task.FQN())
-	netResp, err := docker.NetworkCreate(ctx, networkName, types.NetworkCreate{Driver: "bridge"})
+	netResp, err := docker.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
 	if err != nil {
 		return -1, fmt.Errorf("failed to create docker network: %w", err)
 	}
@@ -114,7 +113,7 @@ func RunContainer(
 		serviceEnv[service.Name] = env
 
 		// Make sure the image has been loaded
-		list, err := docker.ImageList(ctx, types.ImageListOptions{
+		list, err := docker.ImageList(ctx, image.ListOptions{
 			Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
 		})
 		if err != nil {
@@ -124,7 +123,7 @@ func RunContainer(
 		// We only need to check that the list is non-empty, because we filtered by reference
 		if len(list) == 0 {
 			serviceLog.Debug("Pulling service image")
-			reader, err := docker.ImagePull(ctx, service.Image, types.ImagePullOptions{})
+			reader, err := docker.ImagePull(ctx, service.Image, image.PullOptions{})
 			if err != nil {
 				return -1, fmt.Errorf("failed to pull docker image for service '%s': %w", service.Name, err)
 			}
@@ -173,7 +172,7 @@ func RunContainer(
 		defer tryTo(
 			"remove service container",
 			func() error {
-				return docker.ContainerRemove(context.Background(), resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
+				return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
 			},
 			"service", service.Name,
 		)
@@ -189,14 +188,14 @@ func RunContainer(
 
 	wg.Add(len(task.Job.Services))
 	for _, service := range task.Job.Services {
-		go func(service *proto.Job_Service) { // explicit param to avoid loop variable capture
+		go func() {
 			defer wg.Done()
 			serviceLog := task.Log.With("service", service.Name)
 			containerId := serviceContainers[service.Name]
 
 			if err := startAndWaitForService(ctx, docker, service, containerId, serviceEnv[service.Name], serviceLog); err != nil {
 				// Fetch container logs to help diagnose the failure
-				logReader, logErr := docker.ContainerLogs(ctx, containerId, types.ContainerLogsOptions{
+				logReader, logErr := docker.ContainerLogs(ctx, containerId, container.LogsOptions{
 					ShowStdout: true,
 					ShowStderr: true,
 				})
@@ -209,7 +208,7 @@ func RunContainer(
 
 				serviceErrors <- err
 			}
-		}(service)
+		}()
 	}
 
 	wg.Wait()          // block until all service goroutines finish
@@ -284,7 +283,7 @@ func RunContainer(
 			defer tryTo(
 				"remove step container",
 				func() error {
-					return docker.ContainerRemove(context.Background(), resp.ID, types.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
+					return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
 				},
 				"step", stepIndex,
 			)
@@ -292,7 +291,7 @@ func RunContainer(
 			// ContainerWait returns two channels: wait (exit status) and errChan (Docker API error).
 			// We register the wait BEFORE starting so we don't miss the exit event.
 			wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
-			err = docker.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
+			err = docker.ContainerStart(ctx, resp.ID, container.StartOptions{})
 			if err != nil {
 				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
@@ -390,7 +389,7 @@ func startAndWaitForService(
 	serviceLog *slog.Logger,
 ) error {
 	serviceLog.Debug("Starting service container")
-	err := docker.ContainerStart(ctx, containerId, types.ContainerStartOptions{})
+	err := docker.ContainerStart(ctx, containerId, container.StartOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to start docker container for service '%s': %w", service.Name, err)
 	}
@@ -411,7 +410,7 @@ func startAndWaitForService(
 		healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
 		healthCheckCmd := append([]string{service.Health.Cmd}, service.Health.Args...)
 
-		exec, err := docker.ContainerExecCreate(ctx, containerId, types.ExecConfig{
+		exec, err := docker.ContainerExecCreate(ctx, containerId, container.ExecOptions{
 			Cmd:          healthCheckCmd,
 			Env:          env,
 			AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
@@ -422,7 +421,7 @@ func startAndWaitForService(
 
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		healthCheckLog.Debug("Running health check", "cmd", healthCheckCmd)
-		attach, err := docker.ContainerExecAttach(execCtx, exec.ID, types.ExecStartCheck{})
+		attach, err := docker.ContainerExecAttach(execCtx, exec.ID, container.ExecStartOptions{})
 		if err != nil {
 			cancel()
 			return fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)

@@ -131,6 +131,7 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	// Initialize Docker client
 	connectionAttempts = 1
 	n.docker, err = client.NewClientWithOpts(
+		client.WithAPIVersionNegotiation(),
 		client.WithHost(n.provisioner.config.DockerHost),
 		client.WithDialContext(func(ctx context.Context, network, addr string) (conn net.Conn, err error) {
 			ctx, cancel := context.WithTimeout(ctx, timeout)
