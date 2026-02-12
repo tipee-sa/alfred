@@ -18,6 +18,7 @@ type Config struct {
 	ProvisioningDelay           time.Duration     `json:"provisioning-delay"`
 	ProvisioningFailureCooldown time.Duration     `json:"provisioning-failure-cooldown"`
 	SecretLoader                SecretLoader      `json:"-"`
+	TaskStartupDelay            time.Duration     `json:"task-startup-delay"`
 }
 
 func Validate(config Config) error {

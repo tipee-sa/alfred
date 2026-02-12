@@ -107,6 +107,7 @@ var topCmd = &cobra.Command{
 			slotsPerNode := uint32(0)
 			logLevel := ""
 			provisioningDelay := ""
+			taskStartupDelay := ""
 			openstackFlavor := ""
 			if lastStatus.Scheduler != nil {
 				provisioner = lastStatus.Scheduler.Provisioner
@@ -117,12 +118,15 @@ var topCmd = &cobra.Command{
 				if lastStatus.Scheduler.ProvisioningDelay != nil {
 					provisioningDelay = lastStatus.Scheduler.ProvisioningDelay.AsDuration().String()
 				}
+				if lastStatus.Scheduler.TaskStartupDelay != nil {
+					taskStartupDelay = lastStatus.Scheduler.TaskStartupDelay.AsDuration().String()
+				}
 			}
 
 			fmt.Fprintf(header, " [yellow]Alfred[white] %s (%s)  |  Uptime: [green]%s[white]\n",
 				ping.Version, commit, uptime)
-			fmt.Fprintf(header, " Provisioner: [yellow]%s[white]  |  Max Nodes: [yellow]%d[white]  |  Slots/Node: [yellow]%d[white]  |  Log Level: [yellow]%s[white]  |  Provisioning Delay: [yellow]%s[white]",
-				provisioner, maxNodes, slotsPerNode, logLevel, provisioningDelay)
+			fmt.Fprintf(header, " Provisioner: [yellow]%s[white]  |  Max Nodes: [yellow]%d[white]  |  Slots/Node: [yellow]%d[white]  |  Log Level: [yellow]%s[white]  |  Provisioning Delay: [yellow]%s[white]  |  Task Startup Delay: [yellow]%s[white]",
+				provisioner, maxNodes, slotsPerNode, logLevel, provisioningDelay, taskStartupDelay)
 			if openstackFlavor != "" {
 				fmt.Fprintf(header, "  |  Flavor: [yellow]%s[white]", openstackFlavor)
 			}

@@ -50,6 +50,7 @@ type nodeState struct {
 
 	nodeName      string
 	earliestStart time.Time
+	nextTaskStart time.Time
 }
 
 func (ns *nodeState) UpdateStatus(status NodeStatus) {

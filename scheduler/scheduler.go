@@ -440,7 +440,18 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 
 		s.tasksQueue = s.tasksQueue[1:]
 
-		task.Log.Info("Scheduling task on node", "node", ns.node.Name(), "slots", task.Slots, "remainingTasks", len(s.tasksQueue))
+		// Stagger task starts to avoid overwhelming the node
+		var startDelay time.Duration
+		if s.config.TaskStartupDelay > 0 {
+			now := time.Now()
+			if ns.nextTaskStart.Before(now) {
+				ns.nextTaskStart = now
+			}
+			startDelay = ns.nextTaskStart.Sub(now)
+			ns.nextTaskStart = ns.nextTaskStart.Add(s.config.TaskStartupDelay)
+		}
+
+		task.Log.Info("Scheduling task on node", "node", ns.node.Name(), "slots", task.Slots, "startDelay", startDelay, "remainingTasks", len(s.tasksQueue))
 
 		taskKey := task.Job.FQN() + "/" + task.Name
 		ctx, cancel := context.WithCancel(context.Background())
@@ -449,7 +460,7 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 		s.taskCancels[taskKey] = cancel
 		s.taskCancelsMu.Unlock()
 
-		go s.watchTaskExecution(ctx, cancel, taskKey, ns, task) // async: blocks on RunTask
+		go s.watchTaskExecution(ctx, cancel, taskKey, ns, task, startDelay) // async: blocks on RunTask
 		return true
 	}
 
@@ -710,15 +721,51 @@ func (s *Scheduler) ReadLiveTaskLogs(jobFQN, taskName string, lines int) (io.Rea
 // It blocks on node.RunTask() for the entire duration of the task (which calls RunContainer
 // internally — creating network, starting services, running steps, archiving artifacts).
 //
-// Lifecycle: broadcast Running → block on RunTask → broadcast Aborted/Failed/Completed →
+// Lifecycle: (optional delay) → broadcast Running → block on RunTask → broadcast Aborted/Failed/Completed →
 // atomic increment job counter (detect job completion) → free node slot → wg.Done → requestTick.
-func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.CancelFunc, taskKey string, nodeState *nodeState, task *Task) {
+func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.CancelFunc, taskKey string, nodeState *nodeState, task *Task, startDelay time.Duration) {
 	defer func() {
 		cancel()
 		s.taskCancelsMu.Lock()
 		delete(s.taskCancels, taskKey)
 		s.taskCancelsMu.Unlock()
 	}()
+
+	// Stagger task starts to avoid overwhelming the node with concurrent Docker operations
+	if startDelay > 0 {
+		task.Log.Debug("Waiting before starting task", "delay", startDelay)
+		select {
+		case <-time.After(startDelay):
+			task.Log.Debug("Startup delay elapsed, starting task now")
+		case <-ctx.Done():
+			// Task was cancelled while waiting to start
+			task.Log.Info("Task aborted during startup delay")
+			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
+
+			if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
+				s.log.Info("Job completed", "name", task.Job.FQN())
+				s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
+			}
+
+			select {
+			case s.deferred <- func() {
+				freed := 0
+				for slot, t := range nodeState.tasks {
+					if t == task {
+						s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
+						nodeState.tasks[slot] = nil
+						freed++
+					}
+				}
+				task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", freed)
+				s.requestTick("aborted task during delay should give its slots to another task")
+			}:
+			case <-s.stop:
+			}
+			s.wg.Done()
+			return
+		}
+	}
 
 	node := nodeState.node
 

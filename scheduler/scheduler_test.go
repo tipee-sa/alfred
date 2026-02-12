@@ -1274,6 +1274,217 @@ func TestFragmentedSlotAssignment(t *testing.T) {
 	mu.Unlock()
 }
 
+// --- Task startup delay tests ---
+
+func TestTaskStartupDelayStaggersTasks(t *testing.T) {
+	var mu sync.Mutex
+	taskNodes := make(map[string]*mockNode)
+	nodeReady := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		return &perTaskNode{
+			mockNode:  n,
+			mu:        &mu,
+			taskNodes: taskNodes,
+			ready:     nodeReady,
+		}, nil
+	}
+
+	config := newTestConfig()
+	config.SlotsPerNode = 3
+	config.MaxNodes = 1
+	config.TaskStartupDelay = 100 * time.Millisecond
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	// Schedule 3 tasks on a 3-slot node
+	job := newTestJob("t1", "t2", "t3")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	// Collect EventTaskRunning timestamps
+	var runningTimes []time.Time
+	for i := 0; i < 3; i++ {
+		waitForEvent[EventTaskRunning](t, events)
+		runningTimes = append(runningTimes, time.Now())
+	}
+
+	// Verify tasks are spaced ~100ms apart (allow 50ms tolerance)
+	for i := 1; i < len(runningTimes); i++ {
+		gap := runningTimes[i].Sub(runningTimes[i-1])
+		assert.GreaterOrEqual(t, gap.Milliseconds(), int64(50),
+			"gap between task %d and %d should be >= 50ms, got %s", i-1, i, gap)
+	}
+
+	// Total spread should be >= 150ms (2 gaps of ~100ms)
+	totalSpread := runningTimes[2].Sub(runningTimes[0])
+	assert.GreaterOrEqual(t, totalSpread.Milliseconds(), int64(150),
+		"total spread should be >= 150ms, got %s", totalSpread)
+
+	// Clean up: complete all tasks
+	for i := 0; i < 3; i++ {
+		tn := waitForPerTaskNode(t, nodeReady)
+		close(tn.taskDone)
+	}
+	waitForEvent[EventJobCompleted](t, events)
+
+	mu.Lock()
+	for _, tn := range taskNodes {
+		close(tn.terminateCh)
+		break
+	}
+	mu.Unlock()
+}
+
+func TestTaskStartupDelayCancelDuringDelay(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.SlotsPerNode = 2
+	config.MaxNodes = 1
+	config.TaskStartupDelay = 5 * time.Second // very long delay so we can cancel during it
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a", "task-b")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	// Wait for first task to start running (no delay for first task)
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// task-b is assigned but waiting in startup delay (5s), cancel it now
+	err = s.CancelTask(job.FQN(), "task-b")
+	require.NoError(t, err)
+
+	// task-b should be aborted without ever reaching EventTaskRunning
+	ev := waitForEvent[EventTaskAborted](t, events)
+	assert.Equal(t, "task-b", ev.Task)
+
+	// Cancel task-a and clean up
+	err = s.CancelTask(job.FQN(), "task-a")
+	require.NoError(t, err)
+	waitForEvent[EventTaskAborted](t, events)
+	waitForEvent[EventJobCompleted](t, events)
+
+	close(node.terminateCh)
+}
+
+func TestTaskStartupDelayShutdownDuringDelay(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.SlotsPerNode = 2
+	config.MaxNodes = 1
+	config.TaskStartupDelay = 5 * time.Second
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+
+	_, err := s.Schedule(newTestJob("task-a", "task-b"))
+	require.NoError(t, err)
+
+	// task-a starts immediately, task-b is waiting in its 5s startup delay
+	waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Shutdown while task-b is still in its delay
+	s.Shutdown()
+
+	done := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Wait() returned — both tasks were properly cleaned up
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait() blocked — task in startup delay was not properly cleaned up on shutdown")
+	}
+}
+
+func TestTaskStartupDelayNoDelayWhenZero(t *testing.T) {
+	prov := instantMockProvisioner()
+	config := newTestConfig()
+	config.SlotsPerNode = 3
+	config.TaskStartupDelay = 0 // explicitly disabled
+	s := New(prov, config)
+
+	ch, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer s.Shutdown()
+
+	_, err := s.Schedule(newTestJob("t1", "t2", "t3"))
+	require.NoError(t, err)
+
+	// All 3 tasks should complete quickly without any stagger
+	events := collectEventsUntil(ch, 2*time.Second, func(e Event) bool {
+		_, ok := e.(EventJobCompleted)
+		return ok
+	})
+
+	// Verify all 3 TaskRunning events happened (no tasks stuck waiting)
+	runningCount := 0
+	for _, e := range events {
+		if _, ok := e.(EventTaskRunning); ok {
+			runningCount++
+		}
+	}
+	assert.Equal(t, 3, runningCount, "all 3 tasks should have started with no delay")
+}
+
 func TestConcurrentMultiSlotTaskFreeing(t *testing.T) {
 	provisionedNodes := make(chan *mockNode, 10)
 

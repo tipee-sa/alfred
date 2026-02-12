@@ -34,6 +34,7 @@ func createScheduler() error {
 		ProvisioningDelay:           viper.GetDuration(flags.ProvisioningDelay),
 		ProvisioningFailureCooldown: viper.GetDuration(flags.ProvisioningFailureCooldown),
 		SecretLoader:                loadSecret,
+		TaskStartupDelay:            viper.GetDuration(flags.TaskStartupDelay),
 	}
 	if err := schedulerpkg.Validate(config); err != nil {
 		return fmt.Errorf("invalid scheduler config: %w", err)
@@ -47,6 +48,7 @@ func createScheduler() error {
 	serverStatus.Scheduler.LogLevel = viper.GetString(flags.LogLevel)
 	serverStatus.Scheduler.ProvisioningDelay = durationpb.New(viper.GetDuration(flags.ProvisioningDelay))
 	serverStatus.Scheduler.OpenstackFlavor = viper.GetString(flags.OpenstackFlavor)
+	serverStatus.Scheduler.TaskStartupDelay = durationpb.New(viper.GetDuration(flags.TaskStartupDelay))
 
 	return nil
 }

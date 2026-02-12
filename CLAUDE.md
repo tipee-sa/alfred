@@ -235,6 +235,7 @@ Jobfiles support Go templates with slim-sprig functions. Available data: `.Env` 
 | `--provisioner` | `local` | `ALFRED_PROVISIONER` | local or openstack |
 | `--max-nodes` | `(CPU+1)/2` | `ALFRED_MAX_NODES` | Max provisioned nodes |
 | `--slots-per-node` | `2` | `ALFRED_SLOTS_PER_NODE` | Slot capacity per node |
+| `--task-startup-delay` | `1s` | `ALFRED_TASK_STARTUP_DELAY` | Delay between starting tasks on the same node |
 | `--provisioning-delay` | `20s` | `ALFRED_PROVISIONING_DELAY` | Delay between node creations |
 | `--node-workspace` | `var/node-workspace` | `ALFRED_NODE_WORKSPACE` | Workspace directory |
 | `--server-data` | `var/server-data` | `ALFRED_SERVER_DATA` | Artifacts + secrets directory |
