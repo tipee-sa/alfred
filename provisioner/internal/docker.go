@@ -34,12 +34,15 @@ import (
 //
 // Artifact archival happens BEFORE workspace deletion (it's not deferred — it runs inline
 // after all steps). This is critical: archiving reads from /output which lives in the workspace.
+// imageOverrides maps original image references (SHAs) to tagged references for nodes where
+// containerd image store requires tagged references for loaded images.
 func RunContainer(
 	ctx context.Context,
 	docker *client.Client,
 	task *scheduler.Task,
 	fs WorkspaceFS,
 	runConfig scheduler.RunTaskConfig,
+	imageOverrides map[string]string,
 ) (int, error) {
 	// tryTo is a best-effort cleanup helper: logs errors but doesn't fail the task.
 	// Used in defers because cleanup should not mask the original error.
@@ -225,6 +228,9 @@ func RunContainer(
 	var status container.WaitResponse
 	var stepError error
 	for i, image := range task.Job.Steps {
+		if override, ok := imageOverrides[image]; ok {
+			image = override
+		}
 		stepError = func(stepIndex int) error {
 			secretEnv := []string{}
 			for _, secret := range task.Job.Secrets {

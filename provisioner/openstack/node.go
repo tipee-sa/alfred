@@ -1,12 +1,14 @@
 package openstack
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -164,55 +166,110 @@ func (n *Node) connect(server *servers.Server) (err error) {
 }
 
 func (n *Node) RunTask(ctx context.Context, task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
-	for _, image := range task.Job.Steps {
-		if err := n.ensureNodeHasImage(image); err != nil {
+	// Resolve each step image to a tagged reference for this node.
+	// Containerd image store requires tagged references — images loaded via docker load
+	// are not accessible by their config digest (SHA).
+	imageOverrides := map[string]string{}
+	for i, image := range task.Job.Steps {
+		n.log.Debug("Resolving step image", "step", i, "image", image)
+		ref, err := n.ensureNodeHasImage(image)
+		if err != nil {
 			return -1, fmt.Errorf("failed to ensure node has docker image '%s': %w", image, err)
+		}
+		if ref != image {
+			n.log.Debug("Step image resolved to different reference", "step", i, "original", image, "resolved", ref)
+			imageOverrides[image] = ref
 		}
 	}
 
-	return internal.RunContainer(ctx, n.docker, task, n.fs, runConfig)
+	if len(imageOverrides) > 0 {
+		n.log.Debug("Running container with image overrides", "overrides", imageOverrides)
+	}
+
+	return internal.RunContainer(ctx, n.docker, task, n.fs, runConfig, imageOverrides)
 }
 
-func (n *Node) ensureNodeHasImage(image string) error {
+func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
 
-	n.log.Debug("Ensuring node has image", "image", image)
+	tag := fmt.Sprintf("alfred-transfer:%s", strings.TrimPrefix(image, "sha256:"))
+	n.log.Debug("Ensuring node has image", "image", image, "tag", tag)
 
-	if _, _, err := n.docker.ImageInspectWithRaw(context.Background(), image); err == nil {
-		n.log.Debug("Image already on node", "image", image)
-		return nil
-	} else if !client.IsErrNotFound(err) {
-		return fmt.Errorf("failed to inspect docker image '%s': %w", image, err)
+	// Check if image was already transferred (from a previous task on this node)
+	if _, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag); err == nil {
+		n.log.Debug("Image found on node (from previous transfer)", "image", image, "tag", tag)
+		return tag, nil
+	} else {
+		n.log.Debug("Image not found on node", "image", image, "tag", tag)
 	}
 
-	n.log.Info("Image not on node, loading", "image", image)
+	n.log.Info("Image not on node, loading", "image", image, "tag", tag)
+
+	// Tag the image on the server with a predictable name before saving, so that docker load
+	// on the node registers it with a tag. Containerd image store does not make loaded images
+	// accessible by their config digest (image ID), so a tag is required.
+	n.log.Debug("Tagging image on server", "image", image, "tag", tag)
+	tagCmd := exec.Command("docker", "tag", image, tag)
+	if out, err := tagCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("failed to tag image '%s' as '%s' on server (output: %s): %w", image, tag, strings.TrimSpace(string(out)), err)
+	}
+	n.log.Debug("Tagged image on server", "image", image, "tag", tag)
 
 	session, err := n.ssh.NewSession()
 	if err != nil {
-		return fmt.Errorf("failed to create SSH session: %w", err)
+		return "", fmt.Errorf("failed to create SSH session: %w", err)
 	}
 	defer session.Close()
 
-	saveCmd := exec.Command("bash", "-euo", "pipefail", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt=min=5,max=8", image))
+	// Save by tag so docker load on the node registers the image with the tag
+	n.log.Debug("Starting docker save|zstd|ssh|docker load pipeline", "tag", tag)
+	saveCmd := exec.Command("bash", "-euo", "pipefail", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt=min=5,max=8", tag))
 	saveOut := lo.Must(saveCmd.StdoutPipe())
 	session.Stdin = saveOut
+	var loadOutput bytes.Buffer
+	session.Stdout = &loadOutput
 	session.Stderr = os.Stderr
 
 	if err := saveCmd.Start(); err != nil {
-		return fmt.Errorf("failed to 'docker save' image '%s': %w", image, err)
+		return "", fmt.Errorf("failed to 'docker save' image '%s': %w", image, err)
 	}
 
 	if err := session.Run("zstd --decompress | docker load"); err != nil {
-		return fmt.Errorf("failed to 'docker load' image '%s': %w", image, err)
+		return "", fmt.Errorf("failed to 'docker load' image '%s' (docker load output: %s): %w",
+			image, strings.TrimSpace(loadOutput.String()), err)
 	}
 
 	if err := saveCmd.Wait(); err != nil {
-		return fmt.Errorf("failed while waiting for 'docker save' of image '%s': %w", image, err)
+		return "", fmt.Errorf("failed while waiting for 'docker save' of image '%s': %w", image, err)
 	}
 
-	n.log.Debug("Image loaded on node", "image", image)
-	return nil
+	dockerLoadOutput := strings.TrimSpace(loadOutput.String())
+	n.log.Debug("Docker save|load pipeline completed", "image", image, "tag", tag, "docker_load_output", dockerLoadOutput)
+
+	// Verify the image is accessible by tag
+	if _, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag); err == nil {
+		n.log.Debug("Image accessible by tag after loading", "image", image, "tag", tag)
+		return tag, nil
+	} else {
+		n.log.Debug("Image NOT accessible by tag after loading", "tag", tag, "error", err)
+	}
+
+	// Last resort: list all images on the node to help diagnose
+	n.log.Warn("Image not accessible by tag after docker load, listing all images on node for diagnostics",
+		"image", image, "tag", tag, "docker_load_output", dockerLoadOutput)
+	diagSession, diagErr := n.ssh.NewSession()
+	if diagErr == nil {
+		var diagOutput bytes.Buffer
+		diagSession.Stdout = &diagOutput
+		if diagSession.Run("docker images --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}'") == nil {
+			n.log.Warn("Images on node", "images", strings.TrimSpace(diagOutput.String()))
+		}
+		diagSession.Close()
+	}
+
+	return "", fmt.Errorf("image '%s' not accessible by tag '%s' after docker load (output: %s)",
+		image, tag, dockerLoadOutput)
 }
 
 func (n *Node) Terminate() error {
