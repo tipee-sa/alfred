@@ -163,12 +163,11 @@ func TestResizePool_IdleNodeTerminated_WhenNoMatchingTasks(t *testing.T) {
 	_, err = s.Schedule(jobB)
 	require.NoError(t, err)
 
-	// Collect events until we see either node terminated or job completed
+	// Wait for the node termination event (the thing we're actually asserting on).
+	// This may arrive before or after jobB completes, so don't stop at EventJobCompleted.
 	events := collectEventsUntil(ch, 5*time.Second, func(e Event) bool {
-		if ec, ok := e.(EventJobCompleted); ok {
-			return ec.Job == jobB.FQN()
-		}
-		return false
+		_, ok := e.(EventNodeTerminated)
+		return ok
 	})
 
 	// The flavorA node should have been terminated (no matching tasks)
