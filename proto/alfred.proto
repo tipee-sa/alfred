@@ -161,6 +161,7 @@ message Status {
         uint32 slots_per_node = 3;
         string log_level = 4;
         google.protobuf.Duration provisioning_delay = 5;
+        string openstack_flavor = 6;
     }
 }
 

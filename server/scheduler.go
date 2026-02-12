@@ -46,6 +46,7 @@ func createScheduler() error {
 	serverStatus.Scheduler.SlotsPerNode = uint32(viper.GetInt(flags.SlotsPerNode))
 	serverStatus.Scheduler.LogLevel = viper.GetString(flags.LogLevel)
 	serverStatus.Scheduler.ProvisioningDelay = durationpb.New(viper.GetDuration(flags.ProvisioningDelay))
+	serverStatus.Scheduler.OpenstackFlavor = viper.GetString(flags.OpenstackFlavor)
 
 	return nil
 }

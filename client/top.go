@@ -88,6 +88,11 @@ var topCmd = &cobra.Command{
 			}
 			header.Clear()
 
+			commit := ping.Commit
+			if len(commit) > 10 {
+				commit = commit[:10]
+			}
+
 			uptime := ""
 			if lastStatus.Server != nil && lastStatus.Server.StartedAt != nil {
 				d := time.Since(lastStatus.Server.StartedAt.AsTime())
@@ -102,20 +107,25 @@ var topCmd = &cobra.Command{
 			slotsPerNode := uint32(0)
 			logLevel := ""
 			provisioningDelay := ""
+			openstackFlavor := ""
 			if lastStatus.Scheduler != nil {
 				provisioner = lastStatus.Scheduler.Provisioner
 				maxNodes = lastStatus.Scheduler.MaxNodes
 				slotsPerNode = lastStatus.Scheduler.SlotsPerNode
 				logLevel = lastStatus.Scheduler.LogLevel
+				openstackFlavor = lastStatus.Scheduler.OpenstackFlavor
 				if lastStatus.Scheduler.ProvisioningDelay != nil {
 					provisioningDelay = lastStatus.Scheduler.ProvisioningDelay.AsDuration().String()
 				}
 			}
 
 			fmt.Fprintf(header, " [yellow]Alfred[white] %s (%s)  |  Uptime: [green]%s[white]\n",
-				ping.Version, ping.Commit, uptime)
+				ping.Version, commit, uptime)
 			fmt.Fprintf(header, " Provisioner: [yellow]%s[white]  |  Max Nodes: [yellow]%d[white]  |  Slots/Node: [yellow]%d[white]  |  Log Level: [yellow]%s[white]  |  Provisioning Delay: [yellow]%s[white]",
 				provisioner, maxNodes, slotsPerNode, logLevel, provisioningDelay)
+			if openstackFlavor != "" {
+				fmt.Fprintf(header, "  |  Flavor: [yellow]%s[white]", openstackFlavor)
+			}
 		}
 
 		updateNodes := func() {
