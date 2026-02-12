@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"time"
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/config"
@@ -83,7 +84,9 @@ func main() {
 	go func() {
 		<-ctx.Done()         // triggered by cancel() in signal handler
 		scheduler.Shutdown() // closes scheduler's stop channel → Run() returns
-		scheduler.Wait()     // blocks until all tasks finish (wg inside scheduler)
+		log.Debug("Waiting for scheduler to finish")
+		scheduler.Wait() // blocks until all tasks finish (wg inside scheduler)
+		log.Debug("Scheduler finished")
 		wg.Done()
 	}()
 
@@ -96,13 +99,26 @@ func main() {
 	go listenEvents(channel)
 
 	// gRPC server goroutine. A nested goroutine watches for shutdown and calls
-	// GracefulStop(), which stops accepting new connections and waits for in-flight
-	// RPCs to complete. Then Serve() returns and wg.Done() unblocks main.
+	// GracefulStop() with a timeout. GracefulStop stops accepting new connections and
+	// waits for in-flight RPCs to complete, but streaming handlers (WatchJob, WatchStatus)
+	// don't detect server shutdown via srv.Context() — they only exit on client disconnect.
+	// If GracefulStop doesn't complete within 5 seconds, Stop() forces immediate closure.
 	wg.Add(1)
 	go func() {
 		go func() {
-			<-ctx.Done()     // triggered by cancel() in signal handler
-			s.GracefulStop() // waits for in-flight RPCs to finish
+			<-ctx.Done() // triggered by cancel() in signal handler
+			graceful := make(chan struct{})
+			go func() {
+				s.GracefulStop()
+				close(graceful)
+			}()
+			select {
+			case <-graceful:
+				log.Info("gRPC server stopped gracefully")
+			case <-time.After(5 * time.Second):
+				log.Warn("gRPC graceful stop timed out, forcing stop")
+				s.Stop()
+			}
 		}()
 
 		log.Info("Server listening", "address", lis.Addr())

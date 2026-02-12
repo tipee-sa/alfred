@@ -195,8 +195,11 @@ func (s *Scheduler) Schedule(job *Job) (string, error) {
 // Wait blocks until all tasks have finished (wg counter reaches 0) and the provisioner
 // has cleaned up. Called by the server during shutdown to ensure graceful completion.
 func (s *Scheduler) Wait() {
+	s.log.Debug("Waiting for all tasks to finish")
 	s.wg.Wait()
+	s.log.Debug("All tasks finished, waiting for provisioner cleanup")
 	s.provisioner.Wait()
+	s.log.Debug("Provisioner cleanup complete")
 }
 
 // Shutdown signals the scheduler to stop. Closing s.stop unblocks the select in Run().
