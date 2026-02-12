@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gammadia/alfred/namegen"
+	internal "github.com/gammadia/alfred/provisioner/internal"
 	"github.com/gammadia/alfred/scheduler"
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack"
@@ -82,7 +83,9 @@ func New(config Config) (*Provisioner, error) {
 
 	// Generate a temporary keypair
 	provisioner.log.Debug("Creating SSH keypair", "keypair", provisioner.keypairName)
-	keypair, err := keypairs.Create(client, keypairs.CreateOpts{Name: provisioner.keypairName}).Extract()
+	keypair, err := internal.RetryResult(4, func() (*keypairs.KeyPair, error) {
+		return keypairs.Create(client, keypairs.CreateOpts{Name: provisioner.keypairName}).Extract()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create keypair: %w", err)
 	} else {
@@ -99,7 +102,9 @@ func New(config Config) (*Provisioner, error) {
 
 func (p *Provisioner) deleteKeypair() {
 	p.log.Debug("Deleting SSH keypair", "keypair", p.keypairName)
-	err := keypairs.Delete(p.client, p.keypairName, nil).ExtractErr()
+	err := internal.Retry(3, func() error {
+		return keypairs.Delete(p.client, p.keypairName, nil).ExtractErr()
+	})
 	p.wg.Done()
 	if err != nil {
 		p.log.Warn("Failed to delete keypair", "error", err)
@@ -140,7 +145,9 @@ func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 		}
 	}
 
-	server, err := servers.Create(p.client, optsBuilder).Extract()
+	server, err := internal.RetryResult(4, func() (*servers.Server, error) {
+		return servers.Create(p.client, optsBuilder).Extract()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server '%s': %w", name, err)
 	}
@@ -191,20 +198,24 @@ func (p *Provisioner) resolveFlavor(flavor string) (string, error) {
 
 	var allNames []string
 	var flavorID string
-	err := flavors.ListDetail(p.client, nil).EachPage(func(page pagination.Page) (bool, error) {
-		flavorList, err := flavors.ExtractFlavors(page)
-		if err != nil {
-			return false, err
-		}
-		p.log.Debug("Fetched flavor page", "count", len(flavorList))
-		for _, f := range flavorList {
-			allNames = append(allNames, f.Name)
-			p.flavorCache[f.Name] = f.ID
-			if f.Name == flavor {
-				flavorID = f.ID
+	err := internal.Retry(4, func() error {
+		allNames = nil
+		flavorID = ""
+		return flavors.ListDetail(p.client, nil).EachPage(func(page pagination.Page) (bool, error) {
+			flavorList, err := flavors.ExtractFlavors(page)
+			if err != nil {
+				return false, err
 			}
-		}
-		return flavorID == "", nil // stop paging once found
+			p.log.Debug("Fetched flavor page", "count", len(flavorList))
+			for _, f := range flavorList {
+				allNames = append(allNames, f.Name)
+				p.flavorCache[f.Name] = f.ID
+				if f.Name == flavor {
+					flavorID = f.ID
+				}
+			}
+			return flavorID == "", nil // stop paging once found
+		})
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to list flavors: %w", err)

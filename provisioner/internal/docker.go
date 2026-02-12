@@ -55,7 +55,9 @@ func RunContainer(
 
 	// Setup network to link main container with services
 	networkName := fmt.Sprintf("alfred-%s", task.FQN())
-	netResp, err := docker.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
+	netResp, err := RetryResult(3, func() (network.CreateResponse, error) {
+		return docker.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
+	})
 	if err != nil {
 		return -1, fmt.Errorf("failed to create docker network: %w", err)
 	}
@@ -64,7 +66,9 @@ func RunContainer(
 	defer tryTo(
 		"remove Docker network",
 		func() error {
-			return docker.NetworkRemove(context.Background(), networkId)
+			return Retry(3, func() error {
+				return docker.NetworkRemove(context.Background(), networkId)
+			})
 		},
 	)
 
@@ -116,8 +120,10 @@ func RunContainer(
 		serviceEnv[service.Name] = env
 
 		// Make sure the image has been loaded
-		list, err := docker.ImageList(ctx, image.ListOptions{
-			Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
+		list, err := RetryResult(3, func() ([]image.Summary, error) {
+			return docker.ImageList(ctx, image.ListOptions{
+				Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
+			})
 		})
 		if err != nil {
 			return -1, fmt.Errorf("failed to list docker images for service '%s': %w", service.Name, err)
@@ -126,7 +132,9 @@ func RunContainer(
 		// We only need to check that the list is non-empty, because we filtered by reference
 		if len(list) == 0 {
 			serviceLog.Debug("Pulling service image")
-			reader, err := docker.ImagePull(ctx, service.Image, image.PullOptions{})
+			reader, err := RetryResult(4, func() (io.ReadCloser, error) {
+				return docker.ImagePull(ctx, service.Image, image.PullOptions{})
+			})
 			if err != nil {
 				return -1, fmt.Errorf("failed to pull docker image for service '%s': %w", service.Name, err)
 			}
@@ -148,34 +156,38 @@ func RunContainer(
 			tmpfs[path] = opts
 		}
 
-		resp, err := docker.ContainerCreate(
-			ctx,
-			&container.Config{
-				Image: service.Image,
-				Cmd:   service.Command,
-				Env:   env,
-			},
-			&container.HostConfig{
-				Tmpfs: tmpfs,
-			},
-			&network.NetworkingConfig{
-				EndpointsConfig: map[string]*network.EndpointSettings{
-					networkName: {
-						NetworkID: networkId,
-						Aliases:   []string{service.Name},
+		resp, err := RetryResult(3, func() (container.CreateResponse, error) {
+			return docker.ContainerCreate(
+				ctx,
+				&container.Config{
+					Image: service.Image,
+					Cmd:   service.Command,
+					Env:   env,
+				},
+				&container.HostConfig{
+					Tmpfs: tmpfs,
+				},
+				&network.NetworkingConfig{
+					EndpointsConfig: map[string]*network.EndpointSettings{
+						networkName: {
+							NetworkID: networkId,
+							Aliases:   []string{service.Name},
+						},
 					},
 				},
-			},
-			nil,
-			fmt.Sprintf("alfred-%s-%s", task.FQN(), service.Name),
-		)
+				nil,
+				fmt.Sprintf("alfred-%s-%s", task.FQN(), service.Name),
+			)
+		})
 		if err != nil {
 			return -1, fmt.Errorf("failed to create docker container for service '%s': %w", service.Name, err)
 		}
 		defer tryTo(
 			"remove service container",
 			func() error {
-				return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
+				return Retry(3, func() error {
+					return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
+				})
 			},
 			"service", service.Name,
 		)
@@ -198,9 +210,11 @@ func RunContainer(
 
 			if err := startAndWaitForService(ctx, docker, service, containerId, serviceEnv[service.Name], serviceLog); err != nil {
 				// Fetch container logs to help diagnose the failure
-				logReader, logErr := docker.ContainerLogs(ctx, containerId, container.LogsOptions{
-					ShowStdout: true,
-					ShowStderr: true,
+				logReader, logErr := RetryResult(2, func() (io.ReadCloser, error) {
+					return docker.ContainerLogs(ctx, containerId, container.LogsOptions{
+						ShowStdout: true,
+						ShowStderr: true,
+					})
 				})
 				if logErr == nil {
 					if logs, readErr := io.ReadAll(logReader); readErr == nil && len(logs) > 0 {
@@ -244,53 +258,57 @@ func RunContainer(
 				secretEnv = append(secretEnv, fmt.Sprintf("%s=%s", secret.Key, base64.StdEncoding.EncodeToString(secretData)))
 			}
 
-			resp, err := docker.ContainerCreate(
-				ctx,
-				&container.Config{
-					Image: image,
-					Env: append(
-						append(
-							lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
-								return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
-							}),
-							secretEnv...,
+			resp, err := RetryResult(3, func() (container.CreateResponse, error) {
+				return docker.ContainerCreate(
+					ctx,
+					&container.Config{
+						Image: image,
+						Env: append(
+							append(
+								lo.Map(task.Job.Env, func(jobEnv *proto.Job_Env, _ int) string {
+									return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
+								}),
+								secretEnv...,
+							),
+							[]string{
+								fmt.Sprintf("ALFRED_TASK=%s", task.Name),
+								fmt.Sprintf("ALFRED_TASK_FQN=%s", task.FQN()),
+								fmt.Sprintf("ALFRED_NB_SLOTS_FOR_TASK=%d", task.Slots),
+								"ALFRED_SHARED=/alfred/shared",
+								"ALFRED_OUTPUT=/alfred/output",
+							}...,
 						),
-						[]string{
-							fmt.Sprintf("ALFRED_TASK=%s", task.Name),
-							fmt.Sprintf("ALFRED_TASK_FQN=%s", task.FQN()),
-							fmt.Sprintf("ALFRED_NB_SLOTS_FOR_TASK=%d", task.Slots),
-							"ALFRED_SHARED=/alfred/shared",
-							"ALFRED_OUTPUT=/alfred/output",
-						}...,
-					),
-				},
-				&container.HostConfig{
-					AutoRemove: false, // Otherwise this will remove the container before we can get the logs
-					Mounts: []mount.Mount{
-						{
-							Type:   mount.TypeBind,
-							Source: taskFs.HostPath("/"),
-							Target: "/alfred",
+					},
+					&container.HostConfig{
+						AutoRemove: false, // Otherwise this will remove the container before we can get the logs
+						Mounts: []mount.Mount{
+							{
+								Type:   mount.TypeBind,
+								Source: taskFs.HostPath("/"),
+								Target: "/alfred",
+							},
 						},
 					},
-				},
-				&network.NetworkingConfig{
-					EndpointsConfig: map[string]*network.EndpointSettings{
-						networkName: {
-							NetworkID: networkId,
+					&network.NetworkingConfig{
+						EndpointsConfig: map[string]*network.EndpointSettings{
+							networkName: {
+								NetworkID: networkId,
+							},
 						},
 					},
-				},
-				nil,
-				fmt.Sprintf("alfred-%s-%d", task.FQN(), stepIndex),
-			)
+					nil,
+					fmt.Sprintf("alfred-%s-%d", task.FQN(), stepIndex),
+				)
+			})
 			if err != nil {
 				return fmt.Errorf("failed to create docker container for step %d: %w", stepIndex, err)
 			}
 			defer tryTo(
 				"remove step container",
 				func() error {
-					return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
+					return Retry(3, func() error {
+						return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
+					})
 				},
 				"step", stepIndex,
 			)
@@ -298,8 +316,9 @@ func RunContainer(
 			// ContainerWait returns two channels: wait (exit status) and errChan (Docker API error).
 			// We register the wait BEFORE starting so we don't miss the exit event.
 			wait, errChan := docker.ContainerWait(ctx, resp.ID, container.WaitConditionNextExit)
-			err = docker.ContainerStart(ctx, resp.ID, container.StartOptions{})
-			if err != nil {
+			if err := Retry(3, func() error {
+				return docker.ContainerStart(ctx, resp.ID, container.StartOptions{})
+			}); err != nil {
 				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
 
@@ -396,8 +415,9 @@ func startAndWaitForService(
 	serviceLog *slog.Logger,
 ) error {
 	serviceLog.Debug("Starting service container")
-	err := docker.ContainerStart(ctx, containerId, container.StartOptions{})
-	if err != nil {
+	if err := Retry(3, func() error {
+		return docker.ContainerStart(ctx, containerId, container.StartOptions{})
+	}); err != nil {
 		return fmt.Errorf("failed to start docker container for service '%s': %w", service.Name, err)
 	}
 
@@ -417,10 +437,12 @@ func startAndWaitForService(
 		healthCheckLog := serviceLog.With(slog.Group("retry", "attempt", i+1, "interval", interval))
 		healthCheckCmd := append([]string{service.Health.Cmd}, service.Health.Args...)
 
-		exec, err := docker.ContainerExecCreate(ctx, containerId, container.ExecOptions{
-			Cmd:          healthCheckCmd,
-			Env:          env,
-			AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
+		exec, err := RetryResult(3, func() (container.ExecCreateResponse, error) {
+			return docker.ContainerExecCreate(ctx, containerId, container.ExecOptions{
+				Cmd:          healthCheckCmd,
+				Env:          env,
+				AttachStdout: true, // We are piping stdout to io.Discard to "wait" for completion
+			})
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create docker exec for service '%s': %w", service.Name, err)
@@ -452,7 +474,9 @@ func startAndWaitForService(
 		}
 
 		if !healthCheckTimedOut.Load() {
-			inspect, err := docker.ContainerExecInspect(ctx, exec.ID)
+			inspect, err := RetryResult(3, func() (container.ExecInspect, error) {
+				return docker.ContainerExecInspect(ctx, exec.ID)
+			})
 			if err != nil {
 				cancel()
 				return fmt.Errorf("failed to inspect docker exec for service '%s': %w", service.Name, err)

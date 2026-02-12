@@ -58,26 +58,32 @@ func (n *Node) connect(server *servers.Server) (err error) {
 		return fmt.Errorf("failed while waiting for server '%s' to become ready after %s: %w", n.name, 2*time.Minute, err)
 	}
 
-	pages, err := servers.ListAddresses(openstackClient, server.ID).AllPages()
-	if err != nil {
-		return fmt.Errorf("failed to get server addresses for '%s': %w", n.name, err)
-	}
-
-	allAddresses, err := servers.ExtractAddresses(pages)
-	if err != nil {
-		return fmt.Errorf("failed to extract server addresses for '%s': %w", n.name, err)
-	}
-
 	var nodeAddress string
-	for _, addresses := range allAddresses {
-		for _, address := range addresses {
-			if address.Version == 4 {
-				nodeAddress = address.Address
+	if err := internal.Retry(4, func() error {
+		pages, err := servers.ListAddresses(openstackClient, server.ID).AllPages()
+		if err != nil {
+			return fmt.Errorf("failed to get server addresses for '%s': %w", n.name, err)
+		}
+
+		allAddresses, err := servers.ExtractAddresses(pages)
+		if err != nil {
+			return fmt.Errorf("failed to extract server addresses for '%s': %w", n.name, err)
+		}
+
+		nodeAddress = ""
+		for _, addresses := range allAddresses {
+			for _, address := range addresses {
+				if address.Version == 4 {
+					nodeAddress = address.Address
+				}
 			}
 		}
-	}
-	if nodeAddress == "" {
-		return fmt.Errorf("failed to find IPv4 address for server '%s'", n.name)
+		if nodeAddress == "" {
+			return fmt.Errorf("failed to find IPv4 address for server '%s'", n.name)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	initialWait, cmdTimeout, retryInterval, timeout := 5*time.Second, 5*time.Second, 2*time.Second, 1*time.Minute
@@ -120,8 +126,11 @@ func (n *Node) connect(server *servers.Server) (err error) {
 			if n.terminated.Load() {
 				return
 			}
-			if _, _, err := n.ssh.SendRequest("keepalive@alfred", true, nil); err != nil {
-				n.log.Warn("SSH keepalive failed", "error", err)
+			if err := internal.Retry(3, func() error {
+				_, _, err := n.ssh.SendRequest("keepalive@alfred", true, nil)
+				return err
+			}); err != nil {
+				n.log.Warn("SSH keepalive failed after retries", "error", err)
 				return
 			}
 		}
@@ -197,7 +206,10 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	n.log.Debug("Ensuring node has image", "image", image, "tag", tag)
 
 	// Check if image was already transferred (from a previous task on this node)
-	if _, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag); err == nil {
+	if err := internal.Retry(3, func() error {
+		_, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag)
+		return err
+	}); err == nil {
 		n.log.Debug("Image found on node (from previous transfer)", "image", image, "tag", tag)
 		return tag, nil
 	} else {
@@ -216,9 +228,9 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	}
 	n.log.Debug("Tagged image on server", "image", image, "tag", tag)
 
-	session, err := n.ssh.NewSession()
+	session, err := newSession(n.ssh)
 	if err != nil {
-		return "", fmt.Errorf("failed to create SSH session: %w", err)
+		return "", err
 	}
 	defer session.Close()
 
@@ -248,7 +260,10 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	n.log.Debug("Docker save|load pipeline completed", "image", image, "tag", tag, "docker_load_output", dockerLoadOutput)
 
 	// Verify the image is accessible by tag
-	if _, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag); err == nil {
+	if err := internal.Retry(3, func() error {
+		_, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag)
+		return err
+	}); err == nil {
 		n.log.Debug("Image accessible by tag after loading", "image", image, "tag", tag)
 		return tag, nil
 	} else {
@@ -258,7 +273,7 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	// Last resort: list all images on the node to help diagnose
 	n.log.Warn("Image not accessible by tag after docker load, listing all images on node for diagnostics",
 		"image", image, "tag", tag, "docker_load_output", dockerLoadOutput)
-	diagSession, diagErr := n.ssh.NewSession()
+	diagSession, diagErr := newSession(n.ssh)
 	if diagErr == nil {
 		var diagOutput bytes.Buffer
 		diagSession.Stdout = &diagOutput
@@ -285,7 +300,9 @@ func (n *Node) Terminate() error {
 		_ = n.docker.Close()
 	}
 
-	err := servers.Delete(n.provisioner.client, n.server.ID).ExtractErr()
+	err := internal.Retry(3, func() error {
+		return servers.Delete(n.provisioner.client, n.server.ID).ExtractErr()
+	})
 
 	n.provisioner.wg.Done()
 	return err

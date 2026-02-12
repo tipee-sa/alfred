@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/alessio/shellescape"
-	"github.com/gammadia/alfred/provisioner/internal"
+	internal "github.com/gammadia/alfred/provisioner/internal"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -28,10 +28,20 @@ func newFs(root string, ssh *ssh.Client) *fs {
 	}
 }
 
+// newSession creates an SSH session with retry and exponential backoff.
+// Under heavy load (many concurrent tasks), the SSH daemon or Docker daemon
+// may temporarily reject new sessions/channels. Retrying avoids failing
+// operations that would succeed moments later.
+func newSession(sshClient *ssh.Client) (*ssh.Session, error) {
+	return internal.RetryResult(6, func() (*ssh.Session, error) {
+		return sshClient.NewSession()
+	})
+}
+
 func (f *fs) through(thunk func(ssh.Session) error) error {
-	session, err := f.ssh.NewSession()
+	session, err := newSession(f.ssh)
 	if err != nil {
-		return fmt.Errorf("failed to create SSH session: %w", err)
+		return err
 	}
 	defer session.Close()
 
@@ -53,9 +63,9 @@ func (f *fs) MkDir(p string) error {
 }
 
 func (f *fs) SaveContainerLogs(containerId, p string) error {
-	session, err := f.ssh.NewSession()
+	session, err := newSession(f.ssh)
 	if err != nil {
-		return fmt.Errorf("failed to create SSH session: %w", err)
+		return err
 	}
 	defer session.Close()
 
@@ -67,9 +77,9 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 }
 
 func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) error {
-	session, err := f.ssh.NewSession()
+	session, err := newSession(f.ssh)
 	if err != nil {
-		return fmt.Errorf("failed to create SSH session: %w", err)
+		return err
 	}
 	defer session.Close()
 
@@ -86,9 +96,9 @@ func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) err
 }
 
 func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
-	session, err := f.ssh.NewSession()
+	session, err := newSession(f.ssh)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SSH session: %w", err)
+		return nil, err
 	}
 	defer session.Close()
 
@@ -116,9 +126,9 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 // hangs on long-lived connections. Setting session.Stdout lets the SSH
 // library manage channel reading via an internal goroutine.
 func (f *fs) Archive(p string) (io.ReadCloser, error) {
-	session, err := f.ssh.NewSession()
+	session, err := newSession(f.ssh)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SSH session: %w", err)
+		return nil, err
 	}
 
 	var stderr bytes.Buffer
