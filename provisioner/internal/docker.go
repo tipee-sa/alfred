@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -108,18 +110,17 @@ func RunContainer(
 
 	// Environment variables for each service
 	serviceEnv := map[string][]string{}
-	// Container IDs for each service
-	serviceContainers := map[string]string{}
-
 	for _, service := range task.Job.Services {
-		serviceLog := task.Log.With("service", service.Name)
-
 		env := lo.Map(service.Env, func(jobEnv *proto.Job_Env, _ int) string {
 			return fmt.Sprintf("%s=%s", jobEnv.Key, jobEnv.Value)
 		})
 		serviceEnv[service.Name] = env
+	}
 
-		// Make sure the image has been loaded
+	// Ensure service images are available (sequential — avoids concurrent pulls of the same image)
+	for _, service := range task.Job.Services {
+		serviceLog := task.Log.With("service", service.Name)
+
 		list, err := RetryResult(3, func() ([]image.Summary, error) {
 			return docker.ImageList(ctx, image.ListOptions{
 				Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
@@ -129,7 +130,6 @@ func RunContainer(
 			return -1, fmt.Errorf("failed to list docker images for service '%s': %w", service.Name, err)
 		}
 
-		// We only need to check that the list is non-empty, because we filtered by reference
 		if len(list) == 0 {
 			serviceLog.Debug("Pulling service image")
 			reader, err := RetryResult(4, func() (io.ReadCloser, error) {
@@ -138,80 +138,97 @@ func RunContainer(
 			if err != nil {
 				return -1, fmt.Errorf("failed to pull docker image for service '%s': %w", service.Name, err)
 			}
-
-			// Wait for the pull to finish, then close immediately (not deferred,
-			// since we're inside a loop and don't want to accumulate open readers)
 			_, _ = io.Copy(io.Discard, reader)
 			reader.Close()
-
-			// We might not be handling pull error properly, but parsing the JSON response is a pain
-			// Let's just assume it worked, and if it didn't, the container create will fail
 		} else {
 			serviceLog.Debug("Service image already on node")
 		}
-
-		tmpfs := map[string]string{}
-		for _, t := range service.Tmpfs {
-			path, opts, _ := strings.Cut(t, ":")
-			tmpfs[path] = opts
-		}
-
-		resp, err := RetryResult(3, func() (container.CreateResponse, error) {
-			return docker.ContainerCreate(
-				ctx,
-				&container.Config{
-					Image: service.Image,
-					Cmd:   service.Command,
-					Env:   env,
-				},
-				&container.HostConfig{
-					Tmpfs: tmpfs,
-				},
-				&network.NetworkingConfig{
-					EndpointsConfig: map[string]*network.EndpointSettings{
-						networkName: {
-							NetworkID: networkId,
-							Aliases:   []string{service.Name},
-						},
-					},
-				},
-				nil,
-				fmt.Sprintf("alfred-%s-%s", task.FQN(), service.Name),
-			)
-		})
-		if err != nil {
-			return -1, fmt.Errorf("failed to create docker container for service '%s': %w", service.Name, err)
-		}
-		defer tryTo(
-			"remove service container",
-			func() error {
-				return Retry(3, func() error {
-					return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
-				})
-			},
-			"service", service.Name,
-		)
-		serviceContainers[service.Name] = resp.ID
 	}
 
-	// Start all services concurrently. Each service gets its own goroutine that blocks
-	// on startAndWaitForService (which starts the container and runs health check retries).
-	// WaitGroup ensures we don't proceed to step execution until all services are ready.
+	// Start all services concurrently. Each goroutine creates, starts, and health-checks
+	// its service container. If the container crashes (e.g. OOM during MySQL init), it is
+	// removed and recreated up to 3 times before giving up.
 	var wg sync.WaitGroup
-	// Buffered to len(services) so goroutines never block on send
 	serviceErrors := make(chan error, len(task.Job.Services))
+	var containerCleanupMu sync.Mutex
+	var containerCleanupIDs []string
 
 	wg.Add(len(task.Job.Services))
 	for _, service := range task.Job.Services {
 		go func() {
 			defer wg.Done()
 			serviceLog := task.Log.With("service", service.Name)
-			containerId := serviceContainers[service.Name]
+			env := serviceEnv[service.Name]
 
-			if err := startAndWaitForService(ctx, docker, service, containerId, serviceEnv[service.Name], serviceLog); err != nil {
+			tmpfs := map[string]string{}
+			for _, t := range service.Tmpfs {
+				path, opts, _ := strings.Cut(t, ":")
+				tmpfs[path] = opts
+			}
+
+			const maxAttempts = 3
+			var lastErr error
+
+			for attempt := 1; attempt <= maxAttempts; attempt++ {
+				if ctx.Err() != nil {
+					serviceErrors <- ctx.Err()
+					return
+				}
+
+				if attempt > 1 {
+					serviceLog.Warn("Service startup failed, retrying", "attempt", attempt, "maxAttempts", maxAttempts, "error", lastErr)
+					time.Sleep(10*time.Second + time.Duration(rand.IntN(10000))*time.Millisecond)
+				}
+
+				containerName := fmt.Sprintf("alfred-%s-%s", task.FQN(), service.Name)
+				if attempt > 1 {
+					containerName = fmt.Sprintf("%s-retry%d", containerName, attempt)
+				}
+
+				resp, err := RetryResult(3, func() (container.CreateResponse, error) {
+					return docker.ContainerCreate(
+						ctx,
+						&container.Config{
+							Image: service.Image,
+							Cmd:   service.Command,
+							Env:   env,
+						},
+						&container.HostConfig{
+							Tmpfs: tmpfs,
+						},
+						&network.NetworkingConfig{
+							EndpointsConfig: map[string]*network.EndpointSettings{
+								networkName: {
+									NetworkID: networkId,
+									Aliases:   []string{service.Name},
+								},
+							},
+						},
+						nil,
+						containerName,
+					)
+				})
+				if err != nil {
+					serviceErrors <- fmt.Errorf("failed to create docker container for service '%s': %w", service.Name, err)
+					return
+				}
+
+				err = startAndWaitForService(ctx, docker, service, resp.ID, env, serviceLog)
+				if err == nil {
+					if attempt > 1 {
+						serviceLog.Info("Service started successfully after retry", "attempt", attempt)
+					}
+					containerCleanupMu.Lock()
+					containerCleanupIDs = append(containerCleanupIDs, resp.ID)
+					containerCleanupMu.Unlock()
+					return
+				}
+
+				lastErr = err
+
 				// Fetch container logs to help diagnose the failure
 				logReader, logErr := RetryResult(2, func() (io.ReadCloser, error) {
-					return docker.ContainerLogs(ctx, containerId, container.LogsOptions{
+					return docker.ContainerLogs(ctx, resp.ID, container.LogsOptions{
 						ShowStdout: true,
 						ShowStderr: true,
 					})
@@ -223,13 +240,33 @@ func RunContainer(
 					logReader.Close()
 				}
 
-				serviceErrors <- err
+				// Remove failed container before creating a new one
+				serviceLog.Debug("Removing failed service container", "container", containerName)
+				_ = Retry(3, func() error {
+					return docker.ContainerRemove(context.Background(), resp.ID, container.RemoveOptions{RemoveVolumes: true, Force: true})
+				})
 			}
+
+			serviceErrors <- fmt.Errorf("service '%s' failed after %d attempts: %w", service.Name, maxAttempts, lastErr)
 		}()
 	}
 
-	wg.Wait()          // block until all service goroutines finish
-	close(serviceErrors) // safe to close: all senders are done
+	wg.Wait()
+	close(serviceErrors)
+
+	// Register cleanup for all successfully started service containers.
+	// These defers run in LIFO order: service containers are removed before workspace and network.
+	for _, id := range containerCleanupIDs {
+		containerID := id
+		defer tryTo(
+			"remove service container",
+			func() error {
+				return Retry(3, func() error {
+					return docker.ContainerRemove(context.Background(), containerID, container.RemoveOptions{RemoveVolumes: true, Force: true})
+				})
+			},
+		)
+	}
 
 	if err := <-serviceErrors; err != nil {
 		return -1, fmt.Errorf("some service failed: %w", err)
@@ -450,7 +487,14 @@ func startAndWaitForService(
 
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		healthCheckLog.Debug("Running health check", "cmd", healthCheckCmd)
-		attach, err := docker.ContainerExecAttach(execCtx, exec.ID, container.ExecStartOptions{})
+		attachAttempt := 0
+		attach, err := RetryResult(3, func() (types.HijackedResponse, error) {
+			attachAttempt++
+			if attachAttempt > 1 {
+				healthCheckLog.Debug("Retrying exec attach", "attempt", attachAttempt)
+			}
+			return docker.ContainerExecAttach(execCtx, exec.ID, container.ExecStartOptions{})
+		})
 		if err != nil {
 			cancel()
 			return fmt.Errorf("failed to attach docker exec for service '%s': %w", service.Name, err)

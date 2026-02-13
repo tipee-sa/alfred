@@ -228,36 +228,59 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	}
 	n.log.Debug("Tagged image on server", "image", image, "tag", tag)
 
-	session, err := newSession(n.ssh)
-	if err != nil {
-		return "", err
+	// Transfer the image to the node via docker save | zstd | ssh | docker load.
+	// Retry the entire pipeline on failure (SSH tunnel drops, Docker daemon busy, etc.).
+	const maxTransferAttempts = 3
+	var lastTransferErr error
+	var transferAttempts int
+	for transferAttempts = 1; transferAttempts <= maxTransferAttempts; transferAttempts++ {
+		if transferAttempts > 1 {
+			n.log.Warn("Image transfer failed, retrying", "image", image, "tag", tag, "attempt", transferAttempts, "maxAttempts", maxTransferAttempts, "error", lastTransferErr)
+			time.Sleep(5 * time.Second)
+		}
+
+		lastTransferErr = func() error {
+			session, err := newSession(n.ssh)
+			if err != nil {
+				return err
+			}
+			defer session.Close()
+
+			n.log.Debug("Starting docker save|zstd|ssh|docker load pipeline", "tag", tag, "attempt", transferAttempts)
+			saveCmd := exec.Command("bash", "-euo", "pipefail", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt=min=5,max=8", tag))
+			saveOut := lo.Must(saveCmd.StdoutPipe())
+			session.Stdin = saveOut
+			var loadOutput bytes.Buffer
+			session.Stdout = &loadOutput
+			session.Stderr = os.Stderr
+
+			if err := saveCmd.Start(); err != nil {
+				return fmt.Errorf("failed to 'docker save' image '%s': %w", image, err)
+			}
+
+			if err := session.Run("zstd --decompress | docker load"); err != nil {
+				// Ensure the local save process is cleaned up
+				saveCmd.Wait()
+				return fmt.Errorf("failed to 'docker load' image '%s' (docker load output: %s): %w",
+					image, strings.TrimSpace(loadOutput.String()), err)
+			}
+
+			if err := saveCmd.Wait(); err != nil {
+				return fmt.Errorf("failed while waiting for 'docker save' of image '%s': %w", image, err)
+			}
+
+			return nil
+		}()
+
+		if lastTransferErr == nil {
+			break
+		}
 	}
-	defer session.Close()
-
-	// Save by tag so docker load on the node registers the image with the tag
-	n.log.Debug("Starting docker save|zstd|ssh|docker load pipeline", "tag", tag)
-	saveCmd := exec.Command("bash", "-euo", "pipefail", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt=min=5,max=8", tag))
-	saveOut := lo.Must(saveCmd.StdoutPipe())
-	session.Stdin = saveOut
-	var loadOutput bytes.Buffer
-	session.Stdout = &loadOutput
-	session.Stderr = os.Stderr
-
-	if err := saveCmd.Start(); err != nil {
-		return "", fmt.Errorf("failed to 'docker save' image '%s': %w", image, err)
+	if lastTransferErr != nil {
+		return "", fmt.Errorf("image transfer failed after %d attempts: %w", maxTransferAttempts, lastTransferErr)
 	}
 
-	if err := session.Run("zstd --decompress | docker load"); err != nil {
-		return "", fmt.Errorf("failed to 'docker load' image '%s' (docker load output: %s): %w",
-			image, strings.TrimSpace(loadOutput.String()), err)
-	}
-
-	if err := saveCmd.Wait(); err != nil {
-		return "", fmt.Errorf("failed while waiting for 'docker save' of image '%s': %w", image, err)
-	}
-
-	dockerLoadOutput := strings.TrimSpace(loadOutput.String())
-	n.log.Debug("Docker save|load pipeline completed", "image", image, "tag", tag, "docker_load_output", dockerLoadOutput)
+	n.log.Debug("Docker save|load pipeline completed", "image", image, "tag", tag, "attempts", transferAttempts)
 
 	// Verify the image is accessible by tag
 	if err := internal.Retry(3, func() error {
@@ -272,7 +295,7 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 
 	// Last resort: list all images on the node to help diagnose
 	n.log.Warn("Image not accessible by tag after docker load, listing all images on node for diagnostics",
-		"image", image, "tag", tag, "docker_load_output", dockerLoadOutput)
+		"image", image, "tag", tag)
 	diagSession, diagErr := newSession(n.ssh)
 	if diagErr == nil {
 		var diagOutput bytes.Buffer
@@ -283,8 +306,8 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 		diagSession.Close()
 	}
 
-	return "", fmt.Errorf("image '%s' not accessible by tag '%s' after docker load (output: %s)",
-		image, tag, dockerLoadOutput)
+	return "", fmt.Errorf("image '%s' not accessible by tag '%s' after docker load",
+		image, tag)
 }
 
 func (n *Node) Terminate() error {
