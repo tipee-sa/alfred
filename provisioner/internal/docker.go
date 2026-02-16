@@ -18,11 +18,29 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/scheduler"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1" // for DockerClient interface
 	"github.com/samber/lo"
 )
+
+// DockerClient abstracts the Docker SDK methods used by RunContainer,
+// enabling mock-based testing without a real Docker daemon.
+type DockerClient interface {
+	NetworkCreate(ctx context.Context, name string, options network.CreateOptions) (network.CreateResponse, error)
+	NetworkRemove(ctx context.Context, networkID string) error
+	ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, containerName string) (container.CreateResponse, error)
+	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
+	ContainerWait(ctx context.Context, containerID string, condition container.WaitCondition) (<-chan container.WaitResponse, <-chan error)
+	ContainerKill(ctx context.Context, containerID string, signal string) error
+	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error)
+	ContainerExecAttach(ctx context.Context, execID string, config container.ExecStartOptions) (types.HijackedResponse, error)
+	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
+	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+}
 
 // RunContainer is the core task execution engine. It orchestrates the full lifecycle:
 // network → workspace → services (parallel) → steps (sequential) → artifact archival → cleanup.
@@ -40,7 +58,7 @@ import (
 // containerd image store requires tagged references for loaded images.
 func RunContainer(
 	ctx context.Context,
-	docker *client.Client,
+	docker DockerClient,
 	task *scheduler.Task,
 	fs WorkspaceFS,
 	runConfig scheduler.RunTaskConfig,
@@ -445,7 +463,7 @@ func RunContainer(
 
 func startAndWaitForService(
 	ctx context.Context,
-	docker *client.Client,
+	docker DockerClient,
 	service *proto.Job_Service,
 	containerId string,
 	env []string,
