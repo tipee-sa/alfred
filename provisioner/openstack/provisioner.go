@@ -1,6 +1,7 @@
 package openstack
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -115,7 +116,7 @@ func (p *Provisioner) GetName() string {
 	return p.name
 }
 
-func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
+func (p *Provisioner) Provision(ctx context.Context, nodeName string) (scheduler.Node, error) {
 	flavorRef, err := p.resolveFlavor(p.config.Flavor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve flavor '%s': %w", p.config.Flavor, err)
@@ -160,7 +161,7 @@ func (p *Provisioner) Provision(nodeName string) (scheduler.Node, error) {
 	}
 
 	node.log.Info("Node created")
-	return node, node.connect(server)
+	return node, node.connect(ctx, server)
 }
 
 func (p *Provisioner) Shutdown() {

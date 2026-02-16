@@ -67,6 +67,10 @@ type Scheduler struct {
 	taskCancels   map[string]context.CancelFunc
 	taskCancelsMu sync.Mutex
 
+	// provisionCancels maps nodeName to context.CancelFunc for in-progress provisioning.
+	// Only accessed from the main goroutine (resizePool, shutdown) — no mutex needed.
+	provisionCancels map[string]context.CancelFunc
+
 	// liveArchivers allows downloading artifacts from still-running tasks.
 	// Written by watchTaskExecution() callbacks, read by ArchiveLiveArtifact().
 	liveArchivers   map[string]func() (io.ReadCloser, error)
@@ -103,6 +107,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 
 		cancellations: make(chan cancelRequest),
 		taskCancels:   make(map[string]context.CancelFunc),
+
+		provisionCancels: make(map[string]context.CancelFunc),
 
 		liveArchivers:  make(map[string]func() (io.ReadCloser, error)),
 		liveLogReaders: make(map[string]func(int) (io.ReadCloser, error)),
@@ -280,6 +286,11 @@ func (s *Scheduler) Run() {
 		case <-s.stop:
 			s.log.Info("Shutting down scheduler")
 			s.provisioner.Shutdown()
+
+			// Cancel all in-progress provisioning so watchNodeProvisioning returns promptly
+			for _, cancel := range s.provisionCancels {
+				cancel()
+			}
 
 			// Cancel all running tasks so Wait() returns promptly
 			s.taskCancelsMu.Lock()
@@ -651,11 +662,26 @@ func (s *Scheduler) resizePool() {
 func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 	nodeState.log.Info("Provisioning node")
 
-	if node, err := s.provisioner.Provision(nodeState.nodeName); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Register the cancel func so shutdown can abort this provisioning.
+	// Send registration to the main goroutine via deferred channel to avoid
+	// racing with the shutdown case which reads provisionCancels.
+	select {
+	case s.deferred <- func() {
+		s.provisionCancels[nodeState.nodeName] = cancel
+	}:
+	case <-s.stop:
+		return
+	}
+
+	if node, err := s.provisioner.Provision(ctx, nodeState.nodeName); err != nil {
 		nodeState.log.Error("Provisioning of node failed", "error", err)
 
 		select {
 		case s.deferred <- func() {
+			delete(s.provisionCancels, nodeState.nodeName)
 			nodeState.UpdateStatus(NodeStatusFailedProvisioning)
 			// Schedule cleanup on the main goroutine (via deferred channel) after cooldown
 			s.after(s.config.ProvisioningFailureCooldown, func() {
@@ -671,6 +697,7 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 
 		select {
 		case s.deferred <- func() {
+			delete(s.provisionCancels, nodeState.nodeName)
 			nodeState.node = node
 			nodeState.UpdateStatus(NodeStatusOnline)
 			s.requestTick("online node should be ready for duty")

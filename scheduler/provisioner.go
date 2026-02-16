@@ -1,7 +1,9 @@
 package scheduler
 
+import "context"
+
 type Provisioner interface {
-	Provision(nodeName string) (Node, error) // TODO: we need cancellation
+	Provision(ctx context.Context, nodeName string) (Node, error)
 	// Shutdown shuts down the provisioner, terminating all nodes.
 	Shutdown()
 	// Wait blocks until the provisioner has fully shut down.

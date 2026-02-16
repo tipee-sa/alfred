@@ -19,7 +19,7 @@ import (
 // --- Mock provisioner ---
 
 type mockProvisioner struct {
-	provisionFunc func(nodeName string) (Node, error)
+	provisionFunc func(ctx context.Context, nodeName string) (Node, error)
 	shutdownOnce  sync.Once
 	shutdownCh    chan struct{}
 
@@ -33,13 +33,13 @@ func newMockProvisioner() *mockProvisioner {
 	}
 }
 
-func (p *mockProvisioner) Provision(nodeName string) (Node, error) {
+func (p *mockProvisioner) Provision(ctx context.Context, nodeName string) (Node, error) {
 	p.mu.Lock()
 	p.provisions = append(p.provisions, nodeName)
 	p.mu.Unlock()
 
 	if p.provisionFunc != nil {
-		return p.provisionFunc(nodeName)
+		return p.provisionFunc(ctx, nodeName)
 	}
 	return &mockNode{
 		name:        nodeName,
@@ -255,7 +255,7 @@ func TestConcurrentTaskCompletion(t *testing.T) {
 	nodeReady := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -308,7 +308,7 @@ func TestNodeTerminationRace(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -358,7 +358,7 @@ func TestSchedulerBasic(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -395,7 +395,7 @@ func TestMultipleTasksSingleJob(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -439,7 +439,7 @@ func TestProvisioningFailure(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, fmt.Errorf("provisioning failed")
@@ -483,7 +483,7 @@ func TestCancelRunningTask(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -524,7 +524,7 @@ func TestCancelQueuedTask(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -570,7 +570,7 @@ func TestCancelJob(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -621,7 +621,7 @@ func TestShutdownCancelsRunningTasks(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -658,11 +658,52 @@ func TestShutdownCancelsRunningTasks(t *testing.T) {
 	}
 }
 
+func TestShutdownCancelsProvisioningContext(t *testing.T) {
+	provisionStarted := make(chan struct{})
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(ctx context.Context, nodeName string) (Node, error) {
+		close(provisionStarted)
+		// Block until context is cancelled — simulates a slow OpenStack SSH retry loop
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	s := newTestScheduler(prov)
+	go s.Run()
+
+	_, err := s.Schedule(newTestJob("task-a"))
+	require.NoError(t, err)
+
+	// Wait for Provision() to be called
+	select {
+	case <-provisionStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Provision() was never called")
+	}
+
+	// Shutdown should cancel the provisioning context, unblocking Provision()
+	s.Shutdown()
+
+	done := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Shutdown completed promptly — provisioning context was cancelled
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait() blocked — provisioning context was not cancelled on shutdown")
+	}
+}
+
 func TestShutdownDrainsQueuedTasks(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -705,7 +746,7 @@ func TestCancelQueuedTaskFreesResources(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -766,7 +807,7 @@ func TestCancelNonexistentTask(t *testing.T) {
 // instantMockProvisioner returns a provisioner whose nodes complete tasks immediately.
 func instantMockProvisioner() *mockProvisioner {
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		return &instantMockNode{name: nodeName}, nil
 	}
 	return prov
@@ -882,7 +923,7 @@ func TestMultiSlotTaskFreeing(t *testing.T) {
 	nodeReady := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1022,7 +1063,7 @@ func TestReadLiveTaskLogs(t *testing.T) {
 	nodes := make(chan *callbackMockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &callbackMockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1186,7 +1227,7 @@ func TestFragmentedSlotAssignment(t *testing.T) {
 	nodeReady := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1282,7 +1323,7 @@ func TestTaskStartupDelayStaggersTasks(t *testing.T) {
 	nodeReady := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1354,7 +1395,7 @@ func TestTaskStartupDelayCancelDuringDelay(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1408,7 +1449,7 @@ func TestTaskStartupDelayShutdownDuringDelay(t *testing.T) {
 	nodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),
@@ -1489,7 +1530,7 @@ func TestConcurrentMultiSlotTaskFreeing(t *testing.T) {
 	provisionedNodes := make(chan *mockNode, 10)
 
 	prov := newMockProvisioner()
-	prov.provisionFunc = func(nodeName string) (Node, error) {
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
 		n := &mockNode{
 			name:        nodeName,
 			taskDone:    make(chan struct{}),

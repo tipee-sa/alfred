@@ -42,7 +42,7 @@ func (n *Node) Name() string {
 	return n.name
 }
 
-func (n *Node) connect(server *servers.Server) (err error) {
+func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) {
 	n.provisioner.wg.Add(1)
 	defer func() {
 		if err != nil {
@@ -89,16 +89,20 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	initialWait, cmdTimeout, retryInterval, timeout := 5*time.Second, 5*time.Second, 2*time.Second, 1*time.Minute
 
 	// Initialize SSH connection
-	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
+	sshCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	n.log.Debug("Wait for SSH daemon to start", "wait", initialWait)
-	time.Sleep(initialWait)
+	select {
+	case <-time.After(initialWait):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	connectionAttempts := 1
 	for n.ssh == nil {
 		select {
-		case <-ctx.Done():
+		case <-sshCtx.Done():
 			return fmt.Errorf("failed to connect to server '%s' after %s and %d attempts: %w", n.name, timeout, connectionAttempts, err)
 
 		default:
@@ -112,7 +116,11 @@ func (n *Node) connect(server *servers.Server) (err error) {
 			})
 			if err != nil {
 				n.log.Debug(fmt.Errorf("Connection to node refused (attempt %d), retrying in %s: %w", connectionAttempts, retryInterval, err).Error())
-				time.Sleep(retryInterval)
+				select {
+				case <-time.After(retryInterval):
+				case <-sshCtx.Done():
+					return fmt.Errorf("failed to connect to server '%s' after %s and %d attempts: %w", n.name, timeout, connectionAttempts, err)
+				}
 				connectionAttempts += 1
 			}
 		}
@@ -137,7 +145,11 @@ func (n *Node) connect(server *servers.Server) (err error) {
 	}()
 
 	n.log.Debug("Wait for Docker daemon to start", "wait", initialWait)
-	time.Sleep(initialWait)
+	select {
+	case <-time.After(initialWait):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	// Initialize Docker client
 	connectionAttempts = 1
