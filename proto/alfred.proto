@@ -163,6 +163,7 @@ message Status {
         google.protobuf.Duration provisioning_delay = 5;
         string openstack_flavor = 6;
         google.protobuf.Duration task_startup_delay = 7;
+        google.protobuf.Duration task_timeout = 8;
     }
 }
 
@@ -192,6 +193,7 @@ message TaskStatus {
         FAILED = 4;
         COMPLETED = 5;
         SKIPPED = 6;
+        TIMED_OUT = 7;
     }
 }
 

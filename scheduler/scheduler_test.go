@@ -1734,3 +1734,140 @@ func TestNodeTerminationRetryExhausted(t *testing.T) {
 
 	assert.Equal(t, 3, node.getTerminateCalls(), "expected exactly 3 Terminate() calls before giving up")
 }
+
+// --- Task timeout tests ---
+
+func TestTaskTimeoutEmitsTimedOutEvent(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.TaskTimeout = 100 * time.Millisecond // very short timeout
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("slow-task")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Don't close taskDone — let the timeout fire
+	ev := waitForEvent[EventTaskTimedOut](t, events)
+	assert.Equal(t, job.FQN(), ev.Job)
+	assert.Equal(t, "slow-task", ev.Task)
+
+	waitForEvent[EventJobCompleted](t, events)
+	close(node.terminateCh)
+}
+
+func TestTaskTimeoutZeroMeansNoLimit(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.TaskTimeout = 0 // explicitly no limit
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	_, err := s.Schedule(newTestJob("task-a"))
+	require.NoError(t, err)
+
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Wait a bit longer than the timeout in the other test (100ms) to prove
+	// that zero really means no limit
+	time.Sleep(200 * time.Millisecond)
+
+	// Complete normally — should get Completed, not TimedOut
+	close(node.taskDone)
+
+	ev := waitForEvent[EventTaskCompleted](t, events)
+	assert.Equal(t, "task-a", ev.Task)
+
+	waitForEvent[EventJobCompleted](t, events)
+	close(node.terminateCh)
+}
+
+func TestCancelWithTimeoutProducesAbortedNotTimedOut(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
+		n := &mockNode{
+			name:        nodeName,
+			taskDone:    make(chan struct{}),
+			terminateCh: make(chan struct{}),
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.TaskTimeout = 10 * time.Second // long timeout — we cancel before it fires
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a")
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Cancel the task manually — should produce Aborted, not TimedOut
+	err = s.CancelTask(job.FQN(), "task-a")
+	require.NoError(t, err)
+
+	ev := waitForEvent[EventTaskAborted](t, events)
+	assert.Equal(t, "task-a", ev.Task)
+
+	waitForEvent[EventJobCompleted](t, events)
+	close(node.terminateCh)
+}

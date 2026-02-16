@@ -27,6 +27,7 @@ const (
 	ServerData                  = "server-data"
 	SlotsPerNode                = "slots-per-node"
 	TaskStartupDelay            = "task-startup-delay"
+	TaskTimeout                 = "task-timeout"
 
 	OpenstackDockerHost     = "openstack-docker-host"
 	OpenstackFlavor         = "openstack-flavor"
@@ -54,6 +55,7 @@ func init() {
 	flags.String(ServerData, path.Join(workDir, "var", "server-data"), "data directory for server")
 	flags.Int(SlotsPerNode, 2, "number of slots available on each node")
 	flags.Duration(TaskStartupDelay, 1*time.Second, "delay between starting tasks on the same node")
+	flags.Duration(TaskTimeout, 5*time.Hour, "maximum task execution time (0 = no limit)")
 
 	// Openstack
 	flags.String(OpenstackDockerHost, "", "docker host on the nodes")

@@ -77,6 +77,8 @@ func (s *server) WatchJob(req *proto.WatchJobRequest, srv proto.Alfred_WatchJobS
 			return event.Job == req.Name
 		case schedulerpkg.EventTaskSkipped:
 			return event.Job == req.Name
+		case schedulerpkg.EventTaskTimedOut:
+			return event.Job == req.Name
 		case schedulerpkg.EventTaskCompleted:
 			return event.Job == req.Name
 		default:

@@ -74,6 +74,11 @@ type EventTaskSkipped struct {
 	ExitCode int
 }
 
+type EventTaskTimedOut struct {
+	Job  string
+	Task string
+}
+
 type EventTaskCompleted struct {
 	Job  string
 	Task string

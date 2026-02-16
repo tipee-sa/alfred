@@ -468,7 +468,13 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 		task.Log.Info("Scheduling task on node", "node", ns.node.Name(), "slots", task.Slots, "startDelay", startDelay, "remainingTasks", len(s.tasksQueue))
 
 		taskKey := task.Job.FQN() + "/" + task.Name
-		ctx, cancel := context.WithCancel(context.Background())
+		var ctx context.Context
+		var cancel context.CancelFunc
+		if s.config.TaskTimeout > 0 {
+			ctx, cancel = context.WithTimeout(context.Background(), s.config.TaskTimeout)
+		} else {
+			ctx, cancel = context.WithCancel(context.Background())
+		}
 
 		s.taskCancelsMu.Lock()
 		s.taskCancels[taskKey] = cancel
@@ -832,7 +838,10 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 
 	// This blocks for the entire task duration (minutes to hours)
 	if exitCode, err := node.RunTask(ctx, task, runConfig); err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			task.Log.Warn("Task timed out")
+			s.broadcast(EventTaskTimedOut{Job: task.Job.FQN(), Task: task.Name})
+		} else if ctx.Err() != nil {
 			task.Log.Info("Task aborted")
 			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
 		} else if exitCode == 42 {

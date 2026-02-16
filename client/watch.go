@@ -112,6 +112,14 @@ var watchCmd = &cobra.Command{
 					return
 				}
 				for _, t := range msg.Tasks {
+					if t.Status == proto.TaskStatus_TIMED_OUT && abortOnError {
+						if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
+							fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
+						} else {
+							abortOnFailure, abortOnError = false, false
+						}
+						break
+					}
 					if t.Status == proto.TaskStatus_FAILED {
 						shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
 						if shouldAbort {
