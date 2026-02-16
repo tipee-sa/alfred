@@ -58,7 +58,7 @@ var runCmd = &cobra.Command{
 
 		spinner = ui.NewSpinner("Uploading images to server")
 		for _, image := range j.Steps {
-			if err = sendImageToServer(cmd, image); err != nil {
+			if err = sendImageToServer(cmd, image, spinner); err != nil {
 				spinner.Fail()
 				return fmt.Errorf("failed to send image '%s' to server: %w", image, err)
 			}
@@ -102,7 +102,7 @@ func init() {
 	runCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
 }
 
-func sendImageToServer(cmd *cobra.Command, image string) error {
+func sendImageToServer(cmd *cobra.Command, image string, spinner *ui.Spinner) error {
 	c, err := client.LoadImage(cmd.Context())
 	if err != nil {
 		return err
@@ -137,6 +137,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 			return fmt.Errorf("failed to docker save image '%s': %w", image, err)
 		}
 		chunk := make([]byte, *resp.ChunkSize)
+		var totalSent int
 		for {
 			n, err := io.ReadFull(reader, chunk)
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
@@ -166,9 +167,24 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 					cmd.Wait() // reap the subprocess
 					return fmt.Errorf("failed to send docker image chunk to server: %w", err)
 				}
+				totalSent += n
+				spinner.UpdateMessage(fmt.Sprintf("Uploading images to server (%s sent)", humanizeBytes(totalSent)))
 			}
 		}
 	default:
 		return fmt.Errorf("unexpected response status: %s", resp.Status)
+	}
+}
+
+func humanizeBytes(n int) string {
+	switch {
+	case n >= 1_000_000_000:
+		return fmt.Sprintf("%.1f GB", float64(n)/1_000_000_000)
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1f MB", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1f KB", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d B", n)
 	}
 }
