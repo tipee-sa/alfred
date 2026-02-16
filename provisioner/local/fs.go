@@ -78,7 +78,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	cmd.Dir = hostDir
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("tail command failed: %w", err)
+		return nil, fmt.Errorf("failed to tail log files: %w", err)
 	}
 
 	return io.NopCloser(bytes.NewReader(output)), nil
@@ -108,7 +108,7 @@ type archiveReader struct {
 
 func (r *archiveReader) Close() error {
 	if err := r.cmd.Wait(); err != nil {
-		return fmt.Errorf("archive command failed: %w: %s", err, r.stderr.String())
+		return fmt.Errorf("failed to archive: %w (stderr: %s)", err, r.stderr.String())
 	}
 	return nil
 }

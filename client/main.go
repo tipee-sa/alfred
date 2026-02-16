@@ -44,7 +44,7 @@ var alfredCmd = &cobra.Command{
 
 		defer func() {
 			if err != nil {
-				err = fmt.Errorf("failed to connect to gRPC client: %w", err)
+				err = fmt.Errorf("failed to connect to server: %w", err)
 			}
 		}()
 

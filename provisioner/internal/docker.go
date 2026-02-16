@@ -269,7 +269,7 @@ func RunContainer(
 	}
 
 	if err := <-serviceErrors; err != nil {
-		return -1, fmt.Errorf("some service failed: %w", err)
+		return -1, fmt.Errorf("service startup failed: %w", err)
 	}
 
 	// Create and execute step containers sequentially.
@@ -286,7 +286,7 @@ func RunContainer(
 			secretEnv := []string{}
 			for _, secret := range task.Job.Secrets {
 				if runConfig.SecretLoader == nil {
-					return fmt.Errorf("no secret loader available")
+					return fmt.Errorf("secret loader not configured")
 				}
 				secretData, err := runConfig.SecretLoader(secret.Value)
 				if err != nil {
@@ -390,7 +390,7 @@ func RunContainer(
 				// (prevents goroutine leak).
 				cancelLogs()
 				<-logDone
-				return fmt.Errorf("failed while waiting for docker container for step %d: %w", stepIndex, err)
+				return fmt.Errorf("failed to wait for docker container for step %d: %w", stepIndex, err)
 			case <-ctx.Done():
 				// Task was cancelled. Actively kill the container since context cancellation
 				// may not propagate through the Docker SDK (especially over SSH-tunneled connections).

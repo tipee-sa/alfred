@@ -55,7 +55,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 	n.log.Debug("Wait for server to become ready", "wait", 2*time.Minute)
 	err = servers.WaitForStatus(openstackClient, server.ID, "ACTIVE", 120)
 	if err != nil {
-		return fmt.Errorf("failed while waiting for server '%s' to become ready after %s: %w", n.name, 2*time.Minute, err)
+		return fmt.Errorf("failed to wait for server '%s' to become ready: %w", n.name, err)
 	}
 
 	var nodeAddress string
@@ -115,7 +115,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 				},
 			})
 			if err != nil {
-				n.log.Debug(fmt.Errorf("Connection to node refused (attempt %d), retrying in %s: %w", connectionAttempts, retryInterval, err).Error())
+				n.log.Debug("SSH connection refused, retrying", "attempt", connectionAttempts, "retryIn", retryInterval, "error", err)
 				select {
 				case <-time.After(retryInterval):
 				case <-sshCtx.Done():
@@ -168,7 +168,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 					if conn, err = n.ssh.Dial(network, addr); err == nil {
 						return
 					} else {
-						n.log.Debug(fmt.Errorf("Connection to Docker daemon refused (attempt %d), retrying in %s: %w", connectionAttempts, retryInterval, err).Error())
+						n.log.Debug("Docker connection refused, retrying", "attempt", connectionAttempts, "retryIn", retryInterval, "error", err)
 						time.Sleep(retryInterval)
 						connectionAttempts += 1
 					}
@@ -267,18 +267,18 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 			session.Stderr = os.Stderr
 
 			if err := saveCmd.Start(); err != nil {
-				return fmt.Errorf("failed to 'docker save' image '%s': %w", image, err)
+				return fmt.Errorf("failed to docker save image '%s': %w", image, err)
 			}
 
 			if err := session.Run("zstd --decompress | docker load"); err != nil {
 				// Ensure the local save process is cleaned up
 				saveCmd.Wait()
-				return fmt.Errorf("failed to 'docker load' image '%s' (docker load output: %s): %w",
+				return fmt.Errorf("failed to docker load image '%s' (output: %s): %w",
 					image, strings.TrimSpace(loadOutput.String()), err)
 			}
 
 			if err := saveCmd.Wait(); err != nil {
-				return fmt.Errorf("failed while waiting for 'docker save' of image '%s': %w", image, err)
+				return fmt.Errorf("failed to wait for docker save of image '%s': %w", image, err)
 			}
 
 			return nil

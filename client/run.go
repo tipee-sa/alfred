@@ -134,7 +134,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 		cmd.Stderr = os.Stderr
 		reader := lo.Must(cmd.StdoutPipe())
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to 'docker save' image '%s' locally: %w", image, err)
+			return fmt.Errorf("failed to docker save image '%s': %w", image, err)
 		}
 		chunk := make([]byte, *resp.ChunkSize)
 		for {
@@ -143,7 +143,7 @@ func sendImageToServer(cmd *cobra.Command, image string) error {
 				if err == io.EOF {
 					// Pipe closed: check if the subprocess succeeded before telling the server we're done.
 					if err := cmd.Wait(); err != nil {
-						return fmt.Errorf("'docker save | zstd' failed for image '%s': %w", image, err)
+						return fmt.Errorf("docker save | zstd failed for image '%s': %w", image, err)
 					}
 					return c.Send(&proto.LoadImageMessage{
 						Message: &proto.LoadImageMessage_Done_{

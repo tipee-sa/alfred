@@ -23,7 +23,7 @@ var scheduler *schedulerpkg.Scheduler
 func createScheduler() error {
 	provisioner, err := createProvisioner()
 	if err != nil {
-		return fmt.Errorf("unable to create provisioner '%s': %w", viper.GetString(flags.Provisioner), err)
+		return fmt.Errorf("failed to create provisioner '%s': %w", viper.GetString(flags.Provisioner), err)
 	}
 
 	config := schedulerpkg.Config{

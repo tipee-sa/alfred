@@ -114,7 +114,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 		lines,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read logs: %w: %s", err, stderr.String())
+		return nil, fmt.Errorf("failed to read logs: %w (stderr: %s)", err, stderr.String())
 	}
 
 	return io.NopCloser(bytes.NewReader(output)), nil
@@ -152,7 +152,7 @@ func (f *fs) Archive(p string) (io.ReadCloser, error) {
 	// the pipe writer so the reader gets EOF.
 	go func() {
 		if err := session.Wait(); err != nil {
-			pw.CloseWithError(fmt.Errorf("remote archive command failed: %w: %s", err, stderr.String()))
+			pw.CloseWithError(fmt.Errorf("failed to archive remotely: %w (stderr: %s)", err, stderr.String()))
 		} else {
 			pw.Close()
 		}
@@ -189,7 +189,7 @@ func (r *sshReadCloser) Close() error {
 	err := r.session.Wait()
 	r.session.Close()
 	if err != nil {
-		return fmt.Errorf("remote %s command failed: %w: %s", r.label, err, r.stderr.String())
+		return fmt.Errorf("failed to run remote %s command: %w (stderr: %s)", r.label, err, r.stderr.String())
 	}
 	return nil
 }
