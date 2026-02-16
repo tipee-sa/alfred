@@ -27,6 +27,7 @@ const (
 	ServerData                  = "server-data"
 	SlotsPerNode                = "slots-per-node"
 	TaskStartupDelay            = "task-startup-delay"
+	ArtifactRetention           = "artifact-retention"
 	TaskTimeout                 = "task-timeout"
 
 	OpenstackDockerHost     = "openstack-docker-host"
@@ -43,6 +44,7 @@ func init() {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 
 	// Alfred
+	flags.Duration(ArtifactRetention, 6*30*24*time.Hour, "delete artifacts older than this duration at startup (0 = no cleanup)")
 	flags.String(LogFormat, "json", "log format (json, text)")
 	flags.String(LogLevel, "INFO", "minimum log level")
 	flags.Bool(LogSource, false, "add source code location to logs")

@@ -49,6 +49,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Cleanup old artifacts
+	if retention := viper.GetDuration(flags.ArtifactRetention); retention > 0 {
+		cleanupOldArtifacts(dataRoot, retention)
+	}
+
 	// Setup network listener
 	lis, err := net.Listen("tcp", viper.GetString(flags.Listen))
 	if err != nil {
