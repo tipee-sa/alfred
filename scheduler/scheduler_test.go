@@ -1591,3 +1591,146 @@ func TestConcurrentMultiSlotTaskFreeing(t *testing.T) {
 		}
 	}
 }
+
+// --- Node termination retry tests ---
+
+// failingTerminateNode is a mock node whose Terminate() fails a configurable number of times.
+type failingTerminateNode struct {
+	name          string
+	taskDone      chan struct{}
+	failCount     int // number of times Terminate() should fail before succeeding
+	mu            sync.Mutex
+	terminateCalls int
+}
+
+func (n *failingTerminateNode) Name() string { return n.name }
+
+func (n *failingTerminateNode) RunTask(ctx context.Context, _ *Task, _ RunTaskConfig) (int, error) {
+	select {
+	case <-ctx.Done():
+		return -1, ctx.Err()
+	case <-n.taskDone:
+		return 0, nil
+	}
+}
+
+func (n *failingTerminateNode) Terminate() error {
+	n.mu.Lock()
+	n.terminateCalls++
+	call := n.terminateCalls
+	n.mu.Unlock()
+
+	if call <= n.failCount {
+		return fmt.Errorf("termination failed (attempt %d)", call)
+	}
+	return nil
+}
+
+func (n *failingTerminateNode) getTerminateCalls() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.terminateCalls
+}
+
+func TestNodeTerminationRetrySucceeds(t *testing.T) {
+	nodes := make(chan *failingTerminateNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
+		n := &failingTerminateNode{
+			name:      nodeName,
+			taskDone:  make(chan struct{}),
+			failCount: 2, // fail twice, succeed on 3rd
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.ProvisioningFailureCooldown = 10 * time.Millisecond
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	_, err := s.Schedule(newTestJob("task-a"))
+	require.NoError(t, err)
+
+	node := <-nodes
+	waitForEvent[EventTaskRunning](t, events)
+
+	// Complete the task so the node becomes idle and termination starts
+	close(node.taskDone)
+	waitForEvent[EventJobCompleted](t, events)
+
+	// Wait for EventNodeTerminated — should arrive after retries succeed
+	waitForEvent[EventNodeTerminated](t, events)
+
+	assert.Equal(t, 3, node.getTerminateCalls(), "expected 3 Terminate() calls (2 failures + 1 success)")
+}
+
+func TestNodeTerminationRetryExhausted(t *testing.T) {
+	nodes := make(chan *failingTerminateNode, 10)
+
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
+		n := &failingTerminateNode{
+			name:      nodeName,
+			taskDone:  make(chan struct{}),
+			failCount: 10, // always fail
+		}
+		nodes <- n
+		return n, nil
+	}
+
+	config := newTestConfig()
+	config.ProvisioningFailureCooldown = 10 * time.Millisecond
+	s := New(prov, config)
+
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	_, err := s.Schedule(newTestJob("task-a"))
+	require.NoError(t, err)
+
+	node := <-nodes
+	waitForEvent[EventTaskRunning](t, events)
+
+	close(node.taskDone)
+	waitForEvent[EventJobCompleted](t, events)
+
+	// Should see FailedTerminating status before the node is removed
+	// Filter through status events to find the FailedTerminating one
+	// (earlier events include Online, Terminating, etc.)
+	allEvents := collectEventsUntil(events, 5*time.Second, func(e Event) bool {
+		_, ok := e.(EventNodeTerminated)
+		return ok
+	})
+
+	hasFailedTerminating := false
+	hasNodeTerminated := false
+	for _, e := range allEvents {
+		if su, ok := e.(EventNodeStatusUpdated); ok && su.Status == NodeStatusFailedTerminating {
+			hasFailedTerminating = true
+		}
+		if _, ok := e.(EventNodeTerminated); ok {
+			hasNodeTerminated = true
+		}
+	}
+	assert.True(t, hasFailedTerminating, "expected EventNodeStatusUpdated with FailedTerminating status")
+	assert.True(t, hasNodeTerminated, "expected EventNodeTerminated after exhausting retries")
+
+	assert.Equal(t, 3, node.getTerminateCalls(), "expected exactly 3 Terminate() calls before giving up")
+}

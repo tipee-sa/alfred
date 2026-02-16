@@ -882,20 +882,33 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 // has all empty slots). It blocks on node.Terminate() which cleans up the node (no-op
 // for local Docker, VM deletion for OpenStack).
 //
+// On failure, retries up to 3 times with ProvisioningFailureCooldown between attempts.
+// After exhausting retries, marks the node as FailedTerminating and removes it.
+//
 // The s.nodes mutation is sent to the main goroutine via the deferred channel to avoid
 // a data race with resizePool() which iterates s.nodes on the main loop.
 func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
-	nodeState.log.Info("Terminating node")
+	nodeState.terminationAttempts++
+	nodeState.log.Info("Terminating node", "attempt", nodeState.terminationAttempts)
 	// Note: UpdateStatus(NodeStatusTerminating) is called by resizePool on the main goroutine
-	// before spawning this goroutine, to avoid a data race on nodeState.status.
+	// before spawning this goroutine (on the first attempt), to avoid a data race on nodeState.status.
 
 	err := nodeState.node.Terminate()
 
 	select {
 	case s.deferred <- func() {
 		if err != nil {
-			// TODO: retry
-			nodeState.log.Error("Termination of node failed", "error", err)
+			if nodeState.terminationAttempts < 3 {
+				nodeState.log.Warn("Termination of node failed, scheduling retry",
+					"error", err, "attempt", nodeState.terminationAttempts)
+				s.after(s.config.ProvisioningFailureCooldown, func() {
+					nodeState.log.Info("Retrying node termination")
+					go s.watchNodeTermination(nodeState)
+				})
+				return
+			}
+			nodeState.log.Error("Termination of node failed after all attempts",
+				"error", err, "attempts", nodeState.terminationAttempts)
 			nodeState.UpdateStatus(NodeStatusFailedTerminating)
 		} else {
 			nodeState.log.Info("Node terminated")
