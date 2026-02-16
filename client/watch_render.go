@@ -62,7 +62,7 @@ func taskProgressCount(tasks []*proto.TaskStatus) (processed, total int) {
 	total = len(tasks)
 	for _, t := range tasks {
 		switch t.Status {
-		case proto.TaskStatus_COMPLETED, proto.TaskStatus_FAILED, proto.TaskStatus_ABORTED:
+		case proto.TaskStatus_COMPLETED, proto.TaskStatus_FAILED, proto.TaskStatus_ABORTED, proto.TaskStatus_SKIPPED:
 			processed++
 		}
 	}
@@ -149,6 +149,7 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 	queued := []string{}
 	running := []string{}
 	aborted := []string{}
+	skipped := []string{}
 	crashed := []string{}
 	failures := []string{}
 	completed := []string{}
@@ -187,6 +188,8 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 			} else {
 				crashed = append(crashed, label)
 			}
+		case proto.TaskStatus_SKIPPED:
+			skipped = append(skipped, label)
 		case proto.TaskStatus_COMPLETED:
 			completed = append(completed, label)
 		}
@@ -207,6 +210,9 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 	}
 	if len(aborted) > 0 {
 		addStat("⛔", aborted, true)
+	}
+	if len(skipped) > 0 {
+		addStat("⏭️", skipped, true)
 	}
 	if len(crashed) > 0 {
 		addStat("💥", crashed, true)

@@ -68,6 +68,12 @@ type EventTaskFailed struct {
 	ExitCode int
 }
 
+type EventTaskSkipped struct {
+	Job      string
+	Task     string
+	ExitCode int
+}
+
 type EventTaskCompleted struct {
 	Job  string
 	Task string

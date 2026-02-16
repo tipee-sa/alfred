@@ -109,10 +109,11 @@ func TestTaskProgressCount(t *testing.T) {
 		{Status: proto.TaskStatus_COMPLETED},
 		{Status: proto.TaskStatus_FAILED},
 		{Status: proto.TaskStatus_ABORTED},
+		{Status: proto.TaskStatus_SKIPPED},
 	}
 	processed, total := taskProgressCount(tasks)
-	assert.Equal(t, 3, processed)
-	assert.Equal(t, 5, total)
+	assert.Equal(t, 4, processed)
+	assert.Equal(t, 6, total)
 }
 
 func TestTaskProgressCount_Empty(t *testing.T) {
@@ -259,6 +260,26 @@ func TestRenderStats_ExitCode42_IsFailure(t *testing.T) {
 	assert.NotContains(t, stats, "💥")
 }
 
+func TestRenderStats_ExitCode43_IsSkipped(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	exitCode43 := int32(43)
+	r := &watchRenderer{
+		now:       func() time.Time { return now },
+		verbose:   false,
+		termWidth: func() int { return 300 },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		Tasks: []*proto.TaskStatus{
+			{Name: "test-task", Status: proto.TaskStatus_SKIPPED, ExitCode: &exitCode43, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "⏭️")
+	assert.NotContains(t, stats, "💥")
+	assert.NotContains(t, stats, "⚠️")
+}
+
 func TestRenderStats_OtherExitCode_IsCrashed(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	exitCode1 := int32(1)
@@ -281,6 +302,7 @@ func TestRenderStats_OtherExitCode_IsCrashed(t *testing.T) {
 func TestRenderStats_SectionOrdering(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 	exitCode42 := int32(42)
+	exitCode43 := int32(43)
 	exitCode1 := int32(1)
 	r := &watchRenderer{
 		now:       func() time.Time { return now },
@@ -293,6 +315,7 @@ func TestRenderStats_SectionOrdering(t *testing.T) {
 			{Name: "queued-task", Status: proto.TaskStatus_QUEUED},
 			{Name: "running-task", Status: proto.TaskStatus_RUNNING, StartedAt: timestamppb.New(now.Add(-1 * time.Minute))},
 			{Name: "aborted-task", Status: proto.TaskStatus_ABORTED, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
+			{Name: "skipped-task", Status: proto.TaskStatus_SKIPPED, ExitCode: &exitCode43, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
 			{Name: "crashed-task", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode1, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
 			{Name: "failed-task", Status: proto.TaskStatus_FAILED, ExitCode: &exitCode42, StartedAt: timestamppb.New(now.Add(-2 * time.Minute))},
 			{Name: "done-task", Status: proto.TaskStatus_COMPLETED, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
@@ -300,15 +323,16 @@ func TestRenderStats_SectionOrdering(t *testing.T) {
 	}
 	_, stats := r.renderStats(msg)
 
-	// Verify ordering: ⏳ ⚙️ ⛔ 💥 ⚠️ ✅
+	// Verify ordering: ⏳ ⚙️ ⛔ ⏭️ 💥 ⚠️ ✅
 	lines := strings.Split(stats, "\n")
-	assert.Len(t, lines, 6)
+	assert.Len(t, lines, 7)
 	assert.Contains(t, lines[0], "⏳")
 	assert.Contains(t, lines[1], "⚙️")
 	assert.Contains(t, lines[2], "⛔")
-	assert.Contains(t, lines[3], "💥")
-	assert.Contains(t, lines[4], "⚠️")
-	assert.Contains(t, lines[5], "✅")
+	assert.Contains(t, lines[3], "⏭️")
+	assert.Contains(t, lines[4], "💥")
+	assert.Contains(t, lines[5], "⚠️")
+	assert.Contains(t, lines[6], "✅")
 }
 
 func TestRenderStats_EmptyTasks(t *testing.T) {

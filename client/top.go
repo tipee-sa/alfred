@@ -410,7 +410,7 @@ func formatDuration(d time.Duration) string {
 }
 
 func taskProgress(tasks []*proto.TaskStatus) string {
-	var queued, running, completed, failed, aborted int
+	var queued, running, completed, failed, skipped, aborted int
 	for _, t := range tasks {
 		switch t.Status {
 		case proto.TaskStatus_QUEUED:
@@ -421,6 +421,8 @@ func taskProgress(tasks []*proto.TaskStatus) string {
 			completed++
 		case proto.TaskStatus_FAILED:
 			failed++
+		case proto.TaskStatus_SKIPPED:
+			skipped++
 		case proto.TaskStatus_ABORTED:
 			aborted++
 		}
@@ -435,6 +437,9 @@ func taskProgress(tasks []*proto.TaskStatus) string {
 	}
 	if failed > 0 {
 		parts = append(parts, fmt.Sprintf("[red]%d fail[-]", failed))
+	}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("[gray]%d skip[-]", skipped))
 	}
 	if aborted > 0 {
 		parts = append(parts, fmt.Sprintf("[gray]%d abort[-]", aborted))

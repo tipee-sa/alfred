@@ -98,8 +98,8 @@ func init() {
 	runCmd.Flags().Bool("async", false, "run the job asynchronously")
 	runCmd.Flags().BoolP("dry-run", "n", false, "build then show the job without running it")
 	runCmd.Flags().StringArrayP("param", "p", nil, "jobfile parameters to set")
-	runCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42")
-	runCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42)")
+	runCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
+	runCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
 }
 
 func sendImageToServer(cmd *cobra.Command, image string) error {

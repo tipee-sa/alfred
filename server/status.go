@@ -142,6 +142,12 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 				task.ExitCode = lo.ToPtr(int32(event.ExitCode))
 				task.EndedAt = timestamppb.Now()
 			}
+		case schedulerpkg.EventTaskSkipped:
+			if task := findTask(event.Job, event.Task); task != nil {
+				task.Status = proto.TaskStatus_SKIPPED
+				task.ExitCode = lo.ToPtr(int32(event.ExitCode))
+				task.EndedAt = timestamppb.Now()
+			}
 		case schedulerpkg.EventTaskCompleted:
 			if task := findTask(event.Job, event.Task); task != nil {
 				task.Status = proto.TaskStatus_COMPLETED

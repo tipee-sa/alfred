@@ -15,6 +15,7 @@ const (
 	TaskStatusAborted   = TaskStatus(proto.TaskStatus_ABORTED)
 	TaskStatusFailed    = TaskStatus(proto.TaskStatus_FAILED)
 	TaskStatusCompleted = TaskStatus(proto.TaskStatus_COMPLETED)
+	TaskStatusSkipped   = TaskStatus(proto.TaskStatus_SKIPPED)
 )
 
 func (ts TaskStatus) AsProto() proto.TaskStatus_Status {

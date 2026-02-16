@@ -191,6 +191,7 @@ message TaskStatus {
         ABORTED = 3;
         FAILED = 4;
         COMPLETED = 5;
+        SKIPPED = 6;
     }
 }
 

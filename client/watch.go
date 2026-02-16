@@ -22,8 +22,8 @@ type recvResult struct {
 }
 
 func init() {
-	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42")
-	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42)")
+	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
+	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
 }
 
 var watchCmd = &cobra.Command{

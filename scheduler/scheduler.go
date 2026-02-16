@@ -811,6 +811,9 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 		} else if exitCode == 42 {
 			task.Log.Info("Task ran successfully, but reported issues", "error", err)
 			s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
+		} else if exitCode == 43 {
+			task.Log.Info("Task skipped, a prerequisite failed", "error", err)
+			s.broadcast(EventTaskSkipped{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		} else {
 			task.Log.Warn("Task failed while running", "error", err)
 			s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})

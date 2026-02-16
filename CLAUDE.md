@@ -306,7 +306,11 @@ The codebase uses several recurring async patterns (all annotated with inline co
   real server disagree on redo logs). Don't use it in service health benchmarks.
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion
   (LIFO defer order). Getting this wrong loses artifacts.
-- **Exit code 42**: Treated as "completed with warnings" by the watch command display.
+- **Exit code 42**: Treated as "completed with warnings" (⚠️) by the watch command display.
+  Task status is `FAILED` with exit code 42. Triggers `--abort-on-failure` but not `--abort-on-error`.
+- **Exit code 43**: Treated as "skipped — prerequisite failed" (⏭️). For infrastructure problems
+  (e.g., missing/corrupted database backups) where retrying or aborting other tasks won't help.
+  Task status is `SKIPPED`. Excluded from both `--abort-on-failure` and `--abort-on-error`.
 - **Local provisioner != OpenStack provisioner**: The local provisioner doesn't create N nodes
   running Y tasks each. Instead it creates N*Y Docker containers each running 1 task. Every
   task gets its own Docker network, workspace, and service containers — even though they all
