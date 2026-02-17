@@ -36,6 +36,8 @@ var alfredCmd = &cobra.Command{
 	SilenceErrors: true,
 
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) (err error) {
+		startUpdateCheck(cmd.Context())
+
 		dependencies := []string{"bash", "docker", "ssh", "zstd"}
 		command := exec.Command("which", dependencies...)
 		if err := command.Run(); err != nil {
@@ -87,6 +89,8 @@ var alfredCmd = &cobra.Command{
 	},
 
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		printUpdateNotice()
+
 		if clientConn != nil {
 			return clientConn.Close()
 		}

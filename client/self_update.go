@@ -65,6 +65,17 @@ var selfUpdateCmd = &cobra.Command{
 			return fmt.Errorf("failed to download update: HTTP %d", resp.StatusCode)
 		}
 
+		// Fetch commit SHA for the new version in parallel with the download
+		commitCh := make(chan string, 1)
+		go func() {
+			if newVersion != "" {
+				sha, _ := fetchTagCommit(cmd.Context(), newVersion)
+				commitCh <- sha
+			} else {
+				commitCh <- ""
+			}
+		}()
+
 		tmpFile, err := os.CreateTemp(filepath.Dir(execPath), "alfred-update-*")
 		if err != nil {
 			spinner.Fail()
@@ -89,9 +100,15 @@ var selfUpdateCmd = &cobra.Command{
 			return fmt.Errorf("failed to replace binary: %w", err)
 		}
 
+		newCommit := <-commitCh
+
 		msg := fmt.Sprintf("Updated %s", execPath)
 		if newVersion != "" {
-			msg = fmt.Sprintf("Updated %s from %s to %s", execPath, version, newVersion)
+			msg = fmt.Sprintf("Updated %s from %s to %s",
+				execPath,
+				formatVersion(version, commit),
+				formatVersion(newVersion, newCommit),
+			)
 		}
 		spinner.Success(msg)
 		return nil
