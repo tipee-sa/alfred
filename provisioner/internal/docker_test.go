@@ -402,7 +402,7 @@ func TestRunContainer_ArtifactsArchivedOnStepFailure(t *testing.T) {
 	}
 }
 
-func TestRunContainer_ArtifactsNotArchivedOnCancel(t *testing.T) {
+func TestRunContainer_ArtifactsSalvagedOnCancel(t *testing.T) {
 	docker := newMockDocker()
 	fs := newMockFS()
 	task := testTask([]string{"step-image:latest"})
@@ -420,9 +420,10 @@ func TestRunContainer_ArtifactsNotArchivedOnCancel(t *testing.T) {
 
 	_, _ = RunContainer(ctx, docker, task, fs, config, nil)
 
-	// Artifacts should NOT be archived when context is cancelled
-	if preserved {
-		t.Fatal("expected artifacts NOT to be preserved on cancellation")
+	// Artifacts should be salvaged even when context is cancelled (timeout/abort),
+	// so users can debug timed-out tasks from the logs
+	if !preserved {
+		t.Fatal("expected artifacts to be salvaged on cancellation")
 	}
 }
 

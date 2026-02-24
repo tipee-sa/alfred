@@ -430,29 +430,31 @@ func RunContainer(
 
 	// Archive artifacts BEFORE returning (which triggers deferred workspace deletion).
 	// This is NOT deferred because it must run before the workspace defer that deletes /output.
-	// Skip archival when the task was aborted — the archive operation could also block
-	// over SSH-tunneled connections, and partial artifacts from aborted tasks aren't useful.
-	if ctx.Err() == nil {
-		tryTo(
-			"preserve artifact",
-			func() error {
-				if runConfig.ArtifactPreserver != nil {
-					task.Log.Debug("Preserve artifact")
-
-					reader, err := taskFs.Archive("/output")
-					if err != nil {
-						return fmt.Errorf("failed to archive 'output' directory: %w", err)
-					}
-					defer reader.Close()
-
-					if err := runConfig.ArtifactPreserver(reader, task); err != nil {
-						return fmt.Errorf("failed to preserve artifacts: %w", err)
-					}
-				}
-				return nil
-			},
-		)
+	// When the task was cancelled (timeout or abort), we still salvage whatever logs/artifacts
+	// exist — they're invaluable for debugging timed-out tasks. Neither taskFs.Archive nor
+	// ArtifactPreserver depend on the context, so this is safe even after cancellation.
+	if ctx.Err() != nil {
+		task.Log.Info("Salvaging artifacts from cancelled task")
 	}
+	tryTo(
+		"preserve artifact",
+		func() error {
+			if runConfig.ArtifactPreserver != nil {
+				task.Log.Debug("Preserve artifact")
+
+				reader, err := taskFs.Archive("/output")
+				if err != nil {
+					return fmt.Errorf("failed to archive 'output' directory: %w", err)
+				}
+				defer reader.Close()
+
+				if err := runConfig.ArtifactPreserver(reader, task); err != nil {
+					return fmt.Errorf("failed to preserve artifacts: %w", err)
+				}
+			}
+			return nil
+		},
+	)
 
 	if stepError != nil {
 		return lo.Ternary(status.StatusCode != 0, int(status.StatusCode), -1), fmt.Errorf("task execution ended with error: %w", stepError)

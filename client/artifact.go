@@ -48,12 +48,12 @@ var artifactCmd = &cobra.Command{
 			}
 
 			switch task.Status {
-			case proto.TaskStatus_QUEUED, proto.TaskStatus_ABORTED:
+			case proto.TaskStatus_QUEUED:
 				partialDownload = true
 			case proto.TaskStatus_RUNNING:
 				partialDownload = true
 				downloadableTasks = append(downloadableTasks, task.Name)
-			case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED:
+			case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED, proto.TaskStatus_ABORTED, proto.TaskStatus_TIMED_OUT:
 				downloadableTasks = append(downloadableTasks, task.Name)
 			}
 		}
