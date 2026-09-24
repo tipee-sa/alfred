@@ -27,7 +27,7 @@ test:
 
 # Regenerate protobuf
 proto:
-    protoc -I . -I /usr/local/include \
+    protoc -I . \
         --go_out=. --go_opt=paths=source_relative \
         --go-grpc_out=. --go-grpc_opt=paths=source_relative \
         proto/alfred.proto

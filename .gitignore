@@ -1,4 +1,5 @@
-/.envrc
+/.direnv
+/.envrc.local
 /.vscode
 /bin/*
 !/bin/.gitkeep
