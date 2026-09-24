@@ -1,13 +1,5 @@
 name: Nix
-on:
-  push:
-    paths:
-      - ".github/workflows/nix.yaml"
-      - "go.mod"
-      - "go.sum"
-      - "flake.nix"
-      - "flake.lock"
-      - "nix/**"
+on: [push]
 
 permissions:
   contents: read

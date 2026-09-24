@@ -249,7 +249,7 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
 - **Client releases**: Triggered by git tags (`YY.MM.DD` format). Builds 3 binaries:
   `alfred-linux-amd64`, `alfred-darwin-amd64`, `alfred-darwin-arm64`. Uploaded to GitHub releases.
 - **CI**: `go test -v ./...` on every push (Go 1.21, ubuntu-latest). `nix.yaml` runs `nix build`
-  on pushes that touch `go.mod`, `go.sum` or the Nix files.
+  on every push.
 - **Logging**: Datadog Agent on the server host tails journald for log shipping (not in this codebase).
 - **Self-update**: Client detects latest version from GitHub release redirect URL, downloads
   and atomically replaces its own binary.
