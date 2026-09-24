@@ -24,6 +24,14 @@ Run `alfred --help` to see the list of available commands and options.
 
 ## Setup dev environment
 
+### Nix
+
+The flake's devshell provides every tool below, with the protoc plugins pinned
+to the versions the generated code expects. Enter it with `nix develop`, or run
+`direnv allow` once to have it loaded automatically.
+
+Docker (daemon and CLI) and SSH still come from the host.
+
 ### Required tools
 
 - [Just](https://github.com/casey/just) (command runner)
@@ -34,9 +42,9 @@ Run `alfred --help` to see the list of available commands and options.
   - Download the [protoc compiler](https://github.com/protocolbuffers/protobuf/releases/latest) archive, unpack it
   - Move the `bin/protoc` file to `/usr/local/bin/protoc`
   - Move the `include/google` folder to `/usr/local/include/google`
-  - Install Go plugins :
-    - `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest`
-    - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
+  - Install Go plugins (these exact versions; newer ones generate different code):
+    - `go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.31.0`
+    - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0`
   - If not done already, add `$(go env GOPATH)/bin` to your `$PATH`
 
 ### Run alfred server in local

@@ -1,5 +1,11 @@
 # Claude Code Instructions
 
+## Dev Environment
+
+The Nix devshell (`flake.nix`, `nix/devshell.nix`, loaded by direnv via `.envrc`) provides Go,
+just, protoc, reflex, zstd, and the pinned protoc plugins (`nix/packages/`). Docker and SSH come
+from the host. Outside direnv, prefix commands with `nix develop -c`.
+
 ## Build & Test
 
 ```bash
@@ -12,18 +18,12 @@ just build        # build both server (bin/alfred-server) and client (bin/alfred
 
 ## Proto Regeneration
 
-**Do not run `just proto` without installing the correct plugin versions first.**
-The system protoc plugins are newer than what go.mod expects, and will generate incompatible code
-(newer plugins produce `ServerStreamingClient` interfaces and other breaking changes).
-
-```bash
-GOBIN=$HOME/go/bin go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.31.0
-GOBIN=$HOME/go/bin go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
-PATH="$HOME/go/bin:$PATH" just proto
-```
+Run `just proto` inside the devshell. Plugins other than `protoc-gen-go@v1.31.0` and
+`protoc-gen-go-grpc@v1.3.0` (e.g. from `go install ...@latest`) generate different code
+(`ServerStreamingClient` interfaces and other changes).
 
 After regeneration, restore the protoc version in the header comments of both
-`proto/alfred.pb.go` and `proto/alfred_grpc.pb.go` from `v6.31.1` back to `v4.24.4`.
+`proto/alfred.pb.go` and `proto/alfred_grpc.pb.go` back to `v4.24.4`.
 
 ## Project Structure
 
@@ -299,7 +299,7 @@ The codebase uses several recurring async patterns (all annotated with inline co
 ## Gotchas & Lessons Learned
 
 - **Proto plugin versions are critical**: `protoc-gen-go@v1.31.0` and `protoc-gen-go-grpc@v1.3.0`
-  match go.mod's protobuf/grpc versions. Newer plugins generate incompatible interfaces.
+  match the checked-in generated code (pinned in `nix/packages/`). Newer plugins generate different interfaces.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
