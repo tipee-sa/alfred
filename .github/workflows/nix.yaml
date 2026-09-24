@@ -1,0 +1,32 @@
+name: Nix
+on:
+  push:
+    paths:
+      - ".github/workflows/nix.yaml"
+      - "go.mod"
+      - "go.sum"
+      - "flake.nix"
+      - "flake.lock"
+      - "nix/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The token lifts the anonymous GitHub API rate limit that fetching the
+      # `github:` flake inputs would otherwise hit on a shared runner IP.
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fails when vendorHash in nix/packages/alfred.nix no longer matches go.sum.
+      - run: nix build --print-build-logs

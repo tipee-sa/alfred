@@ -248,10 +248,15 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
   GitHub Actions `workflow_dispatch`. Binary SCP'd to `/opt/alfred/alfred-server`.
 - **Client releases**: Triggered by git tags (`YY.MM.DD` format). Builds 3 binaries:
   `alfred-linux-amd64`, `alfred-darwin-amd64`, `alfred-darwin-arm64`. Uploaded to GitHub releases.
-- **CI**: `go test -v ./...` on every push (Go 1.21, ubuntu-latest).
+- **CI**: `go test -v ./...` on every push (Go 1.21, ubuntu-latest). `nix.yaml` runs `nix build`
+  on pushes that touch `go.mod`, `go.sum` or the Nix files.
 - **Logging**: Datadog Agent on the server host tails journald for log shipping (not in this codebase).
 - **Self-update**: Client detects latest version from GitHub release redirect URL, downloads
   and atomically replaces its own binary.
+- **Nix**: The flake's default package (`nix/packages/alfred.nix`) builds the client from source;
+  consumers take `github:tipee-sa/alfred` as a flake input. Its version is `YYMMDD.HHMM` from the
+  source's last commit time, and its commit the flake revision (`nix/build-info.nix`, as in tipee).
+  A binary running from `/nix/store` skips the update check and refuses `self-update`.
 
 ## Concurrency Model
 
@@ -300,6 +305,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
 
 - **Proto plugin versions are critical**: `protoc-gen-go@v1.31.0` and `protoc-gen-go-grpc@v1.3.0`
   match the checked-in generated code (pinned in `nix/packages/`). Newer plugins generate different interfaces.
+- **`vendorHash` follows `go.sum`**: Any `go.mod`/`go.sum` change breaks the Nix package (and
+  `nix.yaml`) until `vendorHash` in `nix/packages/alfred.nix` is updated. A failed `nix build`
+  prints the new hash, or reports inconsistent vendoring if the old modules are still in the store.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
