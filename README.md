@@ -18,6 +18,9 @@ Is your favorite butler, who's able to run and monitor jobs to be executed on vi
 4. Add the Alfred host key to your known_hosts: `ssh-keyscan -H alfred.tipee.dev >> ~/.ssh/known_hosts`
 5. You should now be able to run `alfred version` and see the version of the remote server.
 
+With Nix, the flake's default package builds the client from source: `nix profile install github:tipee-sa/alfred`,
+or take `github:tipee-sa/alfred` as a flake input. Nix then handles updates, and `alfred self-update` refuses to run.
+
 ### Usage
 
 Run `alfred --help` to see the list of available commands and options.

@@ -22,13 +22,12 @@ var selfUpdateCmd = &cobra.Command{
 	},
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		execPath, err := os.Executable()
+		execPath, err := executablePath()
 		if err != nil {
-			return fmt.Errorf("failed to get executable path: %w", err)
+			return err
 		}
-		execPath, err = filepath.EvalSymlinks(execPath)
-		if err != nil {
-			return fmt.Errorf("failed to resolve executable path: %w", err)
+		if inNixStore(execPath) {
+			return fmt.Errorf("%s is managed by Nix: update the flake input or profile that provides it (e.g. `nix flake update alfred`)", execPath)
 		}
 
 		url := fmt.Sprintf(
