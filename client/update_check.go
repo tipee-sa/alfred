@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,12 +14,18 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
-var updateCheckCh = make(chan string, 1)
+// Nil unless startUpdateCheck launched a check, so printUpdateNotice does not wait on one.
+var updateCheckCh chan string
 
 func startUpdateCheck(ctx context.Context) {
 	if version == "dev" || !isatty.IsTerminal(os.Stderr.Fd()) {
 		return
 	}
+	// Nix installs track their flake rather than GitHub releases, and self-update cannot replace them.
+	if execPath, err := executablePath(); err != nil || inNixStore(execPath) {
+		return
+	}
+	updateCheckCh = make(chan string, 1)
 	go func() {
 		latest, err := fetchLatestVersion(ctx)
 		if err != nil || latest == "" || latest <= version {
@@ -30,6 +37,9 @@ func startUpdateCheck(ctx context.Context) {
 }
 
 func printUpdateNotice() {
+	if updateCheckCh == nil {
+		return
+	}
 	select {
 	case latest := <-updateCheckCh:
 		if latest != "" {
@@ -104,6 +114,24 @@ func fetchTagCommit(ctx context.Context, tag string) (string, error) {
 	}
 
 	return result.SHA, nil
+}
+
+// executablePath returns the path of the running binary, with symlinks resolved.
+func executablePath() (string, error) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to get executable path: %w", err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	return path, nil
+}
+
+// inNixStore reports whether path lies in the read-only Nix store.
+func inNixStore(path string) bool {
+	return strings.HasPrefix(path, "/nix/store/")
 }
 
 func formatVersion(ver, commitHash string) string {
