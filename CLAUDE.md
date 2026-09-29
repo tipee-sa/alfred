@@ -308,6 +308,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **`vendorHash` follows `go.sum`**: Any `go.mod`/`go.sum` change breaks the Nix package (and
   `nix.yaml`) until `vendorHash` in `nix/packages/alfred.nix` is updated. A failed `nix build`
   prints the new hash, or reports inconsistent vendoring if the old modules are still in the store.
+- **Step images travel as tags, not IDs**: the client tags each built image `alfred-image:<id>`
+  and sends that tag. The `--iidfile` ID depends on the image store (classic: config digest,
+  containerd: OCI index digest), so after `docker save | docker load` across stores the ID
+  changes; the tag survives. The OpenStack node still re-tags bare `sha256:` IDs for old clients.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and

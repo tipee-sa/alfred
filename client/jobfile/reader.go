@@ -195,7 +195,12 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 	return output.String(), nil
 }
 
-// buildImage builds the main Docker image for the job and returns its ID.
+// buildImage builds the main Docker image for the job and returns a tag referencing it.
+//
+// The image ID written by --iidfile depends on the Docker image store: the classic store gives
+// the config digest, the containerd store the digest of the OCI index. After a docker save |
+// docker load between two daemons using different stores, the loaded image no longer has the ID
+// the client saw. Tags survive the round trip on both stores, so the image travels under one.
 func buildImage(dockerfile string, dir string, buildOptions []string, readOptions ReadOptions) (string, error) {
 	args := []string{"build", "--platform", "linux/amd64", ".", "-f", dockerfile}
 	args = append(args, buildOptions...)
@@ -221,10 +226,22 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 		return "", fmt.Errorf("failed to build image: %w", err)
 	}
 
-	imageId, err := os.ReadFile(tmp.Name())
+	rawImageId, err := os.ReadFile(tmp.Name())
 	if err != nil {
 		return "", fmt.Errorf("failed to read image id: %w", err)
 	}
 
-	return string(imageId), nil
+	imageId := strings.TrimSpace(string(rawImageId))
+	tag := imageTag(imageId)
+	if out, err := exec.Command("docker", "tag", imageId, tag).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("failed to tag image as '%s' (output: %s): %w", tag, strings.TrimSpace(string(out)), err)
+	}
+
+	return tag, nil
+}
+
+// imageTag returns the tag under which the image with the given ID is sent to the server.
+// The same content always gets the same tag, which lets the server skip images it already has.
+func imageTag(imageId string) string {
+	return "alfred-image:" + strings.TrimPrefix(imageId, "sha256:")
 }
