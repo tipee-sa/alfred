@@ -43,9 +43,9 @@ type Scheduler struct {
 	// events is a buffered channel (capacity 64) feeding forwardEvents(), which distributes
 	// to all subscribers. The buffer prevents broadcast() from blocking the main loop.
 	events chan Event
-	// listeners is the set of subscriber channels. Protected by RWMutex because
+	// listeners is the set of subscribers. Protected by RWMutex because
 	// forwardEvents() reads it frequently while Subscribe/unsubscribe write infrequently.
-	listeners      map[chan Event]bool
+	listeners      map[*subscriber]bool
 	listenersMutex sync.RWMutex
 
 	// stop is closed (not sent to) by Shutdown() to unblock the Run() select.
@@ -101,7 +101,7 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		earliestNextNodeStart: time.Now(),
 
 		events:    make(chan Event, 64),
-		listeners: make(map[chan Event]bool),
+		listeners: make(map[*subscriber]bool),
 
 		stop: make(chan any),
 
@@ -116,28 +116,31 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 
 	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
 
-	// forwardEvents runs as a long-lived goroutine that drains s.events and distributes
-	// each event to all registered listeners (non-blocking: drops if a listener is full).
+	// forwardEvents runs as a long-lived goroutine that drains s.events and queues
+	// each event for all registered listeners (non-blocking, lossless: see subscriber).
 	// It exits when s.events is closed (in Shutdown).
 	go scheduler.forwardEvents()
 
 	return scheduler
 }
 
-// Subscribe returns a buffered event channel (capacity 1024) and an unsubscribe function.
-// The caller must call the unsubscribe function when done to prevent memory leaks.
-// Events are delivered best-effort: if the channel fills up, forwardEvents drops messages.
+// Subscribe returns an event channel and an unsubscribe function. Every event is delivered,
+// in order, however slowly the caller reads (see subscriber). The caller must call the
+// unsubscribe function when done to prevent memory leaks; the channel is never closed.
 func (s *Scheduler) Subscribe() (<-chan Event, func()) {
 	s.listenersMutex.Lock()
 	defer s.listenersMutex.Unlock()
 
-	channel := make(chan Event, 1024)
-	s.listeners[channel] = true
+	sub := newSubscriber()
+	s.listeners[sub] = true
 
-	return channel, func() {
+	return sub.out, func() {
 		s.listenersMutex.Lock()
 		defer s.listenersMutex.Unlock()
-		delete(s.listeners, channel)
+		if s.listeners[sub] {
+			delete(s.listeners, sub)
+			close(sub.done)
+		}
 	}
 }
 
@@ -150,12 +153,8 @@ func (s *Scheduler) forwardEvents() {
 		s.listenersMutex.RLock()
 		defer s.listenersMutex.RUnlock()
 
-		for channel := range s.listeners {
-			select {
-			case channel <- event:
-			default:
-				s.log.Warn("Listener queue full, dropping event", "event", fmt.Sprintf("%T", event))
-			}
+		for sub := range s.listeners {
+			sub.push(event)
 		}
 	}
 	for event := range s.events {

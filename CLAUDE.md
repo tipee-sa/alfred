@@ -121,8 +121,9 @@ Client watchers get filtered event channels via `addClientListener()`.
 
 **Scheduler** (`scheduler/scheduler.go`): Single-goroutine main loop processes jobs from
 input channel, handles tick requests for scheduling decisions. Event broadcasting via
-`Subscribe()` returning buffered channel (1024) + unsubscribe function. Node pool auto-scales
-based on queued tasks vs capacity. Live artifact access via `ArchiveLiveArtifact()`.
+`Subscribe()` returning a lossless channel (unbounded queue per subscriber) + unsubscribe
+function. Node pool auto-scales based on queued tasks vs capacity. Live artifact access via
+`ArchiveLiveArtifact()`.
 
 **Provisioners**: Implement `Provisioner` interface (`Provision`, `Shutdown`, `Wait`) and
 `Node` interface (`Name`, `RunTask`, `Terminate`). Local provisioner wraps Docker on localhost.
@@ -277,7 +278,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   the main loop, ensuring delayed actions run on the main goroutine (safe state mutation).
 
 - **Event broadcasting** (`forwardEvents`): Dedicated goroutine drains events channel and
-  distributes to all subscriber channels. Non-blocking send (drops if subscriber is full).
+  queues each event for every subscriber (`scheduler/subscriber.go`), whose own goroutine drains
+  it. Lossless and never blocks: the server's state is rebuilt from these events, and the
+  former drop-when-full left 68 tasks "queued" forever after cancelling a 2000-task job.
 
 - **Server state reconstruction** (`status.go:listenEvents`): Single goroutine consumes
   scheduler events, updates `serverStatus` under write lock, forwards to client watchers.

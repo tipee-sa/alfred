@@ -39,7 +39,7 @@ func init() {
 // This goroutine blocks forever once the scheduler shuts down (the subscriber channel is
 // never closed), but that's fine — the process is exiting and the runtime collects it.
 func listenEvents(c <-chan schedulerpkg.Event) {
-       for event := range c { // exits when channel is closed
+	for event := range c { // the scheduler never closes it: runs for the server's lifetime
 		serverStatusMutex.Lock()
 
 		switch event := event.(type) {
@@ -169,7 +169,9 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 				continue
 			}
 			// Non-blocking send: drop events if the client's buffer is full.
-			// This prevents a slow client from freezing all event processing.
+			// This prevents a slow client from freezing all event processing. Dropping is safe
+			// here, unlike in the scheduler: watch handlers treat an event only as a cue to
+			// re-read serverStatus, and a full buffer still holds cues for after this one.
 			select {
 			case channel <- event:
 			default:
