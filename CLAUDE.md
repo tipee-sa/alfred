@@ -326,6 +326,16 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **Exit code 43**: Treated as "skipped — prerequisite failed" (⏭️). For infrastructure problems
   (e.g., missing/corrupted database backups) where retrying or aborting other tasks won't help.
   Task status is `SKIPPED`. Excluded from both `--abort-on-failure` and `--abort-on-error`.
+- **`run` reuses `watchCmd.RunE`** with its own flag set: a flag added to `watch` must either
+  be added to `run` too or be read without `lo.Must` (a missing flag panics there).
+- **`watch --json` is a script contract**: one JSON line per status change on stdout (`--once`
+  for a single snapshot), defined in `client/watch_json.go`. Only add fields or statuses there.
+  `state` is only ever `running` or `completed` (cancelled jobs complete, tasks `aborted`).
+  The first and completed lines list every task (`tasks`), the ones between only what changed
+  (`changed`): full lines on a 2000-task job are ~220 KB each. `--once` prints a first line,
+  so it always carries `tasks`. Exit 0 means the job completed (or `--once` printed); a server
+  shutdown also ends the stream cleanly, so that exits 1.
+  `watch` itself needs no TTY; only `top` (tcell) opens `/dev/tty`.
 - **Local provisioner != OpenStack provisioner**: The local provisioner doesn't create N nodes
   running Y tasks each. Instead it creates N*Y Docker containers each running 1 task. Every
   task gets its own Docker network, workspace, and service containers — even though they all
