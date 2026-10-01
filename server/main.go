@@ -98,7 +98,7 @@ func main() {
 	// listenEvents runs in its own goroutine, consuming scheduler events to:
 	// 1. Reconstruct serverStatus (the in-memory state used by all gRPC handlers)
 	// 2. Forward filtered events to connected client watchers
-	// It exits when the scheduler's event channel is closed (during Shutdown).
+	// It receives every event (the subscription is lossless) for the server's lifetime.
 	channel, unsubscribe := scheduler.Subscribe()
 	defer unsubscribe()
 	go listenEvents(channel)
