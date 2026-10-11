@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gammadia/alfred/proto"
@@ -139,12 +140,16 @@ func main() {
 	log.Info("Shutdown completed. Bye!")
 }
 
-// setupInterrupts handles Ctrl+C (SIGINT) with a double-tap pattern:
+// setupInterrupts handles Ctrl+C (SIGINT) and SIGTERM with a double-tap pattern:
 // - First signal: calls cancel() which cascades shutdown through ctx.Done() to all goroutines
 // - Second signal: forces immediate exit (in case graceful shutdown hangs)
+//
+// The unit's KillSignal=SIGINT covers `systemctl stop/restart`, but `systemctl kill`
+// (the host's weekly restart timer) sends SIGTERM regardless. Unhandled, SIGTERM killed
+// the server outright, leaking its OpenStack keypair and VMs every week.
 func setupInterrupts() {
 	sig := make(chan os.Signal, 1) // buffered: won't miss a signal while processing
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		<-sig
