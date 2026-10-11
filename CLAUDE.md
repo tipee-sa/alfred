@@ -315,6 +315,11 @@ The codebase uses several recurring async patterns (all annotated with inline co
   and sends that tag. The `--iidfile` ID depends on the image store (classic: config digest,
   containerd: OCI index digest), so after `docker save | docker load` across stores the ID
   changes; the tag survives. The OpenStack node still re-tags bare `sha256:` IDs for old clients.
+- **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
+  deleted at shutdown. Per-run names leaked one keypair per unclean exit until the project's
+  quota (100) was full: the host's weekly `alfred-restart-prevent-auth-issue.timer` runs
+  `systemctl kill alfred`, which sends SIGTERM (not the unit's `KillSignal=SIGINT`), and the
+  server ignored SIGTERM until it was handled like SIGINT.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
