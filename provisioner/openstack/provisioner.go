@@ -2,6 +2,7 @@ package openstack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -55,6 +56,9 @@ func New(config Config) (*Provisioner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get auth options from env: %w", err)
 	}
+	// Without it, every OpenStack call (node creation and deletion, the keypair deletion
+	// at shutdown) fails once the token expires, which a long-running server outlives
+	opts.AllowReauth = true
 
 	provider, err := openstack.AuthenticatedClient(opts)
 	if err != nil {
@@ -69,6 +73,14 @@ func New(config Config) (*Provisioner, error) {
 		return nil, fmt.Errorf("failed to get compute client: %w", err)
 	}
 
+	// The keypair is named after the host, not after this run: a server that dies without
+	// deleting it (SIGKILL, crash loop) leaves the next one a keypair to replace, not a new
+	// one to add. Per-run names once filled the project's keypair quota (100).
+	hostname, err := os.Hostname()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get hostname: %w", err)
+	}
+
 	// Provisioner object
 	name := namegen.Get()
 	provisioner := &Provisioner{
@@ -77,14 +89,20 @@ func New(config Config) (*Provisioner, error) {
 		client: client,
 		log:    config.Logger.With(slog.Group("provisioner", "name", name)),
 
-		keypairName: fmt.Sprintf("alfred-%s", name),
+		keypairName: fmt.Sprintf("alfred-server-%s", hostname),
 		flavorCache: make(map[string]string),
 	}
 	provisioner.wg.Add(1) // One item for the provisioner itself
 
-	// Generate a temporary keypair
+	// Generate a temporary keypair, replacing the one a previous run may have left behind
 	provisioner.log.Debug("Creating SSH keypair", "keypair", provisioner.keypairName)
 	keypair, err := internal.RetryResult(4, func() (*keypairs.KeyPair, error) {
+		err := keypairs.Delete(client, provisioner.keypairName, nil).ExtractErr()
+		if err == nil {
+			provisioner.log.Info("Replaced SSH keypair left by a previous run", "keypair", provisioner.keypairName)
+		} else if !errors.As(err, &gophercloud.ErrDefault404{}) {
+			return nil, fmt.Errorf("failed to delete previous keypair: %w", err)
+		}
 		return keypairs.Create(client, keypairs.CreateOpts{Name: provisioner.keypairName}).Extract()
 	})
 	if err != nil {
