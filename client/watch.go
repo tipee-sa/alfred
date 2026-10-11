@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/fatih/color"
@@ -174,13 +175,23 @@ func runWatchLoop(
 	var displayLines int
 	var started bool
 
+	// render redraws the display in place, as one write per frame. It overwrites each line and
+	// clears only what is left of it, instead of clearing the whole display first: a terminal
+	// that paints between the clear and the new text shows the display blank, which flickers.
+	// The frame is also wrapped in synchronized-output markers (mode 2026), so terminals that
+	// support them paint it at once; the others ignore an unknown mode.
 	render := func() {
-		if displayLines > 0 {
-			fmt.Fprintf(w, "\033[%dA", displayLines)
-		}
-		fmt.Fprint(w, "\r\033[J")
 		output, lines := renderer.renderOutput(lastMsg)
-		fmt.Fprint(w, output)
+		var frame strings.Builder
+		frame.WriteString("\033[?2026h")
+		if displayLines > 0 {
+			fmt.Fprintf(&frame, "\033[%dA", displayLines)
+		}
+		frame.WriteString("\r")
+		frame.WriteString(strings.ReplaceAll(output, "\n", "\033[K\n"))
+		frame.WriteString("\033[K\033[J") // rest of the last line, then lines left by a taller frame
+		frame.WriteString("\033[?2026l")
+		fmt.Fprint(w, frame.String())
 		displayLines = lines
 	}
 
