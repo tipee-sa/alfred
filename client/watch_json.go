@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -111,7 +110,7 @@ func runWatchJSON(
 		select {
 		case result = <-msgCh:
 		case <-ctx.Done():
-			return fmt.Errorf("interrupted before job '%s' completed", jobName)
+			return errWatchInterrupted(jobName)
 		}
 		if result.err == io.EOF {
 			// The server ends the stream right after sending the completed state, but also
@@ -119,9 +118,12 @@ func runWatchJSON(
 			if completed {
 				return nil
 			}
-			return fmt.Errorf("stream ended before job '%s' completed", jobName)
+			return errStreamEnded(jobName)
 		}
 		if result.err != nil {
+			if ctx.Err() != nil {
+				return errWatchInterrupted(jobName)
+			}
 			return result.err
 		}
 

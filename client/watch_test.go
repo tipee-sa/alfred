@@ -58,7 +58,6 @@ func TestWatchLoop_EOF_AfterStart_RestoresCursor(t *testing.T) {
 	assert.Contains(t, output, "completed")
 }
 
-
 func TestWatchLoop_EOF_AfterStart_CallsOnFirstMessage(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
@@ -77,7 +76,7 @@ func TestWatchLoop_EOF_AfterStart_CallsOnFirstMessage(t *testing.T) {
 
 // --- Context cancellation tests ---
 
-func TestWatchLoop_ContextCancelled_BeforeStart_ReturnsNil(t *testing.T) {
+func TestWatchLoop_ContextCancelled_BeforeStart_IsAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -89,7 +88,7 @@ func TestWatchLoop_ContextCancelled_BeforeStart_ReturnsNil(t *testing.T) {
 	err := runWatchLoop(ctx, msgCh, newTestRenderer(time.Now()), "test-job", &buf,
 		nil, func() { cleanStopCalled = true }, nil, nil)
 
-	assert.NoError(t, err, "context cancellation should be a clean exit")
+	assert.EqualError(t, err, "interrupted before job 'test-job' completed", "no final status to check: not a success")
 	assert.True(t, cleanStopCalled, "onCleanStop should be called")
 	assert.NotContains(t, buf.String(), "Interrupted", "should not print Interrupted message")
 }
@@ -106,7 +105,7 @@ func TestWatchLoop_ContextCancelled_BeforeStart_DoesNotCallOnFailStop(t *testing
 	err := runWatchLoop(ctx, msgCh, newTestRenderer(time.Now()), "test-job", &buf,
 		nil, nil, func() { failStopCalled = true }, nil)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.False(t, failStopCalled, "onFailStop should NOT be called on interrupt")
 }
 
@@ -122,7 +121,7 @@ func TestWatchLoop_ContextCancelled_AfterStart_RestoresCursor(t *testing.T) {
 	var buf bytes.Buffer
 	err := runWatchLoop(ctx, msgCh, newTestRenderer(now), "test-job", &buf, nil, nil, nil, nil)
 
-	assert.NoError(t, err, "context cancellation should be a clean exit")
+	assert.EqualError(t, err, "interrupted before job 'test-job' completed")
 	output := buf.String()
 	assert.Contains(t, output, cursorHide, "cursor should have been hidden")
 	assert.Contains(t, output, cursorShow, "cursor should be restored")
@@ -141,7 +140,7 @@ func TestWatchLoop_ContextCancelled_AfterStart_CursorShowAfterHide(t *testing.T)
 	var buf bytes.Buffer
 	err := runWatchLoop(ctx, msgCh, newTestRenderer(now), "test-job", &buf, nil, nil, nil, nil)
 
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	output := buf.String()
 	lastHide := strings.LastIndex(output, cursorHide)
 	lastShow := strings.LastIndex(output, cursorShow)
@@ -254,7 +253,7 @@ func TestWatchLoop_FramesOverwriteInPlaceInOneWrite(t *testing.T) {
 
 	var rec writeRecorder
 	err := runWatchLoop(context.Background(), msgCh, newTestRenderer(now), "test-job", &rec, nil, nil, nil, nil)
-	assert.NoError(t, err)
+	assert.EqualError(t, err, "stream ended before job 'test-job' completed")
 
 	var frames []string
 	for _, w := range rec.writes {

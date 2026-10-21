@@ -291,7 +291,7 @@ The codebase uses several recurring async patterns (all annotated with inline co
   channel + `srv.Context().Done()` (client disconnect).
 
 - **Client watch** (`client/watch.go`): Recv goroutine decouples blocking `c.Recv()` from
-  main select loop (which also handles a 1-second ticker for display refresh).
+  main select loop (which, on a terminal, also handles a 1-second ticker for display refresh).
 
 - **Service startup** (`docker.go`): WaitGroup + goroutines for parallel service startup with
   health checks. Buffered error channel collects failures.
@@ -341,6 +341,14 @@ The codebase uses several recurring async patterns (all annotated with inline co
   so it always carries `tasks`. Exit 0 means the job completed (or `--once` printed); a server
   shutdown also ends the stream cleanly, so that exits 1.
   `watch` itself needs no TTY; only `top` (tcell) opens `/dev/tty`.
+- **`watch` text output depends on stderr being a terminal**: on one, it redraws the display in
+  place every second (`runWatchLoop`); off one (agents, CI, pipes) it writes one plain line per
+  status change, no escapes or emoji, statuses named as in the JSON (`runWatchPlain`). Both end
+  with a summary. `-v` only untruncates task lists: never in the live display, whose frame must
+  fit the terminal to be redrawn by moving the cursor up. `--once` prints one summary to stdout
+  (plain if stdout is not a terminal). Like `--json`, text `watch` exits 0 only once it showed
+  the job completed (or `--once` printed): an interruption or a stream that ends first exits 1.
+  Spinners (`client/ui`) only spin on a terminal stderr; off one they print their final line.
 - **Local provisioner != OpenStack provisioner**: The local provisioner doesn't create N nodes
   running Y tasks each. Instead it creates N*Y Docker containers each running 1 task. Every
   task gets its own Docker network, workspace, and service containers — even though they all
