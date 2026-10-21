@@ -327,10 +327,14 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion
   (LIFO defer order). Getting this wrong loses artifacts.
 - **Exit code 42**: Treated as "completed with warnings" (⚠️) by the watch command display.
-  Task status is `FAILED` with exit code 42. Triggers `--abort-on-failure` but not `--abort-on-error`.
+  Task status is `FAILED` with exit code 42, `"warning"` in the JSON. Triggers
+  `--abort-on-warning` but not `--abort-on-error` (which is for `"failed"` and `"timed_out"`).
+  `--abort-on-warning` was `--abort-on-failure`, which read as the opposite; the old name still
+  works, hidden, and warns on stderr (not `MarkDeprecated`: cobra would print that to stdout,
+  the client's cobra output, and corrupt `--json`).
 - **Exit code 43**: Treated as "skipped — prerequisite failed" (⏭️). For infrastructure problems
   (e.g., missing/corrupted database backups) where retrying or aborting other tasks won't help.
-  Task status is `SKIPPED`. Excluded from both `--abort-on-failure` and `--abort-on-error`.
+  Task status is `SKIPPED`. Excluded from both `--abort-on-warning` and `--abort-on-error`.
 - **`run` follows its job through `watchJob`**, with the same flags: both commands register them
   with `addWatchFlags` and read them with `watchOptionsFromFlags`. Add a watch flag there, not
   to `watchCmd` alone. `run --json`/`--once` behave as on `watch`; `run --async --json` prints

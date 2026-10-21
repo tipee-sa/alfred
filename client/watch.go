@@ -29,24 +29,35 @@ func init() {
 
 // addWatchFlags registers the flags of watch, which run shares: run follows its job as watch does.
 func addWatchFlags(cmd *cobra.Command) {
-	cmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
-	cmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
+	// Named after the statuses of `watch --json`: exit 42 is "warning", any other failure "failed".
+	cmd.Flags().Bool("abort-on-warning", false, `cancel remaining tasks when a task ends in "warning" (exit code 42)`)
+	cmd.Flags().Bool("abort-on-error", false, `cancel remaining tasks when a task ends in "failed" (any exit code but 0, 42 and 43) or "timed_out"`)
+	// The former name of --abort-on-warning, which read as the opposite of what it does. Not
+	// MarkDeprecated: cobra would print its notice to stdout, the client's cobra output, and
+	// corrupt --json; watchOptionsFromFlags warns on stderr instead.
+	cmd.Flags().Bool("abort-on-failure", false, "deprecated: use --abort-on-warning")
+	lo.Must0(cmd.Flags().MarkHidden("abort-on-failure"))
 	cmd.Flags().Bool("json", false, "write one JSON line to stdout per status change, for scripts")
 	cmd.Flags().Bool("once", false, "print the current status once to stdout and exit, even if the job is still running (with -v, untruncated)")
 }
 
 // watchOptions holds the flags registered by addWatchFlags.
 type watchOptions struct {
-	abortOnFailure, abortOnError, json, once bool
+	abortOnWarning, abortOnError, json, once bool
 }
 
 func watchOptionsFromFlags(cmd *cobra.Command) watchOptions {
-	return watchOptions{
-		abortOnFailure: lo.Must(cmd.Flags().GetBool("abort-on-failure")),
+	opts := watchOptions{
+		abortOnWarning: lo.Must(cmd.Flags().GetBool("abort-on-warning")),
 		abortOnError:   lo.Must(cmd.Flags().GetBool("abort-on-error")),
 		json:           lo.Must(cmd.Flags().GetBool("json")),
 		once:           lo.Must(cmd.Flags().GetBool("once")),
 	}
+	if cmd.Flags().Changed("abort-on-failure") {
+		cmd.PrintErrln(color.HiYellowString("Flag --abort-on-failure is deprecated, use --abort-on-warning (it aborts on exit code 42)"))
+		opts.abortOnWarning = opts.abortOnWarning || lo.Must(cmd.Flags().GetBool("abort-on-failure"))
+	}
+	return opts
 }
 
 var watchCmd = &cobra.Command{
@@ -63,7 +74,7 @@ var watchCmd = &cobra.Command{
 // text or (opts.json) as JSON lines. It returns nil only if it showed the job's final status
 // (or, with once, its current one), so that exit code 0 always leaves a status to check.
 func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
-	abortOnFailure, abortOnError := opts.abortOnFailure, opts.abortOnError
+	abortOnWarning, abortOnError := opts.abortOnWarning, opts.abortOnError
 	jsonOutput, once := opts.json, opts.once
 
 	c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: jobName})
@@ -72,7 +83,7 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 	}
 
 	abortIfNeeded := func(msg *proto.JobStatus) {
-		if !abortOnFailure && !abortOnError {
+		if !abortOnWarning && !abortOnError {
 			return
 		}
 		for _, t := range msg.Tasks {
@@ -80,17 +91,17 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 				if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: jobName}); err != nil {
 					fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), jobName, err)
 				} else {
-					abortOnFailure, abortOnError = false, false
+					abortOnWarning, abortOnError = false, false
 				}
 				break
 			}
 			if t.Status == proto.TaskStatus_FAILED {
-				shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
+				shouldAbort := (abortOnWarning && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
 				if shouldAbort {
 					if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: jobName}); err != nil {
 						fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), jobName, err)
 					} else {
-						abortOnFailure, abortOnError = false, false
+						abortOnWarning, abortOnError = false, false
 					}
 					break
 				}
@@ -155,7 +166,7 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 //   - onFirstMessage: called when first message arrives (e.g. stop spinner)
 //   - onCleanStop: called on clean exit before first message (e.g. stop spinner cleanly)
 //   - onFailStop: called on error before first message (e.g. fail spinner)
-//   - onMessage: called after each received message (e.g. abort-on-failure logic)
+//   - onMessage: called after each received message (e.g. --abort-on-* logic)
 func runWatchLoop(
 	ctx context.Context,
 	msgCh <-chan recvResult,
