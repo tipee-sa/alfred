@@ -9,20 +9,32 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
 type SSHSocatConn struct {
 	io.ReadCloser
 	io.WriteCloser
-	cancel context.CancelFunc
+	cmd       *exec.Cmd
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	closeErr  error
 }
 
 var _ net.Conn = (*SSHSocatConn)(nil)
 
+// Close kills ssh and waits for it to exit, so that no ssh is left behind
+// once Close returns, even one stuck before the tunnel is up (e.g. waiting on
+// an SSH agent). Safe to call more than once and from several goroutines.
 func (c *SSHSocatConn) Close() error {
-	c.cancel()
-	return errors.Join(c.ReadCloser.Close(), c.WriteCloser.Close())
+	c.closeOnce.Do(func() {
+		c.closeErr = errors.Join(c.ReadCloser.Close(), c.WriteCloser.Close())
+		c.cancel()
+		// ssh exits non-zero (or killed) here by design; only reaping it matters.
+		_ = c.cmd.Wait()
+	})
+	return c.closeErr
 }
 
 func (c *SSHSocatConn) LocalAddr() net.Addr {
@@ -85,6 +97,7 @@ func DialContext(ctx context.Context, network, addr, username, target string) (n
 	return &SSHSocatConn{
 		ReadCloser:  in,
 		WriteCloser: out,
+		cmd:         cmd,
 		cancel:      cancel,
 	}, nil
 }

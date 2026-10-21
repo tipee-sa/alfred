@@ -30,7 +30,8 @@ After regeneration, restore the protoc version in the header comments of both
 ```
 alfred/
 ├── client/                  # CLI client (Cobra)
-│   ├── main.go             #   Entry point, gRPC connection, root command
+│   ├── main.go             #   Entry point, root command, global flags
+│   ├── connect.go          #   gRPC connection + Ping within --connect-timeout
 │   ├── run.go              #   Schedule jobs from jobfiles
 │   ├── watch.go            #   Real-time job status monitoring
 │   ├── artifact.go         #   Download task artifacts
@@ -112,7 +113,15 @@ Client                          Server                       Scheduler
 **Client** (`client/main.go`): Cobra CLI. Establishes gRPC connection in `PersistentPreRunE`
 (validates `bash`, `docker`, `ssh`, `zstd` are installed). Remote address from `--remote`
 flag or `ALFRED_REMOTE` env var (default: `alfred.tipee.dev:25373`). SSH tunneling enabled
-automatically for non-localhost remotes via sossh (SSH + socat).
+automatically for non-localhost remotes via sossh (SSH + socat). `client/connect.go` then
+pings the server within `--connect-timeout` (`ALFRED_CONNECT_TIMEOUT`, default 1m): gRPC dials
+lazily and ssh starts in the background, so without that Ping a stuck ssh (e.g. a locked SSH
+agent, which waits silently) only surfaced at the first RPC, after gRPC's own 20s handshake
+timeout, as "error reading server preface: file already closed". The timeout bounds only that
+Ping, never later RPCs or streams; gRPC's `MinConnectTimeout` is raised above it so its 20s does
+not kill ssh first. On failure the client kills and reaps ssh before exiting.
+`--ssh-host-key` never did anything: it is hidden, ignored, and warns on stderr (not cobra's
+`MarkDeprecated`, which prints on stdout here because of `SetOut(os.Stdout)`).
 
 **Server** (`server/main.go`): gRPC server on port 25373. Initializes Docker client,
 creates scheduler with chosen provisioner, subscribes to scheduler events. Status state

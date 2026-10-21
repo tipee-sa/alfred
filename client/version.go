@@ -11,9 +11,14 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show the version number of Alfred",
 
-	RunE: func(cmd *cobra.Command, args []string) error {
+	// Print the client's version before connecting, so that it shows even when
+	// the server cannot be reached.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		cmd.Printf("alfred version %s (%s)\n", version, commit[:int(math.Min(float64(len(commit)), 7))])
+		return alfredCmd.PersistentPreRunE(cmd, args)
+	},
 
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if response, err := client.Ping(cmd.Context(), &proto.PingRequest{}); err != nil {
 			return err
 		} else {

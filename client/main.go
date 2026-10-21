@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -11,13 +10,10 @@ import (
 	"syscall"
 
 	"github.com/fatih/color"
-	"github.com/gammadia/alfred/client/sossh"
 	"github.com/gammadia/alfred/proto"
-	"github.com/gammadia/alfred/server/config"
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Versioning information set at build time
@@ -27,6 +23,8 @@ var clientConn *grpc.ClientConn
 var client proto.AlfredClient
 
 var verbose bool
+
+var connectTimeoutDefault, connectTimeoutEnvErr = connectTimeoutFlagDefault()
 
 var alfredCmd = &cobra.Command{
 	Use:   "alfred",
@@ -44,11 +42,17 @@ var alfredCmd = &cobra.Command{
 			return fmt.Errorf("missing mandatory dependencies (%s): %w", strings.Join(dependencies, ", "), err)
 		}
 
-		defer func() {
-			if err != nil {
-				err = fmt.Errorf("failed to connect to server: %w", err)
-			}
-		}()
+		if cmd.Flags().Changed("ssh-host-key") {
+			fmt.Fprintln(os.Stderr, color.YellowString("--ssh-host-key is deprecated and ignored: it never had any effect, ssh verifies the host key against known_hosts"))
+		}
+
+		if connectTimeoutEnvErr != nil && !cmd.Flags().Changed("connect-timeout") {
+			return connectTimeoutEnvErr
+		}
+		timeout := lo.Must(cmd.Flags().GetDuration("connect-timeout"))
+		if timeout <= 0 {
+			return fmt.Errorf("--connect-timeout must be positive, got %s", timeout)
+		}
 
 		remote := lo.Must(cmd.Flags().GetString("remote"))
 
@@ -61,27 +65,16 @@ var alfredCmd = &cobra.Command{
 			sshTunneling = false
 		}
 
-		clientConn, err = grpc.Dial(
-			fmt.Sprintf("%s:%s", host, port),
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(config.MaxPacketSize)),
-			grpc.WithContextDialer(func(ctx context.Context, remote string) (net.Conn, error) {
-				if !sshTunneling {
-					return net.Dial("tcp", remote)
-				}
-
-				sshPort := lo.Must(cmd.Flags().GetInt("ssh-port"))
-				return sossh.DialContext(
-					cmd.Context(),
-					"tcp",
-					fmt.Sprintf("%s:%d", host, sshPort),
-					lo.Must(cmd.Flags().GetString("ssh-username")),
-					fmt.Sprintf("127.0.0.1:%s", port),
-				)
-			}),
-		)
+		clientConn, err = connect(cmd.Context(), connectOptions{
+			host:         host,
+			port:         port,
+			sshTunneling: sshTunneling,
+			sshUsername:  lo.Must(cmd.Flags().GetString("ssh-username")),
+			sshPort:      lo.Must(cmd.Flags().GetInt("ssh-port")),
+			timeout:      timeout,
+		})
 		if err != nil {
-			return fmt.Errorf("failed to dial gRPC: %w", err)
+			return fmt.Errorf("failed to connect to server: %w", err)
 		}
 
 		client = proto.NewAlfredClient(clientConn)
@@ -116,7 +109,13 @@ func init() {
 	alfredCmd.PersistentFlags().Bool("ssh-tunneling", true, "use ssh tunneling to connect to the server")
 	alfredCmd.PersistentFlags().String("ssh-username", "alfred-user", "username to use for ssh tunneling")
 	alfredCmd.PersistentFlags().Int("ssh-port", 22, "port to use for ssh tunneling")
-	alfredCmd.PersistentFlags().String("ssh-host-key", "", "host key to use for ssh tunneling verification")
+	alfredCmd.PersistentFlags().Duration("connect-timeout", connectTimeoutDefault, "time allowed to establish the connection to the server, ssh tunnel included; does not limit commands once connected (env "+connectTimeoutEnv+")")
+	// It never had any effect. Hidden rather than removed, so that scripts
+	// still passing it keep working; PersistentPreRunE warns about it. Not
+	// MarkDeprecated: cobra would print its notice on stdout (see SetOut in
+	// main), into output that scripts parse, such as watch --json.
+	alfredCmd.PersistentFlags().String("ssh-host-key", "", "deprecated, ignored: ssh verifies the host key against known_hosts")
+	lo.Must0(alfredCmd.PersistentFlags().MarkHidden("ssh-host-key"))
 }
 
 func main() {
