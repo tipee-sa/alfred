@@ -51,8 +51,9 @@ var runCmd = &cobra.Command{
 		}
 
 		if lo.Must(cmd.Flags().GetBool("dry-run")) {
-			cmd.Println()
-			cmd.Println(ui.SectionHeaderColor.Sprint("  Jobfile  "))
+			// stdout is the YAML alone, so it can be piped; the header is for the terminal.
+			cmd.PrintErrln()
+			cmd.PrintErrln(ui.SectionHeaderColor.Sprint("  Jobfile  "))
 			return yaml.NewEncoder(cmd.OutOrStdout()).Encode(j)
 		}
 
@@ -82,24 +83,26 @@ var runCmd = &cobra.Command{
 			spinner.Success()
 		}
 
-		if !lo.Must(cmd.Flags().GetBool("async")) {
-			if err := watchCmd.RunE(cmd, []string{job.Name}); err != nil {
-				return err
+		// From here on the job runs: whatever its tasks do, exit 0 means "check their status".
+		opts := watchOptionsFromFlags(cmd)
+		if lo.Must(cmd.Flags().GetBool("async")) {
+			if !opts.json && !opts.once {
+				cmd.Printf(color.HiGreenString("Scheduled job '%s'\n"), job.Name)
+				return nil
 			}
-		} else {
-			cmd.Printf(color.HiGreenString("Scheduled job '%s'\n"), job.Name)
+			// The job's current status, as `watch --once` prints it: with --json, a first line
+			// that carries the job's name and every task.
+			opts.once = true
 		}
-
-		return nil
+		return watchJob(cmd, job.Name, opts)
 	},
 }
 
 func init() {
-	runCmd.Flags().Bool("async", false, "run the job asynchronously")
+	runCmd.Flags().Bool("async", false, "schedule the job and exit without watching it (with --json or --once, print its status once)")
 	runCmd.Flags().BoolP("dry-run", "n", false, "build then show the job without running it")
 	runCmd.Flags().StringArrayP("param", "p", nil, "jobfile parameters to set")
-	runCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
-	runCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
+	addWatchFlags(runCmd)
 }
 
 func sendImageToServer(cmd *cobra.Command, image string, spinner *ui.Spinner) error {
@@ -107,7 +110,6 @@ func sendImageToServer(cmd *cobra.Command, image string, spinner *ui.Spinner) er
 	if err != nil {
 		return err
 	}
-	defer c.Recv() // Close the stream
 
 	if err = c.Send(&proto.LoadImageMessage{
 		Message: &proto.LoadImageMessage_Init_{
@@ -127,7 +129,7 @@ func sendImageToServer(cmd *cobra.Command, image string, spinner *ui.Spinner) er
 	switch resp.Status {
 	case proto.LoadImageResponse_OK:
 		// The image already exists on the server
-		return nil
+		return waitImageLoaded(c)
 	case proto.LoadImageResponse_CONTINUE:
 		// The image does not exist on the server, send it
 		cmd := exec.Command("bash", "-euo", "pipefail", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt=min=5,max=8", image))
@@ -146,11 +148,14 @@ func sendImageToServer(cmd *cobra.Command, image string, spinner *ui.Spinner) er
 					if err := cmd.Wait(); err != nil {
 						return fmt.Errorf("docker save | zstd failed for image '%s': %w", image, err)
 					}
-					return c.Send(&proto.LoadImageMessage{
+					if err := c.Send(&proto.LoadImageMessage{
 						Message: &proto.LoadImageMessage_Done_{
 							Done: &proto.LoadImageMessage_Done{},
 						},
-					})
+					}); err != nil {
+						return err
+					}
+					return waitImageLoaded(c)
 				} else {
 					cmd.Wait() // reap the subprocess
 					return fmt.Errorf("failed to read docker image chunk: %w", err)
@@ -174,6 +179,22 @@ func sendImageToServer(cmd *cobra.Command, image string, spinner *ui.Spinner) er
 	default:
 		return fmt.Errorf("unexpected response status: %s", resp.Status)
 	}
+}
+
+// waitImageLoaded closes the client's side of the stream and waits for the server to end it,
+// with the result of its docker load. That used to be ignored: a failed load let the job be
+// scheduled, to fail on every node for want of its image.
+func waitImageLoaded(c proto.Alfred_LoadImageClient) error {
+	if err := c.CloseSend(); err != nil {
+		return err
+	}
+	if _, err := c.Recv(); err != io.EOF {
+		if s, ok := status.FromError(err); ok {
+			return fmt.Errorf("server failed to load image: %s", s.Message())
+		}
+		return fmt.Errorf("server failed to load image: %w", err)
+	}
+	return nil
 }
 
 func humanizeBytes(n int) string {

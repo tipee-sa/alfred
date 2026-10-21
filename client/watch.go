@@ -24,10 +24,29 @@ type recvResult struct {
 }
 
 func init() {
-	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
-	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
-	watchCmd.Flags().Bool("json", false, "write one JSON line to stdout per status change, for scripts")
-	watchCmd.Flags().Bool("once", false, "print the current status once to stdout and exit, even if the job is still running (with -v, untruncated)")
+	addWatchFlags(watchCmd)
+}
+
+// addWatchFlags registers the flags of watch, which run shares: run follows its job as watch does.
+func addWatchFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
+	cmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
+	cmd.Flags().Bool("json", false, "write one JSON line to stdout per status change, for scripts")
+	cmd.Flags().Bool("once", false, "print the current status once to stdout and exit, even if the job is still running (with -v, untruncated)")
+}
+
+// watchOptions holds the flags registered by addWatchFlags.
+type watchOptions struct {
+	abortOnFailure, abortOnError, json, once bool
+}
+
+func watchOptionsFromFlags(cmd *cobra.Command) watchOptions {
+	return watchOptions{
+		abortOnFailure: lo.Must(cmd.Flags().GetBool("abort-on-failure")),
+		abortOnError:   lo.Must(cmd.Flags().GetBool("abort-on-error")),
+		json:           lo.Must(cmd.Flags().GetBool("json")),
+		once:           lo.Must(cmd.Flags().GetBool("once")),
+	}
 }
 
 var watchCmd = &cobra.Command{
@@ -36,91 +55,95 @@ var watchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		abortOnFailure := lo.Must(cmd.Flags().GetBool("abort-on-failure"))
-		abortOnError := lo.Must(cmd.Flags().GetBool("abort-on-error"))
-		// `run` reuses this RunE with its own flags, which lack these two: missing means false.
-		jsonOutput, _ := cmd.Flags().GetBool("json")
-		once, _ := cmd.Flags().GetBool("once")
+		return watchJob(cmd, args[0], watchOptionsFromFlags(cmd))
+	},
+}
 
-		c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: args[0]})
-		if err != nil {
-			return err
+// watchJob follows the job until it completes, or with once prints its current status, as
+// text or (opts.json) as JSON lines. It returns nil only if it showed the job's final status
+// (or, with once, its current one), so that exit code 0 always leaves a status to check.
+func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
+	abortOnFailure, abortOnError := opts.abortOnFailure, opts.abortOnError
+	jsonOutput, once := opts.json, opts.once
+
+	c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: jobName})
+	if err != nil {
+		return err
+	}
+
+	abortIfNeeded := func(msg *proto.JobStatus) {
+		if !abortOnFailure && !abortOnError {
+			return
 		}
-
-		abortIfNeeded := func(msg *proto.JobStatus) {
-			if !abortOnFailure && !abortOnError {
-				return
+		for _, t := range msg.Tasks {
+			if t.Status == proto.TaskStatus_TIMED_OUT && abortOnError {
+				if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: jobName}); err != nil {
+					fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), jobName, err)
+				} else {
+					abortOnFailure, abortOnError = false, false
+				}
+				break
 			}
-			for _, t := range msg.Tasks {
-				if t.Status == proto.TaskStatus_TIMED_OUT && abortOnError {
-					if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
-						fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
+			if t.Status == proto.TaskStatus_FAILED {
+				shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
+				if shouldAbort {
+					if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: jobName}); err != nil {
+						fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), jobName, err)
 					} else {
 						abortOnFailure, abortOnError = false, false
 					}
 					break
 				}
-				if t.Status == proto.TaskStatus_FAILED {
-					shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
-					if shouldAbort {
-						if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
-							fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
-						} else {
-							abortOnFailure, abortOnError = false, false
-						}
-						break
-					}
-				}
 			}
 		}
+	}
 
-		// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
-		// Without this, we couldn't multiplex between incoming messages and the ticker.
-		// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
-		// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
-		msgCh := make(chan recvResult, 1)
-		go func() {
-			for {
-				msg, err := c.Recv() // blocks until server sends or stream ends
-				msgCh <- recvResult{msg, err}
-				if err != nil {
-					return // EOF or error: stop reading
-				}
+	// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
+	// Without this, we couldn't multiplex between incoming messages and the ticker.
+	// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
+	// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
+	msgCh := make(chan recvResult, 1)
+	go func() {
+		for {
+			msg, err := c.Recv() // blocks until server sends or stream ends
+			msgCh <- recvResult{msg, err}
+			if err != nil {
+				return // EOF or error: stop reading
 			}
-		}()
-
-		// JSON mode: no spinner, colors or cursor control, so it works headless and piped.
-		if jsonOutput {
-			return runWatchJSON(cmd.Context(), msgCh, args[0], cmd.OutOrStdout(), once, abortIfNeeded)
 		}
+	}()
 
-		// --once: the current status is the command's output, so it goes to stdout.
-		if once {
-			out := cmd.OutOrStdout()
-			return printWatchOnce(cmd.Context(), msgCh, newWatchRenderer(args[0], verbose, out), out, !isTerminal(out))
-		}
+	// JSON mode: no spinner, colors or cursor control, so it works headless and piped.
+	if jsonOutput {
+		return runWatchJSON(cmd.Context(), msgCh, jobName, cmd.OutOrStdout(), once, abortIfNeeded)
+	}
 
-		// Off a terminal (an agent's shell, CI, a pipe), redrawing in place would write a copy
-		// of the display every second: write one plain line per status change instead.
-		if !isTerminal(os.Stderr) {
-			return runWatchPlain(cmd.Context(), msgCh, newWatchRenderer(args[0], verbose, os.Stderr), os.Stderr, abortIfNeeded)
-		}
+	// --once: the current status is the command's output, so it goes to stdout.
+	if once {
+		out := cmd.OutOrStdout()
+		return printWatchOnce(cmd.Context(), msgCh, newWatchRenderer(jobName, verbose, out), out, !isTerminal(out))
+	}
 
-		spinner := ui.NewSpinner("Waiting for job data")
-		renderer := newWatchRenderer(args[0], verbose, os.Stderr)
+	// Off a terminal (an agent's shell, CI, a pipe), redrawing in place would write a copy
+	// of the display every second: write one plain line per status change instead.
+	if !isTerminal(os.Stderr) {
+		return runWatchPlain(cmd.Context(), msgCh, newWatchRenderer(jobName, verbose, os.Stderr), os.Stderr, abortIfNeeded)
+	}
 
-		return runWatchLoop(
-			cmd.Context(),
-			msgCh,
-			renderer,
-			args[0],
-			os.Stderr,
-			func() { spinner.FinalMSG = ""; spinner.Stop() },
-			func() { spinner.FinalMSG = ""; spinner.Stop() },
-			func() { spinner.Fail() },
-			abortIfNeeded,
-		)
-	},
+	spinner := ui.NewSpinner("Waiting for job data")
+	renderer := newWatchRenderer(jobName, verbose, os.Stderr)
+
+	return runWatchLoop(
+		cmd.Context(),
+		msgCh,
+		renderer,
+		jobName,
+		os.Stderr,
+		func() { spinner.FinalMSG = ""; spinner.Stop() },
+		func() { spinner.FinalMSG = ""; spinner.Stop() },
+		func() { spinner.Fail() },
+		abortIfNeeded,
+	)
 }
 
 // runWatchLoop runs the watch event loop on a terminal, processing messages from msgCh,

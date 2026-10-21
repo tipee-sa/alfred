@@ -219,10 +219,20 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	cmd := exec.Command("docker", args...)
 
 	cmd.Dir = dir
-	cmd.Stdout = lo.Ternary(readOptions.Verbose, os.Stdout, nil)
-	cmd.Stderr = lo.Ternary(readOptions.Verbose, os.Stderr, nil)
+	// The build's output is progress, never the command's output: with -v it goes to stderr,
+	// so that stdout stays pure (run --json, run --dry-run). Without -v, the end of it is kept
+	// for the error, which otherwise says only "exit status 1".
+	var output tailBuffer
+	if readOptions.Verbose {
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	} else {
+		cmd.Stdout, cmd.Stderr = &output, &output
+	}
 
 	if err := cmd.Run(); err != nil {
+		if tail := output.String(); tail != "" {
+			return "", fmt.Errorf("failed to build image: %w\n%s", err, tail)
+		}
 		return "", fmt.Errorf("failed to build image: %w", err)
 	}
 
@@ -238,6 +248,29 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	}
 
 	return tag, nil
+}
+
+// tailBuffer keeps the last lines written to it (tailBufferLines of them).
+type tailBuffer struct{ lines []string }
+
+const tailBufferLines = 20
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	text := string(p)
+	if len(b.lines) > 0 {
+		// Continue the last line if it was written without its newline.
+		text = b.lines[len(b.lines)-1] + text
+		b.lines = b.lines[:len(b.lines)-1]
+	}
+	b.lines = append(b.lines, strings.Split(text, "\n")...)
+	if len(b.lines) > tailBufferLines+1 {
+		b.lines = b.lines[len(b.lines)-tailBufferLines-1:]
+	}
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	return strings.TrimRight(strings.Join(b.lines, "\n"), "\n")
 }
 
 // imageTag returns the tag under which the image with the given ID is sent to the server.

@@ -331,8 +331,18 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **Exit code 43**: Treated as "skipped — prerequisite failed" (⏭️). For infrastructure problems
   (e.g., missing/corrupted database backups) where retrying or aborting other tasks won't help.
   Task status is `SKIPPED`. Excluded from both `--abort-on-failure` and `--abort-on-error`.
-- **`run` reuses `watchCmd.RunE`** with its own flag set: a flag added to `watch` must either
-  be added to `run` too or be read without `lo.Must` (a missing flag panics there).
+- **`run` follows its job through `watchJob`**, with the same flags: both commands register them
+  with `addWatchFlags` and read them with `watchOptionsFromFlags`. Add a watch flag there, not
+  to `watchCmd` alone. `run --json`/`--once` behave as on `watch`; `run --async --json` prints
+  the same single line as `watch --json --once` (job name and every task), `--async` alone the
+  prose `Scheduled job 'x'`. stdout carries only that output (JSON lines, `-n` YAML): spinners,
+  headers and `docker build` output (`-v`) go to stderr.
+- **Exit codes of `run` and `watch`**: non-zero if `run` fails before the job runs (jobfile,
+  build, image upload or server-side `docker load`, scheduling rejected, connection). Once the
+  job runs, exit 0 does NOT mean the tasks went well, only "the job completed (or `--once`
+  printed its status): check each task's status". Never derive it from task outcomes. Exit 1
+  also when the status could not be shown: interrupted, or stream ended before the job
+  completed (server shutdown).
 - **`watch --json` is a script contract**: one JSON line per status change on stdout (`--once`
   for a single snapshot), defined in `client/watch_json.go`. Only add fields or statuses there.
   `state` is only ever `running` or `completed` (cancelled jobs complete, tasks `aborted`).
