@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/fatih/color"
 	"github.com/gammadia/alfred/client/ui"
@@ -16,7 +17,7 @@ import (
 )
 
 var artifactCmd = &cobra.Command{
-	Use:   "artifact",
+	Use:   "artifact JOB [TASK...]",
 	Short: "Download artifact",
 	Args:  cobra.MinimumNArgs(1),
 
@@ -28,53 +29,22 @@ var artifactCmd = &cobra.Command{
 			return err
 		}
 
-		partialDownload := false
+		downloadableTasks, unknownTasks, partialDownload := selectArtifactTasks(job, args[1:])
 
-		requestedTasks := args[1:]
-		var invalidRequestedTasks = make(map[string]bool, len(requestedTasks))
-		for _, requestedTask := range requestedTasks {
-			invalidRequestedTasks[requestedTask] = true
-		}
-
-		downloadableTasks := []string{}
-
-		for _, task := range job.Tasks {
-			if len(requestedTasks) > 0 {
-				if _, exists := invalidRequestedTasks[task.Name]; exists {
-					delete(invalidRequestedTasks, task.Name)
-				} else {
-					continue
-				}
-			}
-
-			switch task.Status {
-			case proto.TaskStatus_QUEUED:
-				partialDownload = true
-			case proto.TaskStatus_RUNNING:
-				partialDownload = true
-				downloadableTasks = append(downloadableTasks, task.Name)
-			case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED, proto.TaskStatus_ABORTED, proto.TaskStatus_TIMED_OUT:
-				downloadableTasks = append(downloadableTasks, task.Name)
-			}
-		}
-
-		if len(requestedTasks) > 0 && len(invalidRequestedTasks) > 0 {
+		if len(unknownTasks) > 0 {
 			spinner.Warn()
-			for invalidTask := range invalidRequestedTasks {
-				cmd.PrintErrln(color.HiRedString("task '%s' does not exist in job '%s'", invalidTask, args[0]))
+			for _, task := range unknownTasks {
+				cmd.PrintErrln(color.HiRedString("task '%s' does not exist in job '%s'", task, args[0]))
 			}
 			spinner = ui.NewSpinner("Downloading artifacts")
 		}
 
-		var errors []string
-		for i, task := range downloadableTasks {
-			file := path.Join(lo.Must(cmd.Flags().GetString("output")), fmt.Sprintf("%s.tar.zst", task))
-			if err := downloadArtifact(cmd.Context(), job.Name, task, file); err != nil {
-				errors = append(errors, err.Error())
-			}
-
-			spinner.UpdateMessage(fmt.Sprintf("Downloading artifact (%d/%d)", i+1, len(downloadableTasks)))
-		}
+		outputDir := lo.Must(cmd.Flags().GetString("output"))
+		files, errors := downloadArtifacts(downloadableTasks, outputDir, func(task, file string) error {
+			return downloadArtifact(cmd.Context(), job.Name, task, file)
+		}, func(done int) {
+			spinner.UpdateMessage(fmt.Sprintf("Downloading artifact (%d/%d)", done, len(downloadableTasks)))
+		})
 
 		if len(errors) > 0 {
 			spinner.Warn()
@@ -85,12 +55,82 @@ var artifactCmd = &cobra.Command{
 			spinner.Success()
 		}
 
+		// The files written, for scripts: once the spinner is done, which
+		// draws on stderr, so that the two do not mix on a terminal.
+		for _, file := range files {
+			cmd.Println(file)
+		}
+
 		if partialDownload {
 			cmd.PrintErrln(color.HiYellowString("\nWarning: not all tasks are completed, some artifacts may be partial snapshots"))
 		}
 
-		return nil
+		return artifactProblems(len(unknownTasks), len(errors))
 	},
+}
+
+// selectArtifactTasks returns the tasks of job to download: the requested
+// ones, or all of them if none is, that have started. It also returns the
+// requested tasks that job does not have, in the order requested, and whether
+// some task has not finished, so that its artifact is missing or partial.
+func selectArtifactTasks(job *proto.JobStatus, requestedTasks []string) (downloadable []string, unknown []string, partial bool) {
+	requested := lo.Uniq(requestedTasks)
+	found := map[string]bool{}
+
+	for _, task := range job.Tasks {
+		if len(requested) > 0 {
+			if !lo.Contains(requested, task.Name) {
+				continue
+			}
+			found[task.Name] = true
+		}
+
+		switch task.Status {
+		case proto.TaskStatus_QUEUED:
+			partial = true
+		case proto.TaskStatus_RUNNING:
+			partial = true
+			downloadable = append(downloadable, task.Name)
+		case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED, proto.TaskStatus_ABORTED, proto.TaskStatus_TIMED_OUT:
+			downloadable = append(downloadable, task.Name)
+		}
+	}
+
+	unknown = lo.Filter(requested, func(task string, _ int) bool { return !found[task] })
+	return downloadable, unknown, partial
+}
+
+// downloadArtifacts downloads the artifact of each task, through download, to
+// <outputDir>/<task>.tar.zst. It goes on past a failure, and returns the files
+// written and a message per failure. progress is called after each task.
+func downloadArtifacts(tasks []string, outputDir string, download func(task, file string) error, progress func(done int)) (files []string, errors []string) {
+	for i, task := range tasks {
+		file := path.Join(outputDir, fmt.Sprintf("%s.tar.zst", task))
+		if err := download(task, file); err != nil {
+			errors = append(errors, err.Error())
+		} else {
+			files = append(files, file)
+		}
+		progress(i + 1)
+	}
+	return files, errors
+}
+
+// artifactProblems is the command's error, making it exit non-zero, when a
+// requested task does not exist or a download failed. Each was already
+// reported on its own.
+func artifactProblems(unknownTasks, failedDownloads int) error {
+	var problems []string
+	if unknownTasks > 0 {
+		problems = append(problems, fmt.Sprintf("%d requested task(s) not found", unknownTasks))
+	}
+	if failedDownloads > 0 {
+		problems = append(problems, fmt.Sprintf("%d download(s) failed", failedDownloads))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("artifacts incomplete: %s", strings.Join(problems, ", "))
 }
 
 func init() {

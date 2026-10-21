@@ -320,6 +320,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   quota (100) was full: the host's weekly `alfred-restart-prevent-auth-issue.timer` runs
   `systemctl kill alfred`, which sends SIGTERM (not the unit's `KillSignal=SIGINT`), and the
   server ignored SIGTERM until it was handled like SIGINT.
+- **`artifact` output**: the path of each file written goes to stdout, one per line, after the
+  spinner; messages go to stderr. It exits 1 when a requested task does not exist or a download
+  failed, after downloading the rest; a partial snapshot of an unfinished task is only a warning.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
