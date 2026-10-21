@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,10 +24,7 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 		return err
 	}
 
-	tailLines := int(req.TailLines)
-	if tailLines <= 0 {
-		tailLines = 100
-	}
+	tailLines := requestedTailLines(req)
 
 	// Try finalized artifact first (completed task)
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
@@ -59,6 +57,31 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 		}
 	}()
 	return streamReader(srv, liveReader, req.Job, req.Task)
+}
+
+const (
+	// defaultTailLines applies when a request does not set TailLines: proto3
+	// does not tell 0 from unset, so 0 cannot mean anything else.
+	defaultTailLines = 100
+
+	// allLines asks for whole logs, wherever a number of lines to tail is
+	// expected (lastNLines, extractLogsFromArtifact, ReadLiveTaskLogs).
+	allLines = -1
+)
+
+// requestedTailLines is the number of lines to tail per step log that req asks
+// for: a positive count, or allLines for any negative TailLines (the client's
+// `logs -n all`). A server older than allLines clamped negative values to the
+// default, which is what an old server still does with a new client's "all".
+func requestedTailLines(req *proto.StreamTaskLogsRequest) int {
+	switch {
+	case req.TailLines > 0:
+		return int(req.TailLines)
+	case req.TailLines < 0:
+		return allLines
+	default:
+		return defaultTailLines
+	}
 }
 
 // followLiveLogs implements the follow (-f) mode for live task logs.
@@ -134,7 +157,7 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 				log.Debug("Follow mode: live reader gone, checking artifact for final content", "job", job, "task", task)
 				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
 				if _, statErr := os.Stat(artifact); statErr == nil {
-					if r, extractErr := extractLogsFromArtifact(artifact, 1000000); extractErr == nil {
+					if r, extractErr := extractLogsFromArtifact(artifact, allLines); extractErr == nil {
 						finalContent, _ := io.ReadAll(r)
 						r.Close()
 						delta := findNewContent(lastContent, finalContent)
@@ -204,7 +227,8 @@ func findNewContent(previous, current []byte) []byte {
 	return current
 }
 
-// readLiveLogs reads live log content for a task, tailing up to the given number of lines.
+// readLiveLogs reads live log content for a task, tailing up to the given number
+// of lines (all of them for allLines).
 func readLiveLogs(job, task string, lines int) ([]byte, error) {
 	reader, err := scheduler.ReadLiveTaskLogs(job, task, lines)
 	if err != nil {
@@ -267,94 +291,190 @@ func streamReader(srv proto.Alfred_StreamTaskLogsServer, reader io.Reader, job, 
 	}
 }
 
+// artifactLog is a .log file found in an artifact archive.
+type artifactLog struct {
+	path string // path in the archive
+	name string // basename, e.g. "taskname-step-0.log": header and sort key
+}
+
+// errStopWalk ends walkArtifactLogs early, without error.
+var errStopWalk = errors.New("stop walking the artifact")
+
 // extractLogsFromArtifact reads .log files from a tar.zst artifact archive,
-// applies tail -n to each file, and returns a reader with the combined output
-// (matching the format of `tail -v -n <lines> file1.log file2.log ...`).
+// applies tail -n to each file (none for allLines), and returns a reader with
+// the combined output, matching the format of
+// `tail -v -n <lines> file1.log file2.log ...`.
+//
+// The output is streamed, never held whole: a tail keeps the last lines of one
+// file at a time, and allLines copies each file straight from the archive.
+// Files are output in name order (step order); tar has no random access and
+// lists them in whatever order they were archived, so this takes one pass over
+// the archive per run of files found out of order (a single pass when sorted).
 func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser, error) {
-	f, err := os.Open(artifactPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open artifact %q: %w", artifactPath, err)
+	var logs []artifactLog
+	if err := walkArtifactLogs(artifactPath, func(header *tar.Header, _ io.Reader) error {
+		logs = append(logs, artifactLog{path: header.Name, name: path.Base(header.Name)})
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-
-	zr, err := zstd.NewReader(f)
-	if err != nil {
-		f.Close()
-		return nil, fmt.Errorf("failed to create zstd reader for %q: %w", artifactPath, err)
-	}
-
-	tr := tar.NewReader(zr)
-
-	// Collect all .log entries from the archive. We buffer them in memory
-	// because tar entries must be read sequentially (no random access).
-	type logEntry struct {
-		name    string // basename, e.g. "taskname-step-0.log"
-		content []byte
-	}
-	var logEntries []logEntry
-
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			zr.Close()
-			f.Close()
-			return nil, fmt.Errorf("failed to read tar entry in %q: %w", artifactPath, err)
-		}
-
-		// Skip directories and non-.log files
-		if header.Typeflag == tar.TypeDir {
-			continue
-		}
-		basename := path.Base(header.Name)
-		if !strings.HasSuffix(basename, ".log") {
-			continue
-		}
-
-		// Read the log content; cap at 10MB per file as a safety limit
-		const maxLogSize = 10 * 1024 * 1024
-		if header.Size > maxLogSize {
-			log.Warn("Log file exceeds 10MB, truncating", "file", header.Name, "size", header.Size, "artifact", artifactPath)
-		}
-		limitedReader := io.LimitReader(tr, maxLogSize)
-		content, err := io.ReadAll(limitedReader)
-		if err != nil {
-			zr.Close()
-			f.Close()
-			return nil, fmt.Errorf("failed to read log entry %q from %q: %w", header.Name, artifactPath, err)
-		}
-
-		logEntries = append(logEntries, logEntry{name: basename, content: content})
-	}
-
-	zr.Close()
-	f.Close()
-
-	if len(logEntries) == 0 {
+	if len(logs) == 0 {
 		return nil, fmt.Errorf("no .log files found in artifact %q", artifactPath)
 	}
 
 	// Sort by filename to get step order (step-0.log, step-1.log, ...)
-	sort.Slice(logEntries, func(i, j int) bool {
-		return logEntries[i].name < logEntries[j].name
+	sort.SliceStable(logs, func(i, j int) bool {
+		return logs[i].name < logs[j].name
 	})
 
-	// Format output like `tail -v -n <lines>`: each file gets a header line,
-	// followed by its last N lines.
-	var buf bytes.Buffer
-	for i, entry := range logEntries {
-		if i > 0 {
-			buf.WriteByte('\n')
+	pr, pw := io.Pipe()
+	go func() {
+		// A reader closed early (client gone) fails the next write, ending this.
+		pw.CloseWithError(writeArtifactLogs(pw, artifactPath, logs, tailLines))
+	}()
+	return pr, nil
+}
+
+// writeArtifactLogs writes logs, in order, from the archive to w.
+func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tailLines int) error {
+	next := 0
+	for next < len(logs) {
+		before := next
+		err := walkArtifactLogs(artifactPath, func(header *tar.Header, r io.Reader) error {
+			if header.Name != logs[next].path {
+				return nil
+			}
+			if err := writeArtifactLog(w, next > 0, logs[next].name, r, tailLines); err != nil {
+				return err
+			}
+			next++
+			if next == len(logs) {
+				return errStopWalk
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
-		fmt.Fprintf(&buf, "==> %s <==\n", entry.name)
-		tail := lastNLines(entry.content, tailLines)
-		buf.Write(tail)
-		// Ensure each file ends with a newline
-		if len(tail) > 0 && tail[len(tail)-1] != '\n' {
-			buf.WriteByte('\n')
+		if next == before {
+			return fmt.Errorf("log %q vanished from artifact %q", logs[next].path, artifactPath)
 		}
 	}
+	return nil
+}
 
-	return io.NopCloser(bytes.NewReader(buf.Bytes())), nil
+// writeArtifactLog writes one file like `tail -v` does: a header line, the
+// file's last tailLines lines (all of it for allLines), a final newline if the
+// file lacks one, and a blank line before the header of any file but the first.
+func writeArtifactLog(w io.Writer, separate bool, name string, r io.Reader, tailLines int) error {
+	header := fmt.Sprintf("==> %s <==\n", name)
+	if separate {
+		header = "\n" + header
+	}
+	if _, err := io.WriteString(w, header); err != nil {
+		return err
+	}
+
+	lw := &lastByteWriter{w: w}
+	if tailLines > 0 {
+		tail, err := readTail(r, tailLines)
+		if err != nil {
+			return fmt.Errorf("failed to read log %q: %w", name, err)
+		}
+		if _, err := lw.Write(tail); err != nil {
+			return err
+		}
+	} else if _, err := io.Copy(lw, r); err != nil {
+		return fmt.Errorf("failed to copy log %q: %w", name, err)
+	}
+
+	if lw.written && lw.last != '\n' {
+		_, err := io.WriteString(w, "\n")
+		return err
+	}
+	return nil
+}
+
+// tailTrimThreshold is how much readTail buffers before dropping the lines
+// that cannot be among the last ones.
+const tailTrimThreshold = 1 << 20
+
+// readTail returns the last n lines of r, holding about tailTrimThreshold
+// bytes (or twice the size of those lines, if larger) rather than all of r.
+func readTail(r io.Reader, n int) ([]byte, error) {
+	var buf []byte
+	limit := tailTrimThreshold
+	chunk := make([]byte, 32*1024)
+	for {
+		k, err := r.Read(chunk)
+		buf = append(buf, chunk[:k]...)
+		if len(buf) > limit {
+			// The last n lines of what is read so far hold all of the last n lines
+			// of r that it overlaps: those are all that is kept.
+			buf = buf[:copy(buf, lastNLines(buf, n))]
+			limit = max(tailTrimThreshold, 2*len(buf))
+		}
+		if err == io.EOF {
+			return lastNLines(buf, n), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// lastByteWriter remembers the last byte written through it.
+type lastByteWriter struct {
+	w       io.Writer
+	last    byte
+	written bool
+}
+
+func (lw *lastByteWriter) Write(p []byte) (int, error) {
+	n, err := lw.w.Write(p)
+	if n > 0 {
+		lw.last = p[n-1]
+		lw.written = true
+	}
+	return n, err
+}
+
+// walkArtifactLogs calls fn for each regular .log file of a tar.zst archive, in
+// archive order, with a reader of its content. fn returning errStopWalk ends the
+// walk without error.
+func walkArtifactLogs(artifactPath string, fn func(header *tar.Header, r io.Reader) error) error {
+	f, err := os.Open(artifactPath)
+	if err != nil {
+		return fmt.Errorf("failed to open artifact %q: %w", artifactPath, err)
+	}
+	defer f.Close()
+
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("failed to create zstd reader for %q: %w", artifactPath, err)
+	}
+	defer zr.Close()
+
+	tr := tar.NewReader(zr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar entry in %q: %w", artifactPath, err)
+		}
+
+		// Skip directories, links and non-.log files
+		if header.Typeflag != tar.TypeReg || !strings.HasSuffix(header.Name, ".log") {
+			continue
+		}
+
+		if err := fn(header, tr); err != nil {
+			if err == errStopWalk {
+				return nil
+			}
+			return err
+		}
+	}
 }

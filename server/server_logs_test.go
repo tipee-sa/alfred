@@ -4,11 +4,15 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/log"
@@ -151,7 +155,11 @@ type mockLogStream struct {
 }
 
 func (m *mockLogStream) Send(chunk *proto.StreamTaskLogsChunk) error {
-	m.chunks = append(m.chunks, chunk)
+	// Copied like gRPC serializes it: streamReader reuses its buffer.
+	m.chunks = append(m.chunks, &proto.StreamTaskLogsChunk{
+		Data:   bytes.Clone(chunk.Data),
+		Length: chunk.Length,
+	})
 	return nil
 }
 func (m *mockLogStream) Context() context.Context              { return m.ctx }
@@ -349,4 +357,159 @@ func TestExtractLogsFromArtifact_SortsFilesByName(t *testing.T) {
 	content, _ := io.ReadAll(r)
 	expected := "==> task-step-0.log <==\nstep0\n\n==> task-step-1.log <==\nstep1\n\n==> task-step-2.log <==\nstep2\n"
 	assert.Equal(t, expected, string(content))
+}
+
+// --- whole logs (TailLines < 0, `logs -n all`) ---
+
+func TestRequestedTailLines(t *testing.T) {
+	for tailLines, want := range map[int32]int{
+		0:    defaultTailLines, // proto3 default: the field is not set
+		1:    1,
+		250:  250,
+		-1:   allLines,
+		-100: allLines,
+	} {
+		assert.Equal(t, want, requestedTailLines(&proto.StreamTaskLogsRequest{TailLines: tailLines}), "TailLines %d", tailLines)
+	}
+}
+
+// numberedLines returns the lines "<prefix>-1\n" to "<prefix>-<n>\n".
+func numberedLines(prefix string, n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "%s-%d\n", prefix, i)
+	}
+	return b.String()
+}
+
+// createOrderedTestArtifact is createTestArtifact with the archive order given,
+// written to path.
+func createOrderedTestArtifact(t *testing.T, artifactPath string, files [][2]string) string {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(path.Dir(artifactPath), 0755))
+	f, err := os.Create(artifactPath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	zw, err := zstd.NewWriter(f)
+	require.NoError(t, err)
+	tw := tar.NewWriter(zw)
+	for _, file := range files {
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: file[0], Size: int64(len(file[1])), Mode: 0644, Typeflag: tar.TypeReg}))
+		_, err := tw.Write([]byte(file[1]))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, zw.Close())
+
+	return artifactPath
+}
+
+func readAllAndClose(t *testing.T, r io.ReadCloser) string {
+	t.Helper()
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(content)
+}
+
+func TestStreamTaskLogs_NegativeTailLinesReturnsWholeLog(t *testing.T) {
+	oldDataRoot := dataRoot
+	dataRoot = t.TempDir()
+	t.Cleanup(func() { dataRoot = oldDataRoot })
+
+	stepLog := numberedLines("line", 250)
+	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
+		{"job-abc-task/output/task-step-0.log", stepLog},
+	})
+
+	stream := func(tailLines int32) string {
+		mock := &mockLogStream{ctx: context.Background()}
+		require.NoError(t, (&server{}).StreamTaskLogs(&proto.StreamTaskLogsRequest{Job: "job-abc", Task: "task", TailLines: tailLines}, mock))
+		var received bytes.Buffer
+		for _, chunk := range mock.chunks {
+			received.Write(chunk.Data)
+		}
+		return received.String()
+	}
+
+	header := "==> task-step-0.log <==\n"
+	assert.Equal(t, header+stepLog, stream(-1), "a negative TailLines asks for the whole log")
+	assert.Equal(t, header+string(lastNLines([]byte(stepLog), 100)), stream(0), "an unset TailLines means 100 lines")
+	assert.Equal(t, header+"line-249\nline-250\n", stream(2))
+}
+
+func TestExtractLogsFromArtifact_AllLinesInStepOrder(t *testing.T) {
+	// Archived out of step order, so that it takes more than one pass.
+	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), [][2]string{
+		{"job-task/output/task-step-2.log", numberedLines("step2", 3)},
+		{"job-task/output/result.json", `{"ok":true}`},
+		{"job-task/output/task-step-0.log", numberedLines("step0", 300)},
+		{"job-task/output/task-step-1.log", "no final newline"},
+	})
+
+	r, err := extractLogsFromArtifact(artifact, allLines)
+	require.NoError(t, err)
+
+	expected := "==> task-step-0.log <==\n" + numberedLines("step0", 300) +
+		"\n==> task-step-1.log <==\nno final newline\n" +
+		"\n==> task-step-2.log <==\n" + numberedLines("step2", 3)
+	assert.Equal(t, expected, readAllAndClose(t, r))
+}
+
+func TestExtractLogsFromArtifact_LogOver10MB(t *testing.T) {
+	// Logs used to be read whole, up to 10MB: the tail of a longer one showed
+	// lines from the middle, and nothing past 10MB could be read.
+	stepLog := numberedLines("a fairly long line of test output, number", 300000)
+	require.Greater(t, len(stepLog), 10*1024*1024)
+	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), [][2]string{
+		{"job-task/output/task-step-0.log", stepLog},
+	})
+
+	r, err := extractLogsFromArtifact(artifact, 2)
+	require.NoError(t, err)
+	assert.Equal(t, "==> task-step-0.log <==\n"+
+		"a fairly long line of test output, number-299999\n"+
+		"a fairly long line of test output, number-300000\n", readAllAndClose(t, r))
+
+	r, err = extractLogsFromArtifact(artifact, allLines)
+	require.NoError(t, err)
+	all := readAllAndClose(t, r)
+	assert.Equal(t, len("==> task-step-0.log <==\n")+len(stepLog), len(all))
+	assert.True(t, strings.HasSuffix(all, stepLog))
+}
+
+func TestExtractLogsFromArtifact_CloseBeforeEnd(t *testing.T) {
+	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), [][2]string{
+		{"job-task/output/task-step-0.log", numberedLines("line", 100000)},
+	})
+
+	r, err := extractLogsFromArtifact(artifact, allLines)
+	require.NoError(t, err)
+	_, err = io.ReadFull(r, make([]byte, 10))
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+
+	_, err = r.Read(make([]byte, 10))
+	assert.ErrorIs(t, err, io.ErrClosedPipe)
+}
+
+func TestReadTail_MatchesLastNLines(t *testing.T) {
+	// Several times tailTrimThreshold, read in uneven chunks.
+	content := numberedLines("line", 400000)
+	require.Greater(t, len(content), 3*tailTrimThreshold)
+
+	for _, data := range []string{content, content + "partial last line"} {
+		for _, n := range []int{1, 7, 1000, 150000, 1000000} {
+			tail, err := readTail(iotest.HalfReader(strings.NewReader(data)), n)
+			require.NoError(t, err)
+			assert.Equal(t, string(lastNLines([]byte(data), n)), string(tail), "n=%d", n)
+		}
+	}
+}
+
+func TestReadTail_ReadError(t *testing.T) {
+	_, err := readTail(iotest.ErrReader(errors.New("boom")), 10)
+	assert.ErrorContains(t, err, "boom")
 }

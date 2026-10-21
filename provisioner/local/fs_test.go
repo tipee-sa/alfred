@@ -1,9 +1,11 @@
 package local
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +42,67 @@ func TestTailLogs(t *testing.T) {
 	// line1-a and line1-b should NOT appear with -n 2
 	assert.NotContains(t, output, "line1-a")
 	assert.NotContains(t, output, "line1-b")
+}
+
+func TestTailLogsAllLines(t *testing.T) {
+	root := t.TempDir()
+	f := newFs(root)
+
+	logDir := "job-all/output"
+	require.NoError(t, os.MkdirAll(path.Join(root, logDir), 0755))
+	var long strings.Builder
+	for i := 1; i <= 5000; i++ {
+		fmt.Fprintf(&long, "line-%d\n", i)
+	}
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-0.log"), []byte(long.String()), 0644))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-1.log"), []byte("a\nb\n"), 0644))
+
+	for _, lines := range []int{0, -1} {
+		rc, err := f.TailLogs(logDir, lines)
+		require.NoError(t, err)
+		data, err := io.ReadAll(rc)
+		require.NoError(t, err)
+		require.NoError(t, rc.Close())
+
+		assert.Equal(t, "==> task-step-0.log <==\n"+long.String()+"\n==> task-step-1.log <==\na\nb\n", string(data), "lines=%d", lines)
+	}
+}
+
+func TestTailLogsReportsTailFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	root := t.TempDir()
+	f := newFs(root)
+
+	logDir := "job-unreadable/output"
+	require.NoError(t, os.MkdirAll(path.Join(root, logDir), 0755))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-0.log"), []byte("fine\n"), 0644))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-1.log"), []byte("secret\n"), 0000))
+
+	rc, err := f.TailLogs(logDir, 10)
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	assert.ErrorContains(t, err, "failed to tail log files")
+	assert.Contains(t, string(data), "fine", "what tail could read is still returned")
+}
+
+func TestTailLogsCloseBeforeEnd(t *testing.T) {
+	root := t.TempDir()
+	f := newFs(root)
+
+	logDir := "job-close/output"
+	require.NoError(t, os.MkdirAll(path.Join(root, logDir), 0755))
+	// Well over a pipe buffer, so that tail is still writing when closed.
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-0.log"), []byte(strings.Repeat("x\n", 1<<20)), 0644))
+
+	rc, err := f.TailLogs(logDir, 0)
+	require.NoError(t, err)
+	_, err = io.ReadFull(rc, make([]byte, 10))
+	require.NoError(t, err)
+	assert.NoError(t, rc.Close())
 }
 
 func TestTailLogsHeadersUseBasenames(t *testing.T) {

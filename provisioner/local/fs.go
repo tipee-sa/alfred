@@ -73,15 +73,63 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("no log files found in '%s'", dir)
 	}
 
-	args := append([]string{"-v", "-n", fmt.Sprintf("%d", lines)}, logFiles...)
+	// Streamed rather than buffered: with lines <= 0 the output is the whole logs.
+	args := append([]string{"-v", "-n", internal.TailLinesArg(lines)}, logFiles...)
 	cmd := exec.Command("tail", args...)
 	cmd.Dir = hostDir
-	output, err := cmd.Output()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to tail log files: %w", err)
 	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to tail log files: %w", err)
+	}
 
-	return io.NopCloser(bytes.NewReader(output)), nil
+	return &cmdReader{stdout: stdout, cmd: cmd, stderr: &stderr}, nil
+}
+
+// cmdReader reads a command's stdout. At EOF it waits for the command and
+// returns its failure, if any, in place of EOF.
+type cmdReader struct {
+	stdout io.ReadCloser
+	cmd    *exec.Cmd
+	stderr *bytes.Buffer
+	waited bool
+	err    error
+}
+
+func (r *cmdReader) Read(p []byte) (int, error) {
+	n, err := r.stdout.Read(p)
+	if err == io.EOF {
+		if waitErr := r.wait(); waitErr != nil {
+			return n, waitErr
+		}
+	}
+	return n, err
+}
+
+func (r *cmdReader) wait() error {
+	if !r.waited {
+		r.waited = true
+		if err := r.cmd.Wait(); err != nil {
+			r.err = fmt.Errorf("failed to tail log files: %w (stderr: %s)", err, strings.TrimSpace(r.stderr.String()))
+		}
+	}
+	return r.err
+}
+
+// Close stops reading early if need be: closing the pipe makes a command
+// still writing to it fail (SIGPIPE), so the wait does not block.
+func (r *cmdReader) Close() error {
+	if r.waited {
+		return nil
+	}
+	r.stdout.Close()
+	r.waited = true
+	_ = r.cmd.Wait()
+	return nil
 }
 
 func (f *fs) Archive(p string) (io.ReadCloser, error) {

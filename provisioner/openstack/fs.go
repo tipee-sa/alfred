@@ -1,6 +1,7 @@
 package openstack
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -96,6 +97,15 @@ func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) err
 }
 
 func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
+	command := fmt.Sprintf(
+		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -v -n %s`,
+		shellescape.Quote(f.HostPath(dir)),
+		internal.TailLinesArg(lines),
+	)
+	if lines <= 0 {
+		return f.streamLogs(command)
+	}
+
 	session, err := newSession(f.ssh)
 	if err != nil {
 		return nil, err
@@ -108,16 +118,55 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	// Collect all output at once (tail output is bounded by -n lines).
 	// Using session.Output avoids SSH stdout pipe EOF delivery issues that cause
 	// the streaming read loop to hang.
-	output, err := session.Output(fmt.Sprintf(
-		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -v -n %d`,
-		shellescape.Quote(f.HostPath(dir)),
-		lines,
-	))
+	output, err := session.Output(command)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read logs: %w (stderr: %s)", err, stderr.String())
 	}
 
 	return io.NopCloser(bytes.NewReader(output)), nil
+}
+
+// streamLogs runs a TailLogs command whose output is whole logs, too big to
+// buffer like a tail: it streams it the way Archive does (io.Pipe with
+// session.Stdout, not StdoutPipe). It waits for the first byte, so that a
+// failure before any output (no log files yet) is returned here, as it is
+// for a tail.
+func (f *fs) streamLogs(command string) (io.ReadCloser, error) {
+	session, err := newSession(f.ssh)
+	if err != nil {
+		return nil, err
+	}
+
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+
+	pr, pw := io.Pipe()
+	session.Stdout = pw
+
+	if err = session.Start(command); err != nil {
+		session.Close()
+		return nil, err
+	}
+
+	go func() {
+		if err := session.Wait(); err != nil {
+			pw.CloseWithError(fmt.Errorf("failed to read logs: %w (stderr: %s)", err, stderr.String()))
+		} else {
+			pw.Close()
+		}
+		session.Close()
+	}()
+
+	br := bufio.NewReader(pr)
+	if _, err := br.Peek(1); err != nil && err != io.EOF {
+		pr.Close()
+		return nil, err
+	}
+
+	return struct {
+		io.Reader
+		io.Closer
+	}{br, pr}, nil
 }
 
 // Archive returns a .tar.zst of the given path.

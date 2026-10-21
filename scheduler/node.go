@@ -31,7 +31,9 @@ type RunTaskConfig struct {
 	SecretLoader        SecretLoader
 	OnWorkspaceReady    func(archiver func() (io.ReadCloser, error))
 	OnWorkspaceTeardown func()
-	OnLogReaderReady    func(logReader func(lines int) (io.ReadCloser, error))
+	// OnLogReaderReady receives a reader of the task's step logs: the last
+	// lines lines of each, or all of them when lines <= 0.
+	OnLogReaderReady func(logReader func(lines int) (io.ReadCloser, error))
 }
 
 type Node interface {

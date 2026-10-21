@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path"
+	"strconv"
 )
 
 type WorkspaceFS interface {
@@ -12,6 +13,9 @@ type WorkspaceFS interface {
 	SaveContainerLogs(containerId, p string) error
 	StreamContainerLogs(ctx context.Context, containerId, p string) error
 	Archive(p string) (io.ReadCloser, error)
+	// TailLogs returns the *.log files of dir, in name order, formatted like
+	// `tail -v -n <lines>`: the last lines lines of each, or all of them when
+	// lines <= 0.
 	TailLogs(dir string, lines int) (io.ReadCloser, error)
 	Delete(p string) error
 	Scope(p string) WorkspaceFS
@@ -47,6 +51,15 @@ func (f *ScopedFS) Archive(p string) (io.ReadCloser, error) {
 
 func (f *ScopedFS) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	return f.Parent.TailLogs(path.Join(f.Prefix, dir), lines)
+}
+
+// TailLinesArg is tail's -n argument for TailLogs' lines: "+1" (from the
+// first line on, so whole files) when lines <= 0.
+func TailLinesArg(lines int) string {
+	if lines <= 0 {
+		return "+1"
+	}
+	return strconv.Itoa(lines)
 }
 
 func (f *ScopedFS) Delete(p string) error {

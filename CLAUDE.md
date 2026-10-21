@@ -35,6 +35,7 @@ alfred/
 │   ├── run.go              #   Schedule jobs from jobfiles
 │   ├── watch.go            #   Real-time job status monitoring
 │   ├── artifact.go         #   Download task artifacts
+│   ├── logs.go             #   Print or follow a task's step logs
 │   ├── ps.go               #   List all jobs
 │   ├── top.go              #   Server dashboard (tview TUI)
 │   ├── version.go          #   Client + server version display
@@ -47,6 +48,7 @@ alfred/
 │   ├── server.go           #   gRPC service registration, Ping handler
 │   ├── server_jobs.go      #   ScheduleJob, WatchJob, WatchJobs RPCs
 │   ├── server_artifacts.go #   DownloadArtifact streaming RPC
+│   ├── server_logs.go      #   StreamTaskLogs RPC (artifact, live, follow)
 │   ├── server_load.go      #   LoadImage bidirectional streaming RPC
 │   ├── status.go           #   Event-driven state reconstruction + client broadcasting
 │   ├── scheduler.go        #   Scheduler factory, artifact/secret callbacks
@@ -177,6 +179,7 @@ Task statuses: `QUEUED -> RUNNING -> COMPLETED | FAILED | ABORTED`.
 | `WatchJob` | Server stream | Stream single job's status events |
 | `WatchJobs` | Server stream | Stream all jobs list (job-level events only) |
 | `DownloadArtifact` | Server stream | Chunked artifact download (completed or live) |
+| `StreamTaskLogs` | Server stream | Step logs of a task, tailed or whole, optionally followed |
 | `LoadImage` | Bidi stream | Upload compressed Docker images (zstd) |
 
 ## Code Conventions
@@ -330,6 +333,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **`artifact` output**: the path of each file written goes to stdout, one per line, after the
   spinner; messages go to stderr. It exits 1 when a requested task does not exist or a download
   failed, after downloading the rest; a partial snapshot of an unfinished task is only a warning.
+- **`StreamTaskLogs.tail_lines`**: proto3 can't tell 0 from unset, so 0 means the default
+  (100 lines) and a negative value means whole logs (`logs -n all`; an older server clamps it
+  to 100). Down the stack, `lines <= 0` means whole logs (`TailLogs`, `ReadLiveTaskLogs`,
+  `extractLogsFromArtifact`), which then stream instead of being buffered.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
