@@ -141,6 +141,53 @@ func TestFindNewContent_TailWindowShifted(t *testing.T) {
 	assert.Equal(t, []byte("line4\nline5\n"), findNewContent(prev, curr))
 }
 
+func TestFindNewContent_UnchangedPartialLastLine(t *testing.T) {
+	// A trimmed initial snapshot (no header) ending with a line still being
+	// written, then a poll of the same, unchanged output with its header.
+	prev := []byte("line1\nline2\nline3\npart")
+	curr := []byte("==> task-step-0.log <==\nline1\nline2\nline3\npart")
+	assert.Empty(t, findNewContent(prev, curr), "nothing changed")
+
+	curr = []byte("==> task-step-0.log <==\nline1\nline2\nline3\npartial line\nline5\n")
+	assert.Equal(t, "ial line\nline5\n", string(findNewContent(prev, curr)), "only what is appended to the partial line")
+}
+
+func TestNewContentOffset_StreamedInSmallReads(t *testing.T) {
+	// Fingerprints spanning reads: the same offsets byte by byte as in one read.
+	prev := []byte("==> f.log <==\nl1\nl2\nl3\nl4\nl5\nl6\npa")
+	cases := map[string]string{
+		"prefix":         string(prev) + "rtial\nl8\n",
+		"identical":      string(prev),
+		"shorter":        string(prev[:20]),
+		"window shifted": "==> f.log <==\nl3\nl4\nl5\nl6\npartial\nl8\n",
+		"3 lines twice":  "xx\nl5\nl6\npa\nl8\nl5\nl6\npa\nl9\n",
+		"2 lines only":   "l6\npa\nl8\n",
+		"last line only": "xx\npa\nl8\n",
+		"no overlap":     "something else\n",
+	}
+	for name, curr := range cases {
+		t.Run(name, func(t *testing.T) {
+			whole, err := newContentOffset(prev, strings.NewReader(curr))
+			require.NoError(t, err)
+			oneByte, err := newContentOffset(prev, iotest.OneByteReader(strings.NewReader(curr)))
+			require.NoError(t, err)
+			assert.Equal(t, whole, oneByte)
+		})
+	}
+
+	offset, err := newContentOffset(prev, iotest.OneByteReader(strings.NewReader(cases["3 lines twice"])))
+	require.NoError(t, err)
+	assert.Equal(t, "\nl8\nl5\nl6\npa\nl9\n", cases["3 lines twice"][offset:], "after the first occurrence of the last 3 lines")
+	offset, err = newContentOffset(prev, iotest.OneByteReader(strings.NewReader(cases["prefix"])))
+	require.NoError(t, err)
+	assert.Equal(t, "rtial\nl8\n", cases["prefix"][offset:])
+}
+
+func TestNewContentOffset_ReadError(t *testing.T) {
+	_, err := newContentOffset([]byte("l1\n"), iotest.ErrReader(errors.New("boom")))
+	assert.ErrorContains(t, err, "boom")
+}
+
 func TestFindNewContent_NoOverlap(t *testing.T) {
 	// Gap too large, no overlap — should return everything (safe fallback)
 	prev := []byte("old content\n")
@@ -268,19 +315,22 @@ type failingLogStream struct{ mockLogStream }
 
 func (m *failingLogStream) Send(*proto.StreamTaskLogsChunk) error { return errors.New("client gone") }
 
-func TestFollowLiveLogs_WholeLogThenFinalDelta(t *testing.T) {
+func TestFollowLiveLogs_WholeLogThenWholeFinalDelta(t *testing.T) {
 	oldDataRoot, oldRead, oldInterval := dataRoot, readLiveTaskLogs, followPollInterval
 	t.Cleanup(func() { dataRoot, readLiveTaskLogs, followPollInterval = oldDataRoot, oldRead, oldInterval })
 	dataRoot = t.TempDir()
 	followPollInterval = time.Millisecond
 
 	// More lines than a poll reads, so that only the end of the initial output
-	// is kept, and the final read from the artifact is a window too.
+	// is kept; then, before the task completes, more new lines than a poll
+	// reads, in that step log and in a new one: none of them may be lost.
 	header := "==> task-step-0.log <==\n"
 	live := header + numberedLines("line", 2*followWindowLines)
-	final := numberedLines("line", 2*followWindowLines+5)
+	final := numberedLines("line", 3*followWindowLines+5)
+	step1 := numberedLines("step1", followWindowLines+5)
 	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
 		{"job-abc-task/output/task-step-0.log", final},
+		{"job-abc-task/output/task-step-1.log", step1},
 	})
 
 	var requested []int
@@ -300,7 +350,7 @@ func TestFollowLiveLogs_WholeLogThenFinalDelta(t *testing.T) {
 		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
 		received.Write(chunk.Data)
 	}
-	assert.Equal(t, header+final, received.String(), "the whole log, then what the artifact adds")
+	assert.Equal(t, header+final+"\n==> task-step-1.log <==\n"+step1, received.String(), "the whole log, then all that the artifact adds")
 	assert.Equal(t, []int{allLines, followWindowLines}, requested)
 }
 
