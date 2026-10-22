@@ -13,7 +13,7 @@ import (
 func TestRunSharesWatchFlags(t *testing.T) {
 	// run follows its job through watchJob: every watch flag must exist on run too, or
 	// watchOptionsFromFlags panics there.
-	for _, name := range []string{"json", "once", "abort-on-failure", "abort-on-error"} {
+	for _, name := range []string{"json", "once", "abort-on-warning", "abort-on-failure", "abort-on-error"} {
 		assert.NotNil(t, runCmd.Flags().Lookup(name), "run lacks --%s", name)
 	}
 	assert.NotPanics(t, func() { watchOptionsFromFlags(runCmd) })
