@@ -29,6 +29,11 @@ var connectTimeoutDefault, connectTimeoutEnvErr = connectTimeoutFlagDefault()
 var alfredCmd = &cobra.Command{
 	Use:   "alfred",
 	Short: "Alfred is a distributed job scheduler.",
+	Long: `Alfred runs CI jobs on a pool of nodes. A job is described by a jobfile
+(YAML): 'alfred run' builds its step images locally with Docker, uploads them
+to the server, and the server runs each of the job's tasks on its nodes.
+
+Scripts, CI and AI agents: see 'alfred help scripting'.`,
 
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -105,6 +110,7 @@ func init() {
 	alfredCmd.AddCommand(topCmd)
 	alfredCmd.AddCommand(versionCmd)
 	alfredCmd.AddCommand(watchCmd)
+	alfredCmd.AddCommand(scriptingHelp)
 
 	alfredCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	alfredCmd.PersistentFlags().String("remote", lo.Must(lo.Coalesce(os.Getenv("ALFRED_REMOTE"), "alfred.tipee.dev:25373")), "the server remote address")

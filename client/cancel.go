@@ -9,7 +9,12 @@ import (
 var cancelCmd = &cobra.Command{
 	Use:   "cancel JOB [TASK]",
 	Short: "Cancel a running or queued job/task",
-	Args:  cobra.RangeArgs(1, 2),
+	Long: `Cancels a whole job, or one of its tasks. A queued task ends as "aborted"
+without running; a running one is stopped, and ends as "aborted" too, its
+artifact kept. A job whose tasks have all ended completes.`,
+	Example: `  alfred cancel my-job-crazy-cat
+  alfred cancel my-job-crazy-cat task-1`,
+	Args: cobra.RangeArgs(1, 2),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 1 {

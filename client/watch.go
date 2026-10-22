@@ -67,9 +67,28 @@ func watchOptionsFromFlags(cmd *cobra.Command) watchOptions {
 }
 
 var watchCmd = &cobra.Command{
-	Use:   "watch [JOB]",
+	Use:   "watch JOB",
 	Short: "Watch a job execution",
-	Args:  cobra.ExactArgs(1),
+	Long: `Shows a job's status until it completes. On a terminal, a live display
+refreshed every second; without one (a pipe, a script), one plain line per
+status change; with --json, one JSON line per change, described in
+'alfred help scripting'.
+
+-v lists every task instead of truncating long lists. On a terminal, that is
+in the final summary and with --once: the live display stays truncated, as a
+display taller than the terminal cannot be redrawn in place.
+
+--abort-on-warning and --abort-on-error cancel the rest of the job as soon as a
+task ends as "warning" (exit 42), or as "failed" or "timed_out". A task
+"skipped" (exit 43) never aborts the job.
+
+Exit code: 0 once the job's final status was seen (or --once printed), whatever
+its tasks' outcome; 1 if the job is not found, or the watch ends before the job
+completes (interrupted, connection lost, server shutdown).`,
+	Example: `  alfred watch my-job-crazy-cat
+  alfred watch --once -v my-job-crazy-cat      # every task, once
+  alfred watch --json my-job-crazy-cat | jq -c .counts`,
+	Args: cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return watchJob(cmd, args[0], watchOptionsFromFlags(cmd))

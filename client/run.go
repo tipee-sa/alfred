@@ -20,9 +20,29 @@ import (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [JOBFILE] [ARGS...]",
+	Use:   "run JOBFILE [ARGS...]",
 	Short: "Runs a job",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Builds the jobfile's step images with Docker, uploads those the server does
+not have yet, schedules the job, then watches it like 'alfred watch' (same
+output and flags; --async returns once it is scheduled).
+
+The jobfile is a Go template: ARGS are available as .Args, --param KEY=VALUE as
+.Params, the environment as .Env. Its paths (dockerfile, context) are relative
+to the jobfile's directory.
+
+A task runs its steps in order, each in a container that sees ALFRED_TASK,
+ALFRED_OUTPUT (archived as the task's artifact) and ALFRED_SHARED (kept between
+the task's steps). A step exiting 42 ends the task as "warning", 43 as
+"skipped" (a prerequisite was missing), any other non-zero code as "failed".
+
+Exit code: 1 if anything fails before the job's tasks run (jobfile, build,
+upload, scheduling, connection); then as 'alfred watch': 0 once the job has
+completed, whatever its tasks' outcome.`,
+	Example: `  alfred run hack/test-job.yaml
+  alfred run job.yaml -p branch=main instance-1 instance-2
+  alfred run -n job.yaml                           # build and print the job, no run
+  alfred run --async --json job.yaml | jq -r .job  # schedule, print the job name`,
+	Args: cobra.MinimumNArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var spinner *ui.Spinner

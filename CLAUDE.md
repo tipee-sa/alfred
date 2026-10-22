@@ -36,6 +36,7 @@ alfred/
 │   ├── watch.go            #   Real-time job status monitoring
 │   ├── artifact.go         #   Download task artifacts
 │   ├── logs.go             #   Print or follow a task's step logs
+│   ├── help_scripting.go   #   `alfred help scripting`: the guide for scripts and agents
 │   ├── ps.go               #   List all jobs
 │   ├── top.go              #   Server dashboard (tview TUI)
 │   ├── version.go          #   Client + server version display
@@ -185,6 +186,9 @@ Task statuses: `QUEUED -> RUNNING -> COMPLETED | FAILED | ABORTED`.
 ## Code Conventions
 
 - **gRPC-free commands**: Override `PersistentPreRunE` with a no-op (see `self_update.go`).
+- **Help texts are the CLI's documentation**: every command has a `Long` (a test checks it), and
+  `alfred help scripting` (`client/help_scripting.go`) is the guide for scripts and agents. A
+  change to a flag, a JSON field or status, or an exit code updates them in the same commit.
 - **Versioning**: `version`, `commit`, `repository` set via ldflags. Defaults: `"dev"`, `"n/a"`, `"tipee-sa/alfred"`.
 - **Jobfile paths**: Context and dockerfile paths are relative to the jobfile's directory.
 - **Service containers**: Run in goroutines with health checks. Step containers run sequentially.

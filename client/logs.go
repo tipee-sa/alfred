@@ -16,6 +16,16 @@ var logsCmd = &cobra.Command{
 	Use:     "logs JOB TASK",
 	Aliases: []string{"tail"},
 	Short:   "Stream step logs for a task",
+	Long: `Prints a task's step logs, each under a "==> FILE <==" header like 'tail -v':
+the last 100 lines of each by default, the last N with -n N, all of them with
+-n all. Works on running and finished tasks.
+
+-f follows a running task, printing new output about every 10 seconds until it
+ends. It takes a number of lines, not "all": for whole logs, use -n all
+without -f.`,
+	Example: `  alfred logs my-job-crazy-cat task-1
+  alfred logs my-job-crazy-cat task-1 -n all | grep -n FAIL
+  alfred logs my-job-crazy-cat task-1 -f -n 20`,
 	// Checked here rather than in RunE: Args runs before connecting to the server.
 	Args: func(cmd *cobra.Command, args []string) error {
 		if err := cobra.ExactArgs(2)(cmd, args); err != nil {

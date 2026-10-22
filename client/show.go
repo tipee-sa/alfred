@@ -10,9 +10,11 @@ import (
 )
 
 var showCmd = &cobra.Command{
-	Use:   "show [JOB]",
+	Use:   "show JOB",
 	Short: "Show job details",
-	Args:  cobra.ExactArgs(1),
+	Long: `Prints how a job was started: who started it and when, the command line, and
+the rendered jobfile (comments left out), including its tasks.`,
+	Args: cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		job, err := getJob(cmd.Context(), args[0])
