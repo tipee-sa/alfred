@@ -378,6 +378,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
   task gets its own Docker network, workspace, and service containers — even though they all
   share the same Docker daemon. This means `max-nodes * slots-per-node` networks are created
   concurrently.
+- **Docker creates ignore task cancellation**: `RunContainer` creates networks and containers
+  with `creationContext` (not cancelled with the task, bounded by a timeout). A create request
+  cancelled in flight is still carried out by the daemon, but returns no ID, so its removal was
+  never registered: a task aborted while starting leaked its network.
 - **Docker network limit**: Docker can only create ~31 default bridge networks (due to
   available /16 address pools). With the local provisioner and an ambitious config (e.g.,
   `--max-nodes=8 --slots-per-node=4`), you'll hit "could not find an available, non-overlapping

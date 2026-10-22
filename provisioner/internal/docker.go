@@ -42,6 +42,21 @@ type DockerClient interface {
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
 }
 
+// dockerCreateTimeout bounds a Docker call creating a network or a container
+// (see creationContext).
+const dockerCreateTimeout = time.Minute
+
+// creationContext is the context of a Docker call creating a network or a
+// container: not cancelled with ctx, only bounded by dockerCreateTimeout.
+// Cancelling such a request does not undo it: the daemon may create the object
+// anyway, while the call returns ctx's error and no ID, so its removal is never
+// registered. A task aborted while starting leaked its network this way (one
+// per abort that raced its setup, against Docker's ~31 bridge networks). Once
+// created, the next call made with ctx fails on its own.
+func creationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), dockerCreateTimeout)
+}
+
 // RunContainer is the core task execution engine. It orchestrates the full lifecycle:
 // network → workspace → services (parallel) → steps (sequential) → artifact archival → cleanup.
 //
@@ -76,7 +91,9 @@ func RunContainer(
 	// Setup network to link main container with services
 	networkName := fmt.Sprintf("alfred-%s", task.FQN())
 	netResp, err := RetryResult(3, func() (network.CreateResponse, error) {
-		return docker.NetworkCreate(ctx, networkName, network.CreateOptions{Driver: "bridge"})
+		createCtx, cancel := creationContext(ctx)
+		defer cancel()
+		return docker.NetworkCreate(createCtx, networkName, network.CreateOptions{Driver: "bridge"})
 	})
 	if err != nil {
 		return -1, fmt.Errorf("failed to create docker network: %w", err)
@@ -204,8 +221,10 @@ func RunContainer(
 				}
 
 				resp, err := RetryResult(3, func() (container.CreateResponse, error) {
+					createCtx, cancel := creationContext(ctx)
+					defer cancel()
 					return docker.ContainerCreate(
-						ctx,
+						createCtx,
 						&container.Config{
 							Image: service.Image,
 							Cmd:   service.Command,
@@ -314,8 +333,10 @@ func RunContainer(
 			}
 
 			resp, err := RetryResult(3, func() (container.CreateResponse, error) {
+				createCtx, cancel := creationContext(ctx)
+				defer cancel()
 				return docker.ContainerCreate(
-					ctx,
+					createCtx,
 					&container.Config{
 						Image: image,
 						Env: append(
