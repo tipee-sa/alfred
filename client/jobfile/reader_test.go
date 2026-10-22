@@ -25,3 +25,19 @@ func TestTailBuffer_JoinsLinesSplitAcrossWrites(t *testing.T) {
 	b.Write([]byte("ed to solve\nlast"))
 	assert.Equal(t, "ERROR: failed to solve\nlast", b.String())
 }
+
+func TestTailBuffer_BoundsNewlineFreeOutput(t *testing.T) {
+	var b tailBuffer
+	chunk := []byte(strings.Repeat("x", 32<<10))
+	for i := 0; i < 256; i++ {
+		n, err := b.Write(chunk)
+		assert.NoError(t, err)
+		assert.Equal(t, len(chunk), n)
+		assert.LessOrEqual(t, len(b.buf), tailBufferBytes)
+	}
+	b.Write([]byte("y"))
+	out := b.String()
+	assert.True(t, strings.HasPrefix(out, "[...]x"))
+	assert.True(t, strings.HasSuffix(out, "xy"))
+	assert.Equal(t, len("[...]")+tailBufferBytes, len(out))
+}

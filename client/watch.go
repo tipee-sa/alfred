@@ -15,6 +15,8 @@ import (
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // recvResult holds the result of a gRPC Recv() call.
@@ -44,6 +46,10 @@ func addWatchFlags(cmd *cobra.Command) {
 // watchOptions holds the flags registered by addWatchFlags.
 type watchOptions struct {
 	abortOnWarning, abortOnError, json, once bool
+	// tasks, when set, says that run has just scheduled the job, with that many tasks: its
+	// status is shown only once it lists them all (see recvJobStatus), and a NotFound before
+	// its first status is retried (see jobStatusRecv).
+	tasks int
 }
 
 func watchOptionsFromFlags(cmd *cobra.Command) watchOptions {
@@ -114,15 +120,15 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 	// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
 	// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
 	msgCh := make(chan recvResult, 1)
-	go func() {
-		for {
-			msg, err := c.Recv() // blocks until server sends or stream ends
-			msgCh <- recvResult{msg, err}
-			if err != nil {
-				return // EOF or error: stop reading
-			}
+	reopen := func() (func() (*proto.JobStatus, error), error) {
+		c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: jobName})
+		if err != nil {
+			return nil, err
 		}
-	}()
+		return c.Recv, nil
+	}
+	recv := jobStatusRecv(cmd.Context(), c.Recv, reopen, opts.tasks > 0)
+	go recvJobStatus(recv, msgCh, opts.tasks)
 
 	// JSON mode: no spinner, colors or cursor control, so it works headless and piped.
 	if jsonOutput {
@@ -155,6 +161,66 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 		func() { spinner.Fail() },
 		abortIfNeeded,
 	)
+}
+
+// A job that run has just scheduled can be missing from the server's status for a moment:
+// ScheduleJob returns once the scheduler has the job, and the server publishes it from the
+// scheduler's events, so a WatchJob right after can end with NotFound.
+const (
+	notFoundRetries    = 50
+	notFoundRetryDelay = 100 * time.Millisecond
+)
+
+// jobStatusRecv returns a recv function reading a job's statuses from the stream that recv
+// reads. With retryNotFound, a NotFound before the first status reopens the stream (with
+// reopen), up to notFoundRetries times; without it, or after a status, errors are returned.
+func jobStatusRecv(
+	ctx context.Context,
+	recv func() (*proto.JobStatus, error),
+	reopen func() (func() (*proto.JobStatus, error), error),
+	retryNotFound bool,
+) func() (*proto.JobStatus, error) {
+	retries := 0
+	return func() (*proto.JobStatus, error) {
+		for {
+			msg, err := recv()
+			if err == nil {
+				retryNotFound = false // the job exists: a later NotFound is a real one
+				return msg, nil
+			}
+			if !retryNotFound || status.Code(err) != codes.NotFound || retries >= notFoundRetries {
+				return nil, err
+			}
+			retries++
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(notFoundRetryDelay):
+			}
+			if recv, err = reopen(); err != nil {
+				return nil, err
+			}
+		}
+	}
+}
+
+// recvJobStatus sends every status that recv returns to msgCh, until recv fails (io.EOF when
+// the stream ends). With minTasks set, it skips the statuses that list fewer tasks, until the
+// job completes. The server adds a new job's tasks one event at a time, so right after
+// ScheduleJob it can send the job with only some of them: a one-shot output (run --once, the
+// first line of run --json) would then miss tasks without any error.
+func recvJobStatus(recv func() (*proto.JobStatus, error), msgCh chan<- recvResult, minTasks int) {
+	for {
+		msg, err := recv() // blocks until server sends or stream ends
+		if err == nil && len(msg.Tasks) < minTasks && msg.CompletedAt == nil {
+			continue
+		}
+		minTasks = 0 // tasks are never removed from a job: no need to check again
+		msgCh <- recvResult{msg, err}
+		if err != nil {
+			return // EOF or error: stop reading
+		}
+	}
 }
 
 // runWatchLoop runs the watch event loop on a terminal, processing messages from msgCh,
@@ -301,7 +367,9 @@ func runWatchPlain(
 		current := taskStatusNames(result.msg)
 		// The completed state is left to the summary, which follows it.
 		if result.msg.CompletedAt == nil && (previous == nil || !maps.Equal(previous, current)) {
-			fmt.Fprintln(w, renderer.renderPlainLine(result.msg, previous))
+			if _, err := fmt.Fprintln(w, renderer.renderPlainLine(result.msg, previous)); err != nil {
+				return err
+			}
 		}
 		previous = current
 		if onMessage != nil {
@@ -321,12 +389,12 @@ func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watc
 		if result.err != nil {
 			return fmt.Errorf("failed to receive job status: %w", result.err)
 		}
+		summary := renderer.renderSummary
 		if plain {
-			fmt.Fprint(w, renderer.renderPlainSummary(result.msg))
-		} else {
-			fmt.Fprint(w, renderer.renderSummary(result.msg))
+			summary = renderer.renderPlainSummary
 		}
-		return nil
+		_, err := fmt.Fprint(w, summary(result.msg))
+		return err // the snapshot is the command's output: failing to write it is a failure
 	case <-ctx.Done():
 		return errWatchInterrupted(renderer.jobName)
 	}
@@ -334,10 +402,12 @@ func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watc
 
 // finishWatch writes the job's last known status once its stream has ended. The server ends
 // the stream right after sending the completed state, but also when it shuts down: only the
-// former leaves a final status to check, so the latter is an error.
+// former leaves a final status to check, so the latter is an error. So is failing to write it.
 func finishWatch(w io.Writer, lastMsg *proto.JobStatus, jobName string, summary func(*proto.JobStatus) string) error {
 	if lastMsg != nil {
-		fmt.Fprint(w, summary(lastMsg))
+		if _, err := fmt.Fprint(w, summary(lastMsg)); err != nil {
+			return err
+		}
 	}
 	if lastMsg == nil || lastMsg.CompletedAt == nil {
 		return errStreamEnded(jobName)

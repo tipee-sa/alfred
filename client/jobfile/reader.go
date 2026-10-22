@@ -250,27 +250,42 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	return tag, nil
 }
 
-// tailBuffer keeps the last lines written to it (tailBufferLines of them).
-type tailBuffer struct{ lines []string }
+// tailBuffer keeps the end of what is written to it: at most tailBufferBytes, of which String
+// returns the last tailBufferLines lines. The byte limit is what bounds memory: a build can write
+// megabytes without a newline, and a line count alone would keep (and re-copy) all of it.
+type tailBuffer struct {
+	buf       []byte
+	truncated bool
+}
 
-const tailBufferLines = 20
+const (
+	tailBufferLines = 20
+	tailBufferBytes = 16 << 10
+)
 
 func (b *tailBuffer) Write(p []byte) (int, error) {
-	text := string(p)
-	if len(b.lines) > 0 {
-		// Continue the last line if it was written without its newline.
-		text = b.lines[len(b.lines)-1] + text
-		b.lines = b.lines[:len(b.lines)-1]
+	n := len(p)
+	if len(p) > tailBufferBytes {
+		p = p[len(p)-tailBufferBytes:]
+		b.truncated = true
 	}
-	b.lines = append(b.lines, strings.Split(text, "\n")...)
-	if len(b.lines) > tailBufferLines+1 {
-		b.lines = b.lines[len(b.lines)-tailBufferLines-1:]
+	if over := len(b.buf) + len(p) - tailBufferBytes; over > 0 {
+		b.buf = append(b.buf[:0], b.buf[over:]...)
+		b.truncated = true
 	}
-	return len(p), nil
+	b.buf = append(b.buf, p...)
+	return n, nil
 }
 
 func (b *tailBuffer) String() string {
-	return strings.TrimRight(strings.Join(b.lines, "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(string(b.buf), "\n"), "\n")
+	if len(lines) > tailBufferLines {
+		lines = lines[len(lines)-tailBufferLines:]
+	} else if b.truncated {
+		// The first line lost its beginning to the byte limit.
+		lines[0] = "[...]" + lines[0]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // imageTag returns the tag under which the image with the given ID is sent to the server.

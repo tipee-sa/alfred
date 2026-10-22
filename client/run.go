@@ -85,6 +85,7 @@ var runCmd = &cobra.Command{
 
 		// From here on the job runs: whatever its tasks do, exit 0 means "check their status".
 		opts := watchOptionsFromFlags(cmd)
+		opts.tasks = len(j.Tasks)
 		if lo.Must(cmd.Flags().GetBool("async")) {
 			if !opts.json && !opts.once {
 				cmd.Printf(color.HiGreenString("Scheduled job '%s'\n"), job.Name)
