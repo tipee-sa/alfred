@@ -113,13 +113,10 @@ Client                          Server                       Scheduler
 **Client** (`client/main.go`): Cobra CLI. Establishes gRPC connection in `PersistentPreRunE`
 (validates `bash`, `docker`, `ssh`, `zstd` are installed). Remote address from `--remote`
 flag or `ALFRED_REMOTE` env var (default: `alfred.tipee.dev:25373`). SSH tunneling enabled
-automatically for non-localhost remotes via sossh (SSH + socat). `client/connect.go` then
-pings the server within `--connect-timeout` (`ALFRED_CONNECT_TIMEOUT`, default 1m): gRPC dials
-lazily and ssh starts in the background, so without that Ping a stuck ssh (e.g. a locked SSH
-agent, which waits silently) only surfaced at the first RPC, after gRPC's own 20s handshake
-timeout, as "error reading server preface: file already closed". The timeout bounds only that
-Ping, never later RPCs or streams; gRPC's `MinConnectTimeout` is raised above it so its 20s does
-not kill ssh first. On failure the client kills and reaps ssh before exiting.
+automatically for non-localhost remotes via sossh (SSH + socat). gRPC dials lazily, so
+`client/connect.go` pings the server within `--connect-timeout` to surface a stuck ssh (a locked
+SSH agent waits silently). That timeout bounds only the Ping, never later RPCs or streams, and
+gRPC's `MinConnectTimeout` must stay above it, or gRPC kills ssh first.
 
 **Server** (`server/main.go`): gRPC server on port 25373. Initializes Docker client,
 creates scheduler with chosen provisioner, subscribes to scheduler events. Status state
@@ -286,8 +283,8 @@ The codebase uses several recurring async patterns (all annotated with inline co
 
 - **Event broadcasting** (`forwardEvents`): Dedicated goroutine drains events channel and
   queues each event for every subscriber (`scheduler/subscriber.go`), whose own goroutine drains
-  it. Lossless and never blocks: the server's state is rebuilt from these events, and the
-  former drop-when-full left 68 tasks "queued" forever after cancelling a 2000-task job.
+  it. Lossless and never blocks: the server's state is rebuilt from these events, so never
+  drop one.
 
 - **Server state reconstruction** (`status.go:listenEvents`): Single goroutine consumes
   scheduler events, updates `serverStatus` under write lock, forwards to client watchers.
@@ -323,15 +320,11 @@ The codebase uses several recurring async patterns (all annotated with inline co
   containerd: OCI index digest), so after `docker save | docker load` across stores the ID
   changes; the tag survives. The OpenStack node still re-tags bare `sha256:` IDs for old clients.
 - **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
-  deleted at shutdown. Per-run names leaked one keypair per unclean exit until the project's
-  quota (100) was full: the host's weekly `alfred-restart-prevent-auth-issue.timer` runs
-  `systemctl kill alfred`, which sends SIGTERM (not the unit's `KillSignal=SIGINT`), and the
-  server ignored SIGTERM until it was handled like SIGINT.
-- **`artifact` output**: the path of each file written goes to stdout, one per line, after the
-  spinner; messages go to stderr. It exits 1 when a requested task does not exist or a download
-  failed, after downloading the rest; a partial snapshot of an unfinished task is only a warning.
-- **Service container logs**: Service containers now have log collection on startup failure
-  (step containers always had log streaming).
+  deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
+- **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover
+  `systemctl kill`, which the host's weekly restart timer runs.
+- **Service container logs**: collected only on startup failure; step containers always stream
+  theirs.
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
   real server disagree on redo logs). Don't use it in service health benchmarks.
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion
@@ -339,49 +332,24 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **Exit code 42**: Treated as "completed with warnings" (⚠️) by the watch command display.
   Task status is `FAILED` with exit code 42, `"warning"` in the JSON. Triggers
   `--abort-on-warning` but not `--abort-on-error` (which is for `"failed"` and `"timed_out"`).
-  `--abort-on-warning` was `--abort-on-failure`, which read as the opposite; the old name still
-  works, hidden, and warns on stderr (not `MarkDeprecated`: cobra would print that to stdout,
-  the client's cobra output, and corrupt `--json`).
+- **Deprecated flags warn on stderr themselves** (see hidden `--abort-on-failure`), not with
+  `MarkDeprecated`: cobra prints that to stdout, the client's cobra output, and corrupts `--json`.
 - **Exit code 43**: Treated as "skipped — prerequisite failed" (⏭️). For infrastructure problems
   (e.g., missing/corrupted database backups) where retrying or aborting other tasks won't help.
   Task status is `SKIPPED`. Excluded from both `--abort-on-warning` and `--abort-on-error`.
-- **`run` follows its job through `watchJob`**, with the same flags: both commands register them
-  with `addWatchFlags` and read them with `watchOptionsFromFlags`. Add a watch flag there, not
-  to `watchCmd` alone. `run --json`/`--once` behave as on `watch`; `run --async --json` prints
-  the same single line as `watch --json --once` (job name and every task), `--async` alone the
-  prose `Scheduled job 'x'`. stdout carries only that output (JSON lines, `-n` YAML): spinners,
-  headers and `docker build` output (`-v`) go to stderr.
-- **Exit codes of `run` and `watch`**: non-zero if `run` fails before the job runs (jobfile,
-  build, image upload or server-side `docker load`, scheduling rejected, connection). Once the
-  job runs, exit 0 does NOT mean the tasks went well, only "the job completed (or `--once`
-  printed its status): check each task's status". Never derive it from task outcomes. Exit 1
-  also when the status could not be shown: interrupted, or stream ended before the job
-  completed (server shutdown).
-- **`watch --json` is a script contract**: one JSON line per status change on stdout (`--once`
-  for a single snapshot), defined in `client/watch_json.go`. Only add fields or statuses there.
-  `state` is only ever `running` or `completed` (cancelled jobs complete, tasks `aborted`).
-  The first and completed lines list every task (`tasks`), the ones between only what changed
-  (`changed`): full lines on a 2000-task job are ~220 KB each. `--once` prints a first line,
-  so it always carries `tasks`. Exit 0 means the job completed (or `--once` printed); a server
-  shutdown also ends the stream cleanly, so that exits 1.
-  `watch` itself needs no TTY; only `top` (tcell) opens `/dev/tty`.
-- **`watch` text output depends on stderr being a terminal**: on one, it redraws the display in
-  place every second (`runWatchLoop`); off one (agents, CI, pipes) it writes one plain line per
-  status change, no escapes or emoji, statuses named as in the JSON (`runWatchPlain`). Both end
-  with a summary. `-v` only untruncates task lists: never in the live display, whose frame must
-  fit the terminal to be redrawn by moving the cursor up. `--once` prints one summary to stdout
-  (plain if stdout is not a terminal). Like `--json`, text `watch` exits 0 only once it showed
-  the job completed (or `--once` printed): an interruption or a stream that ends first exits 1.
-  Spinners (`client/ui`) only spin on a terminal stderr; off one they print their final line.
+- **`run` follows its job through `watchJob`**: both commands register the watch flags with
+  `addWatchFlags` and read them with `watchOptionsFromFlags`. Add a watch flag there, not to
+  `watchCmd` alone.
+- **stdout carries only a command's output** (JSON lines, file paths, `-n` YAML): spinners,
+  headers, messages and `docker build` output go to stderr.
+- **`watch --json` is a script contract** (`client/watch_json.go`): only ever add fields or
+  statuses. Exit codes are part of it: 0 once the job's completion was seen, whatever the tasks'
+  outcome; never derive them from task statuses.
 - **Local provisioner != OpenStack provisioner**: The local provisioner doesn't create N nodes
   running Y tasks each. Instead it creates N*Y Docker containers each running 1 task. Every
   task gets its own Docker network, workspace, and service containers — even though they all
   share the same Docker daemon. This means `max-nodes * slots-per-node` networks are created
   concurrently.
-- **Docker creates ignore task cancellation**: `RunContainer` creates networks and containers
-  with `creationContext` (not cancelled with the task, bounded by a timeout). A create request
-  cancelled in flight is still carried out by the daemon, but returns no ID, so its removal was
-  never registered: a task aborted while starting leaked its network.
 - **Docker network limit**: Docker can only create ~31 default bridge networks (due to
   available /16 address pools). With the local provisioner and an ambitious config (e.g.,
   `--max-nodes=8 --slots-per-node=4`), you'll hit "could not find an available, non-overlapping
