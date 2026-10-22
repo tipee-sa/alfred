@@ -122,6 +122,16 @@ func TestFindNewContent_EmptyPrevious(t *testing.T) {
 	assert.Equal(t, []byte("new"), findNewContent([]byte{}, []byte("new")))
 }
 
+// A previous snapshot holding no line, just "\n", yields no fingerprint: comparing it
+// with content that doesn't start with it must not panic (it took the server down).
+func TestNewContentOffset_NewlineOnlyPrevious(t *testing.T) {
+	curr := "==> /alfred/output/task-step-1.log <==\nhello\n"
+	offset, err := newContentOffset([]byte("\n"), strings.NewReader(curr))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), offset)
+	assert.Equal(t, []byte(curr), findNewContent([]byte("\n"), []byte(curr)))
+}
+
 func TestFindNewContent_Identical(t *testing.T) {
 	data := []byte("line1\nline2\n")
 	assert.Nil(t, findNewContent(data, data))

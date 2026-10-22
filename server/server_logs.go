@@ -264,7 +264,8 @@ func newContentOffset(previous []byte, r io.Reader) (int64, error) {
 					ends[i] = windowStart + int64(from+idx+len(fp))
 				}
 			}
-			if !isPrefix && ends[0] >= 0 {
+			// No fingerprint at all when previous holds no line (just "\n").
+			if !isPrefix && len(ends) > 0 && ends[0] >= 0 {
 				return ends[0], nil
 			}
 			if drop := len(window) - keep; drop > 0 {
