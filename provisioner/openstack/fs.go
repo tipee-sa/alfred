@@ -128,9 +128,11 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 
 // streamLogs runs a TailLogs command whose output is whole logs, too big to
 // buffer like a tail: it streams it the way Archive does (io.Pipe with
-// session.Stdout, not StdoutPipe). It waits for the first byte, so that a
-// failure before any output (no log files yet) is returned here, as it is
-// for a tail.
+// session.Stdout, not StdoutPipe). It returns once the command has started,
+// without waiting for its first byte: a stalled SSH stream would hold that
+// wait beyond the reach of the RPC's cancellation. A failure before any output
+// (no log files yet) comes with the first read instead, which the server
+// makes, cancellably, while it copies the logs aside.
 //
 // Closing the reader also closes the session: once the pipe is closed, the
 // SSH channel is no longer drained, so a remote tail with more to send would
@@ -161,12 +163,7 @@ func (f *fs) streamLogs(command string) (io.ReadCloser, error) {
 		session.Close()
 	}()
 
-	rc := &sessionPipeReader{Reader: bufio.NewReader(pr), pipe: pr, session: session}
-	if _, err := rc.Reader.Peek(1); err != nil && err != io.EOF {
-		rc.Close()
-		return nil, err
-	}
-	return rc, nil
+	return &sessionPipeReader{Reader: bufio.NewReader(pr), pipe: pr, session: session}, nil
 }
 
 // sessionPipeReader reads a session's stdout through a pipe, and closes both

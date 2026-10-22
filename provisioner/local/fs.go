@@ -91,8 +91,9 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 
 	// Wait for the first byte, so that a failure before any output (the log
 	// files gone since they were listed: the workspace torn down) is returned
-	// here, as it was when the output was buffered, and as OpenStack does.
-	// Follow mode then falls back to the finalized artifact.
+	// here, as it was when the output was buffered. Follow mode then falls back
+	// to the finalized artifact. (OpenStack does not wait: over SSH the wait
+	// could stall out of reach of the RPC's cancellation.)
 	r := &cmdReader{stdout: stdout, cmd: cmd, stderr: &stderr}
 	br := bufio.NewReader(r)
 	if _, err := br.Peek(1); err != nil && err != io.EOF {

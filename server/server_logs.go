@@ -457,7 +457,9 @@ func writeArtifactLogs(ctx context.Context, w io.Writer, artifactPath string, lo
 		for l, ok := setAside[next]; ok; l, ok = setAside[next] {
 			delete(setAside, next)
 			// Read back under ctx too: a whole log set aside makes no archive read.
-			if err := writeArtifactLog(w, next > 0, logs[next].name, &contextReader{ctx: ctx, r: l.reader()}, tailLines); err != nil {
+			// Written as set aside, with allLines: a tail is tailed already, and
+			// tailing it again could drop the notice readTail starts it with.
+			if err := writeArtifactLog(w, next > 0, logs[next].name, &contextReader{ctx: ctx, r: l.reader()}, allLines); err != nil {
 				return err
 			}
 			next++

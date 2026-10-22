@@ -643,6 +643,20 @@ func TestReadTail_BoundedForVeryLongLines(t *testing.T) {
 	assert.Equal(t, "short-1\nshort-2\n", string(tail))
 }
 
+// A tail set aside (its log archived before its turn) keeps the notice of a
+// cut first line, as one written in turn does.
+func TestExtractLogsFromArtifact_SetAsideTailKeepsItsCutNotice(t *testing.T) {
+	long := strings.Repeat("x", tailMaxBytes+(4<<20)) // one line, no newline
+	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), [][2]string{
+		{"job-task/output/task-step-1.log", long}, // archived first, set aside
+		{"job-task/output/task-step-0.log", long},
+	})
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 1)
+	require.NoError(t, err)
+	out := readAllAndClose(t, r)
+	assert.Equal(t, 2, strings.Count(out, tailCutNotice), "both logs say they were cut")
+}
+
 // repeatByte reads b forever.
 type repeatByte byte
 
