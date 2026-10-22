@@ -401,7 +401,8 @@ func writeArtifactLogs(ctx context.Context, w io.Writer, artifactPath string, lo
 	writeSetAside := func() error {
 		for l, ok := setAside[next]; ok; l, ok = setAside[next] {
 			delete(setAside, next)
-			if err := writeArtifactLog(w, next > 0, logs[next].name, l.reader(), tailLines); err != nil {
+			// Read back under ctx too: a whole log set aside makes no archive read.
+			if err := writeArtifactLog(w, next > 0, logs[next].name, &contextReader{ctx: ctx, r: l.reader()}, tailLines); err != nil {
 				return err
 			}
 			next++
@@ -668,7 +669,9 @@ func walkArtifactLogs(ctx context.Context, artifactPath string, fn func(header *
 	}
 	defer zr.Close()
 
-	tr := tar.NewReader(zr)
+	// Checked above and below the decoder: it may serve reads from what it has
+	// already decompressed, without reading the archive.
+	tr := tar.NewReader(&contextReader{ctx: ctx, r: zr})
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
