@@ -15,6 +15,8 @@ import (
 	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // recvResult holds the result of a gRPC Recv() call.
@@ -24,10 +26,33 @@ type recvResult struct {
 }
 
 func init() {
-	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
-	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
-	watchCmd.Flags().Bool("json", false, "write one JSON line to stdout per status change, for scripts")
-	watchCmd.Flags().Bool("once", false, "print the current status once to stdout and exit, even if the job is still running (with -v, untruncated)")
+	addWatchFlags(watchCmd)
+}
+
+// addWatchFlags registers the flags of watch, which run shares: run follows its job as watch does.
+func addWatchFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
+	cmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
+	cmd.Flags().Bool("json", false, "write one JSON line to stdout per status change, for scripts")
+	cmd.Flags().Bool("once", false, "print the current status once to stdout and exit, even if the job is still running (with -v, untruncated)")
+}
+
+// watchOptions holds the flags registered by addWatchFlags.
+type watchOptions struct {
+	abortOnFailure, abortOnError, json, once bool
+	// tasks, when set, says that run has just scheduled the job, with that many tasks: its
+	// status is shown only once it lists them all (see recvJobStatus), and a NotFound before
+	// its first status is retried (see jobStatusRecv).
+	tasks int
+}
+
+func watchOptionsFromFlags(cmd *cobra.Command) watchOptions {
+	return watchOptions{
+		abortOnFailure: lo.Must(cmd.Flags().GetBool("abort-on-failure")),
+		abortOnError:   lo.Must(cmd.Flags().GetBool("abort-on-error")),
+		json:           lo.Must(cmd.Flags().GetBool("json")),
+		once:           lo.Must(cmd.Flags().GetBool("once")),
+	}
 }
 
 var watchCmd = &cobra.Command{
@@ -36,91 +61,155 @@ var watchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		abortOnFailure := lo.Must(cmd.Flags().GetBool("abort-on-failure"))
-		abortOnError := lo.Must(cmd.Flags().GetBool("abort-on-error"))
-		// `run` reuses this RunE with its own flags, which lack these two: missing means false.
-		jsonOutput, _ := cmd.Flags().GetBool("json")
-		once, _ := cmd.Flags().GetBool("once")
+		return watchJob(cmd, args[0], watchOptionsFromFlags(cmd))
+	},
+}
 
-		c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: args[0]})
-		if err != nil {
-			return err
+// watchJob follows the job until it completes, or with once prints its current status, as
+// text or (opts.json) as JSON lines. It returns nil only if it showed the job's final status
+// (or, with once, its current one), so that exit code 0 always leaves a status to check.
+func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
+	abortOnFailure, abortOnError := opts.abortOnFailure, opts.abortOnError
+	jsonOutput, once := opts.json, opts.once
+
+	c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: jobName})
+	if err != nil {
+		return err
+	}
+
+	abortIfNeeded := func(msg *proto.JobStatus) {
+		if !abortOnFailure && !abortOnError {
+			return
 		}
-
-		abortIfNeeded := func(msg *proto.JobStatus) {
-			if !abortOnFailure && !abortOnError {
-				return
+		for _, t := range msg.Tasks {
+			if t.Status == proto.TaskStatus_TIMED_OUT && abortOnError {
+				if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: jobName}); err != nil {
+					fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), jobName, err)
+				} else {
+					abortOnFailure, abortOnError = false, false
+				}
+				break
 			}
-			for _, t := range msg.Tasks {
-				if t.Status == proto.TaskStatus_TIMED_OUT && abortOnError {
-					if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
-						fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
+			if t.Status == proto.TaskStatus_FAILED {
+				shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
+				if shouldAbort {
+					if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: jobName}); err != nil {
+						fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), jobName, err)
 					} else {
 						abortOnFailure, abortOnError = false, false
 					}
 					break
 				}
-				if t.Status == proto.TaskStatus_FAILED {
-					shouldAbort := (abortOnFailure && *t.ExitCode == 42) || (abortOnError && *t.ExitCode != 42)
-					if shouldAbort {
-						if _, err := client.CancelJob(cmd.Context(), &proto.CancelJobRequest{Name: args[0]}); err != nil {
-							fmt.Fprintf(os.Stderr, "%s Failed to cancel job '%s': %v\n", color.HiRedString("✗"), args[0], err)
-						} else {
-							abortOnFailure, abortOnError = false, false
-						}
-						break
-					}
-				}
 			}
 		}
+	}
 
-		// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
-		// Without this, we couldn't multiplex between incoming messages and the ticker.
-		// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
-		// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
-		msgCh := make(chan recvResult, 1)
-		go func() {
-			for {
-				msg, err := c.Recv() // blocks until server sends or stream ends
-				msgCh <- recvResult{msg, err}
-				if err != nil {
-					return // EOF or error: stop reading
-				}
+	// Recv goroutine: decouples blocking gRPC Recv() from the main select loop.
+	// Without this, we couldn't multiplex between incoming messages and the ticker.
+	// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
+	// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
+	msgCh := make(chan recvResult, 1)
+	reopen := func() (func() (*proto.JobStatus, error), error) {
+		c, err := client.WatchJob(cmd.Context(), &proto.WatchJobRequest{Name: jobName})
+		if err != nil {
+			return nil, err
+		}
+		return c.Recv, nil
+	}
+	recv := jobStatusRecv(cmd.Context(), c.Recv, reopen, opts.tasks > 0)
+	go recvJobStatus(recv, msgCh, opts.tasks)
+
+	// JSON mode: no spinner, colors or cursor control, so it works headless and piped.
+	if jsonOutput {
+		return runWatchJSON(cmd.Context(), msgCh, jobName, cmd.OutOrStdout(), once, abortIfNeeded)
+	}
+
+	// --once: the current status is the command's output, so it goes to stdout.
+	if once {
+		out := cmd.OutOrStdout()
+		return printWatchOnce(cmd.Context(), msgCh, newWatchRenderer(jobName, verbose, out), out, !isTerminal(out))
+	}
+
+	// Off a terminal (an agent's shell, CI, a pipe), redrawing in place would write a copy
+	// of the display every second: write one plain line per status change instead.
+	if !isTerminal(os.Stderr) {
+		return runWatchPlain(cmd.Context(), msgCh, newWatchRenderer(jobName, verbose, os.Stderr), os.Stderr, abortIfNeeded)
+	}
+
+	spinner := ui.NewSpinner("Waiting for job data")
+	renderer := newWatchRenderer(jobName, verbose, os.Stderr)
+
+	return runWatchLoop(
+		cmd.Context(),
+		msgCh,
+		renderer,
+		jobName,
+		os.Stderr,
+		func() { spinner.FinalMSG = ""; spinner.Stop() },
+		func() { spinner.FinalMSG = ""; spinner.Stop() },
+		func() { spinner.Fail() },
+		abortIfNeeded,
+	)
+}
+
+// A job that run has just scheduled can be missing from the server's status for a moment:
+// ScheduleJob returns once the scheduler has the job, and the server publishes it from the
+// scheduler's events, so a WatchJob right after can end with NotFound.
+const (
+	notFoundRetries    = 50
+	notFoundRetryDelay = 100 * time.Millisecond
+)
+
+// jobStatusRecv returns a recv function reading a job's statuses from the stream that recv
+// reads. With retryNotFound, a NotFound before the first status reopens the stream (with
+// reopen), up to notFoundRetries times; without it, or after a status, errors are returned.
+func jobStatusRecv(
+	ctx context.Context,
+	recv func() (*proto.JobStatus, error),
+	reopen func() (func() (*proto.JobStatus, error), error),
+	retryNotFound bool,
+) func() (*proto.JobStatus, error) {
+	retries := 0
+	return func() (*proto.JobStatus, error) {
+		for {
+			msg, err := recv()
+			if err == nil {
+				retryNotFound = false // the job exists: a later NotFound is a real one
+				return msg, nil
 			}
-		}()
-
-		// JSON mode: no spinner, colors or cursor control, so it works headless and piped.
-		if jsonOutput {
-			return runWatchJSON(cmd.Context(), msgCh, args[0], cmd.OutOrStdout(), once, abortIfNeeded)
+			if !retryNotFound || status.Code(err) != codes.NotFound || retries >= notFoundRetries {
+				return nil, err
+			}
+			retries++
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(notFoundRetryDelay):
+			}
+			if recv, err = reopen(); err != nil {
+				return nil, err
+			}
 		}
+	}
+}
 
-		// --once: the current status is the command's output, so it goes to stdout.
-		if once {
-			out := cmd.OutOrStdout()
-			return printWatchOnce(cmd.Context(), msgCh, newWatchRenderer(args[0], verbose, out), out, !isTerminal(out))
+// recvJobStatus sends every status that recv returns to msgCh, until recv fails (io.EOF when
+// the stream ends). With minTasks set, it skips the statuses that list fewer tasks, until the
+// job completes. The server adds a new job's tasks one event at a time, so right after
+// ScheduleJob it can send the job with only some of them: a one-shot output (run --once, the
+// first line of run --json) would then miss tasks without any error.
+func recvJobStatus(recv func() (*proto.JobStatus, error), msgCh chan<- recvResult, minTasks int) {
+	for {
+		msg, err := recv() // blocks until server sends or stream ends
+		if err == nil && len(msg.Tasks) < minTasks && msg.CompletedAt == nil {
+			continue
 		}
-
-		// Off a terminal (an agent's shell, CI, a pipe), redrawing in place would write a copy
-		// of the display every second: write one plain line per status change instead.
-		if !isTerminal(os.Stderr) {
-			return runWatchPlain(cmd.Context(), msgCh, newWatchRenderer(args[0], verbose, os.Stderr), os.Stderr, abortIfNeeded)
+		minTasks = 0 // tasks are never removed from a job: no need to check again
+		msgCh <- recvResult{msg, err}
+		if err != nil {
+			return // EOF or error: stop reading
 		}
-
-		spinner := ui.NewSpinner("Waiting for job data")
-		renderer := newWatchRenderer(args[0], verbose, os.Stderr)
-
-		return runWatchLoop(
-			cmd.Context(),
-			msgCh,
-			renderer,
-			args[0],
-			os.Stderr,
-			func() { spinner.FinalMSG = ""; spinner.Stop() },
-			func() { spinner.FinalMSG = ""; spinner.Stop() },
-			func() { spinner.Fail() },
-			abortIfNeeded,
-		)
-	},
+	}
 }
 
 // runWatchLoop runs the watch event loop on a terminal, processing messages from msgCh,

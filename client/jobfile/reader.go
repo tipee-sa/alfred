@@ -226,10 +226,20 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	cmd := exec.Command("docker", args...)
 
 	cmd.Dir = dir
-	cmd.Stdout = lo.Ternary(readOptions.Verbose, os.Stdout, nil)
-	cmd.Stderr = lo.Ternary(readOptions.Verbose, os.Stderr, nil)
+	// The build's output is progress, never the command's output: with -v it goes to stderr,
+	// so that stdout stays pure (run --json, run --dry-run). Without -v, the end of it is kept
+	// for the error, which otherwise says only "exit status 1".
+	var output tailBuffer
+	if readOptions.Verbose {
+		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	} else {
+		cmd.Stdout, cmd.Stderr = &output, &output
+	}
 
 	if err := cmd.Run(); err != nil {
+		if tail := output.String(); tail != "" {
+			return "", fmt.Errorf("failed to build image: %w\n%s", err, tail)
+		}
 		return "", fmt.Errorf("failed to build image: %w", err)
 	}
 
@@ -245,6 +255,44 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	}
 
 	return tag, nil
+}
+
+// tailBuffer keeps the end of what is written to it: at most tailBufferBytes, of which String
+// returns the last tailBufferLines lines. The byte limit is what bounds memory: a build can write
+// megabytes without a newline, and a line count alone would keep (and re-copy) all of it.
+type tailBuffer struct {
+	buf       []byte
+	truncated bool
+}
+
+const (
+	tailBufferLines = 20
+	tailBufferBytes = 16 << 10
+)
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) > tailBufferBytes {
+		p = p[len(p)-tailBufferBytes:]
+		b.truncated = true
+	}
+	if over := len(b.buf) + len(p) - tailBufferBytes; over > 0 {
+		b.buf = append(b.buf[:0], b.buf[over:]...)
+		b.truncated = true
+	}
+	b.buf = append(b.buf, p...)
+	return n, nil
+}
+
+func (b *tailBuffer) String() string {
+	lines := strings.Split(strings.TrimRight(string(b.buf), "\n"), "\n")
+	if len(lines) > tailBufferLines {
+		lines = lines[len(lines)-tailBufferLines:]
+	} else if b.truncated {
+		// The first line lost its beginning to the byte limit.
+		lines[0] = "[...]" + lines[0]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // imageTag returns the tag under which the image with the given ID is sent to the server.

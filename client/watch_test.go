@@ -12,6 +12,8 @@ import (
 	"github.com/gammadia/alfred/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -269,4 +271,77 @@ func TestWatchLoop_FramesOverwriteInPlaceInOneWrite(t *testing.T) {
 	}
 	assert.Contains(t, frames[1], "\033[2A", "the second frame starts over the first one's three lines")
 	assert.Contains(t, frames[1], "\033[K\033[J", "lines left by the taller first frame get cleared")
+}
+
+func TestRecvJobStatus_SkipsSnapshotsMissingTasks(t *testing.T) {
+	now := time.Now()
+	completed := jobWithTasks(now, proto.TaskStatus_COMPLETED)
+	completed.CompletedAt = timestamppb.New(now)
+	statuses := []*proto.JobStatus{
+		jobWithTasks(now),                          // job, no task yet
+		jobWithTasks(now, proto.TaskStatus_QUEUED), // partial
+		jobWithTasks(now, proto.TaskStatus_QUEUED, proto.TaskStatus_QUEUED, proto.TaskStatus_QUEUED), // complete
+		jobWithTasks(now, proto.TaskStatus_RUNNING, proto.TaskStatus_QUEUED, proto.TaskStatus_QUEUED),
+	}
+	recv := func() (*proto.JobStatus, error) {
+		if len(statuses) == 0 {
+			return nil, io.EOF
+		}
+		msg := statuses[0]
+		statuses = statuses[1:]
+		return msg, nil
+	}
+
+	msgCh := make(chan recvResult, 10)
+	recvJobStatus(recv, msgCh, 3)
+	close(msgCh)
+
+	var got []recvResult
+	for r := range msgCh {
+		got = append(got, r)
+	}
+	require.Len(t, got, 3)
+	assert.Len(t, got[0].msg.Tasks, 3)
+	assert.Equal(t, proto.TaskStatus_RUNNING, got[1].msg.Tasks[0].Status)
+	assert.ErrorIs(t, got[2].err, io.EOF)
+
+	// A job that completes before listing every task (cancelled) is still shown.
+	statuses = []*proto.JobStatus{completed}
+	msgCh = make(chan recvResult, 10)
+	recvJobStatus(recv, msgCh, 3)
+	assert.Equal(t, completed, (<-msgCh).msg)
+}
+
+func TestJobStatusRecv_RetriesNotFoundOfAJustScheduledJob(t *testing.T) {
+	notFound := status.Error(codes.NotFound, "job 'x' not found")
+	job := jobWithTasks(time.Now(), proto.TaskStatus_QUEUED)
+	failing := func() (*proto.JobStatus, error) { return nil, notFound }
+
+	// The job is published after two lookups: run gets its status.
+	opens := 0
+	reopen := func() (func() (*proto.JobStatus, error), error) {
+		opens++
+		if opens < 2 {
+			return failing, nil
+		}
+		return func() (*proto.JobStatus, error) { return job, nil }, nil
+	}
+	msg, err := jobStatusRecv(context.Background(), failing, reopen, true)()
+	require.NoError(t, err)
+	assert.Equal(t, job, msg)
+	assert.Equal(t, 2, opens)
+
+	// watch on a job that does not exist fails at once.
+	reopen = func() (func() (*proto.JobStatus, error), error) {
+		t.Fatal("watch must not retry")
+		return nil, nil
+	}
+	_, err = jobStatusRecv(context.Background(), failing, reopen, false)()
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	// An interrupted run stops waiting.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = jobStatusRecv(ctx, failing, reopen, true)()
+	assert.ErrorIs(t, err, context.Canceled)
 }
