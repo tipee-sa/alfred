@@ -18,14 +18,25 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// StreamTaskLogs sends a task's step logs: their last TailLines lines, or
+// whole (`logs -n all`), from the artifact of a finished task or live.
+//
+// Whole logs take the same buffered paths as a tail, each step log bounded to
+// its last maxLogSize bytes, on purpose. Streaming them unbounded was tried
+// (#31) and dropped: it took spooling to disk, reordering out-of-order archive
+// entries, and checking cancellation at every read, each fix opening the next
+// edge case, for logs this tool's jobs rarely make larger than a few MB. A log
+// larger than that is whole in the artifact (`alfred artifact`). Follow mode
+// refuses whole logs: it finds new output by comparing successive reads, which
+// only holds over a bounded window.
 func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfred_StreamTaskLogsServer) error {
 	if err := validateJobTask(req.Job, req.Task); err != nil {
 		return err
 	}
 
-	tailLines := int(req.TailLines)
-	if tailLines <= 0 {
-		tailLines = 100
+	tailLines := requestedTailLines(req)
+	if req.Follow && tailLines == allLines {
+		return status.Errorf(codes.InvalidArgument, "whole logs (-n all) cannot be followed: use -n all without -f, or -f with -n N")
 	}
 
 	// Try finalized artifact first (completed task)
@@ -267,9 +278,37 @@ func streamReader(srv proto.Alfred_StreamTaskLogsServer, reader io.Reader, job, 
 	}
 }
 
+// defaultTailLines is the number of lines sent when a request does not set
+// TailLines: proto3 does not tell 0 from unset, so 0 cannot mean anything else.
+const defaultTailLines = 100
+
+// allLines asks for whole logs wherever a number of lines is expected
+// (lastNLines, extractLogsFromArtifact, ReadLiveTaskLogs): any value <= 0.
+const allLines = -1
+
+// maxLogSize bounds each step log read from an artifact: its last maxLogSize
+// bytes, where its last lines are. Logs are read into memory. It is the bound
+// of a running task's whole logs too (provisioner/internal.MaxLogBytes).
+const maxLogSize = 10 << 20
+
+// requestedTailLines is what req asks of each step log: its last TailLines
+// lines, allLines for a negative TailLines (`logs -n all`), or the default for
+// 0 (unset). A server older than allLines read a negative value as 0.
+func requestedTailLines(req *proto.StreamTaskLogsRequest) int {
+	switch {
+	case req.TailLines > 0:
+		return int(req.TailLines)
+	case req.TailLines < 0:
+		return allLines
+	default:
+		return defaultTailLines
+	}
+}
+
 // extractLogsFromArtifact reads .log files from a tar.zst artifact archive,
-// applies tail -n to each file, and returns a reader with the combined output
-// (matching the format of `tail -v -n <lines> file1.log file2.log ...`).
+// applies tail -n to each file (none for allLines), and returns a reader with
+// the combined output (matching the format of `tail -v -n <lines> file1.log
+// file2.log ...`). Each file is bounded to its last maxLogSize bytes.
 func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser, error) {
 	f, err := os.Open(artifactPath)
 	if err != nil {
@@ -312,13 +351,17 @@ func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser,
 			continue
 		}
 
-		// Read the log content; cap at 10MB per file as a safety limit
-		const maxLogSize = 10 * 1024 * 1024
+		// Keep its last maxLogSize bytes: its tail is there. (It used to keep the
+		// first ones, so the "last lines" of a larger log came from its middle.)
 		if header.Size > maxLogSize {
-			log.Warn("Log file exceeds 10MB, truncating", "file", header.Name, "size", header.Size, "artifact", artifactPath)
+			log.Debug("Log file exceeds the limit, keeping its end", "file", header.Name, "size", header.Size, "limit", maxLogSize, "artifact", artifactPath)
+			if _, err := io.CopyN(io.Discard, tr, header.Size-maxLogSize); err != nil {
+				zr.Close()
+				f.Close()
+				return nil, fmt.Errorf("failed to read log entry %q from %q: %w", header.Name, artifactPath, err)
+			}
 		}
-		limitedReader := io.LimitReader(tr, maxLogSize)
-		content, err := io.ReadAll(limitedReader)
+		content, err := io.ReadAll(tr)
 		if err != nil {
 			zr.Close()
 			f.Close()

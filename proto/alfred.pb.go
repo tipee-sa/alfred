@@ -590,10 +590,16 @@ type StreamTaskLogsRequest struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Job       string `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
-	Task      string `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
-	TailLines int32  `protobuf:"varint,3,opt,name=tail_lines,json=tailLines,proto3" json:"tail_lines,omitempty"`
-	Follow    bool   `protobuf:"varint,4,opt,name=follow,proto3" json:"follow,omitempty"`
+	Job  string `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	Task string `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
+	// What to send of each step log: its last tail_lines lines; 0 (unset:
+	// proto3 cannot tell the two apart) for the default, 100 lines; a negative
+	// value for whole logs (`logs -n all`), each bounded to its last 10 MB. A
+	// server older than whole logs reads a negative value as 0.
+	TailLines int32 `protobuf:"varint,3,opt,name=tail_lines,json=tailLines,proto3" json:"tail_lines,omitempty"`
+	// Keep sending new output until the task ends. Takes a number of lines:
+	// whole logs cannot be followed (InvalidArgument).
+	Follow bool `protobuf:"varint,4,opt,name=follow,proto3" json:"follow,omitempty"`
 }
 
 func (x *StreamTaskLogsRequest) Reset() {

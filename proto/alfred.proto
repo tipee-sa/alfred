@@ -76,7 +76,13 @@ message DownloadArtifactChunk {
 message StreamTaskLogsRequest {
     string job = 1;
     string task = 2;
+    // What to send of each step log: its last tail_lines lines; 0 (unset:
+    // proto3 cannot tell the two apart) for the default, 100 lines; a negative
+    // value for whole logs (`logs -n all`), each bounded to its last 10 MB. A
+    // server older than whole logs reads a negative value as 0.
     int32 tail_lines = 3;
+    // Keep sending new output until the task ends. Takes a number of lines:
+    // whole logs cannot be followed (InvalidArgument).
     bool follow = 4;
 }
 
