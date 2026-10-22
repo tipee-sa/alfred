@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/template"
@@ -29,6 +30,12 @@ type ReadOptions struct {
 	Params map[string]string
 }
 
+// jobfileDir returns the absolute directory of the jobfile, which its relative paths
+// (dockerfile, context) are resolved against, whether file is relative or absolute.
+func jobfileDir(file string) string {
+	return filepath.Dir(lo.Must(filepath.Abs(file)))
+}
+
 type UnmarshalError struct {
 	error
 	Source string
@@ -36,7 +43,7 @@ type UnmarshalError struct {
 
 func Read(file string, options ReadOptions) (job *proto.Job, renderedSource string, err error) {
 	job = &proto.Job{}
-	workDir := path.Join(lo.Must(os.Getwd()), path.Dir(file))
+	workDir := jobfileDir(file)
 
 	var buf []byte
 	if buf, err = os.ReadFile(file); err != nil {
