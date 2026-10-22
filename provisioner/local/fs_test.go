@@ -89,6 +89,24 @@ func TestTailLogsReportsTailFailure(t *testing.T) {
 	assert.Contains(t, string(data), "fine", "what tail could read is still returned")
 }
 
+func TestTailLogsReturnsFailureBeforeOutput(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads unreadable files")
+	}
+	root := t.TempDir()
+	f := newFs(root)
+
+	// Like a log removed between listing and tail opening it: tail fails
+	// before writing anything, which TailLogs itself must report.
+	logDir := "job-gone/output"
+	require.NoError(t, os.MkdirAll(path.Join(root, logDir), 0755))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-0.log"), []byte("secret\n"), 0000))
+
+	rc, err := f.TailLogs(logDir, 0)
+	assert.ErrorContains(t, err, "failed to tail log files")
+	assert.Nil(t, rc)
+}
+
 func TestTailLogsCloseBeforeEnd(t *testing.T) {
 	root := t.TempDir()
 	f := newFs(root)

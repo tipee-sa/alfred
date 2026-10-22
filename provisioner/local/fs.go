@@ -1,6 +1,7 @@
 package local
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -87,7 +88,20 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("failed to tail log files: %w", err)
 	}
 
-	return &cmdReader{stdout: stdout, cmd: cmd, stderr: &stderr}, nil
+	// Wait for the first byte, so that a failure before any output (the log
+	// files gone since they were listed: the workspace torn down) is returned
+	// here, as it was when the output was buffered, and as OpenStack does.
+	// Follow mode then falls back to the finalized artifact.
+	r := &cmdReader{stdout: stdout, cmd: cmd, stderr: &stderr}
+	br := bufio.NewReader(r)
+	if _, err := br.Peek(1); err != nil && err != io.EOF {
+		r.Close()
+		return nil, err
+	}
+	return struct {
+		io.Reader
+		io.Closer
+	}{br, r}, nil
 }
 
 // cmdReader reads a command's stdout. At EOF it waits for the command and
