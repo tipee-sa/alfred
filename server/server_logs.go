@@ -168,11 +168,13 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
 				if _, statErr := os.Stat(artifact); statErr == nil {
 					if r, extractErr := extractLogsFromArtifact(artifact, 1000000); extractErr == nil {
-						finalContent, _ := io.ReadAll(r)
+						// Only the end: artifact logs are no longer capped at 10 MB per file.
+						finalContent, readErr := readLastBytes(r, followFinalMaxBytes)
 						r.Close()
-						// In chunks: artifact logs are no longer capped at 10 MB per file,
-						// so the delta may exceed what the client accepts in one message.
-						_ = sendLogData(srv, findNewContent(lastContent, finalContent))
+						if readErr == nil {
+							// In chunks: the delta may exceed what the client accepts in one message.
+							_ = sendLogData(srv, findNewContent(lastContent, finalContent))
+						}
 					}
 				}
 				return nil
@@ -362,16 +364,18 @@ func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser,
 
 // writeArtifactLogs writes logs, in order, from the archive to w, in one pass
 // over it. A log archived before its turn is set aside until the logs before it
-// are written: its tail in memory, or all of it in a temporary file.
+// are written: its tail in memory, or all of it in a temporary file shared by
+// every log set aside, so that one request holds one file open, however many.
 func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tailLines int) error {
 	turns := make(map[string][]int, len(logs)) // archive path → its indexes in logs, in order
 	for i, l := range logs {
 		turns[l.path] = append(turns[l.path], i)
 	}
 	setAside := make(map[int]*setAsideLog)
+	var spool *os.File // created at the first whole log set aside
 	defer func() {
-		for _, l := range setAside {
-			l.discard()
+		if spool != nil {
+			spool.Close()
 		}
 	}()
 
@@ -379,9 +383,7 @@ func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tai
 	writeSetAside := func() error {
 		for l, ok := setAside[next]; ok; l, ok = setAside[next] {
 			delete(setAside, next)
-			err := writeArtifactLog(w, next > 0, logs[next].name, l.reader(), tailLines)
-			l.discard()
-			if err != nil {
+			if err := writeArtifactLog(w, next > 0, logs[next].name, l.reader(), tailLines); err != nil {
 				return err
 			}
 			next++
@@ -406,7 +408,14 @@ func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tai
 				return err
 			}
 		} else {
-			l, err := setAsideArtifactLog(r, tailLines)
+			if tailLines <= 0 && spool == nil {
+				f, err := createSpool()
+				if err != nil {
+					return fmt.Errorf("failed to set aside log %q: %w", logs[i].name, err)
+				}
+				spool = f
+			}
+			l, err := setAsideArtifactLog(r, tailLines, spool)
 			if err != nil {
 				return fmt.Errorf("failed to set aside log %q: %w", logs[i].name, err)
 			}
@@ -427,13 +436,15 @@ func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tai
 }
 
 // setAsideLog is a log read before its turn: its last lines, or, for whole
-// logs, all of it in a temporary file.
+// logs, its section of the request's temporary file.
 type setAsideLog struct {
-	tail []byte
-	file *os.File
+	tail    []byte
+	section *io.SectionReader
 }
 
-func setAsideArtifactLog(r io.Reader, tailLines int) (*setAsideLog, error) {
+// setAsideArtifactLog reads r: its last tailLines lines, or, for whole logs,
+// all of it, appended to spool.
+func setAsideArtifactLog(r io.Reader, tailLines int, spool *os.File) (*setAsideLog, error) {
 	if tailLines > 0 {
 		tail, err := readTail(r, tailLines)
 		if err != nil {
@@ -442,35 +453,36 @@ func setAsideArtifactLog(r io.Reader, tailLines int) (*setAsideLog, error) {
 		return &setAsideLog{tail: tail}, nil
 	}
 
-	f, err := os.CreateTemp("", "alfred-log-*")
+	// Reads go through ReadAt, which leaves the offset of writes at the end.
+	start, err := spool.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}
-	// Unlinked at once: the open file stays readable, and nothing is left behind
-	// however the server stops.
-	_ = os.Remove(f.Name())
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
+	n, err := io.Copy(spool, r)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return &setAsideLog{file: f}, nil
+	return &setAsideLog{section: io.NewSectionReader(spool, start, n)}, nil
 }
 
 func (l *setAsideLog) reader() io.Reader {
-	if l.file != nil {
-		return l.file
+	if l.section != nil {
+		return l.section
 	}
 	return bytes.NewReader(l.tail)
 }
 
-func (l *setAsideLog) discard() {
-	if l.file != nil {
-		l.file.Close()
+// createSpool creates the temporary file of whole logs set aside; tests count
+// the calls.
+var createSpool = func() (*os.File, error) {
+	f, err := os.CreateTemp("", "alfred-logs-*")
+	if err != nil {
+		return nil, err
 	}
+	// Unlinked at once: the open file stays usable, and nothing is left behind
+	// however the server stops.
+	_ = os.Remove(f.Name())
+	return f, nil
 }
 
 // writeArtifactLog writes one file like `tail -v` does: a header line, the
@@ -525,7 +537,36 @@ func readTail(r io.Reader, n int) ([]byte, error) {
 			limit = max(tailTrimThreshold, 2*len(buf))
 		}
 		if err == io.EOF {
-			return lastNLines(buf, n), nil
+			// A copy: the tail may be held a while (set aside), and buf can be
+			// much larger than it.
+			return bytes.Clone(lastNLines(buf, n)), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+}
+
+// followFinalMaxBytes bounds follow mode's final read from the artifact, of
+// which only the end matters: what was written after the last poll.
+const followFinalMaxBytes = 16 << 20
+
+// readLastBytes returns the last limit bytes of r, holding at most about twice
+// that rather than all of r.
+func readLastBytes(r io.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	chunk := make([]byte, 32*1024)
+	for {
+		k, err := r.Read(chunk)
+		buf = append(buf, chunk[:k]...)
+		if len(buf) > 2*limit {
+			buf = buf[:copy(buf, buf[len(buf)-limit:])]
+		}
+		if err == io.EOF {
+			if len(buf) > limit {
+				buf = buf[len(buf)-limit:]
+			}
+			return buf, nil
 		}
 		if err != nil {
 			return nil, err

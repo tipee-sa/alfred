@@ -456,17 +456,45 @@ func TestExtractLogsFromArtifact_ReverseOrderTakesTwoPasses(t *testing.T) {
 		opens++
 		return oldOpen(name)
 	}
+	oldCreateSpool := createSpool
+	t.Cleanup(func() { createSpool = oldCreateSpool })
+	spools := 0
+	createSpool = func() (*os.File, error) {
+		spools++
+		return oldCreateSpool()
+	}
 
 	for _, c := range []struct {
 		tailLines int
 		expected  string
-	}{{allLines, expectedAll}, {2, expectedTail}} {
-		opens = 0
+		spools    int // one file for every whole log set aside, none for tails
+	}{{allLines, expectedAll, 1}, {2, expectedTail, 0}} {
+		opens, spools = 0, 0
 		r, err := extractLogsFromArtifact(artifact, c.tailLines)
 		require.NoError(t, err)
 		assert.Equal(t, c.expected, readAllAndClose(t, r), "tailLines=%d", c.tailLines)
 		assert.Equal(t, 2, opens, "tailLines=%d", c.tailLines)
+		assert.Equal(t, c.spools, spools, "tailLines=%d", c.tailLines)
 	}
+}
+
+func TestReadLastBytes(t *testing.T) {
+	data := numberedLines("line", 100_000) // ~1.2 MB
+	for _, limit := range []int{1, 1000, 64 * 1024, len(data), 2 * len(data)} {
+		got, err := readLastBytes(iotest.HalfReader(strings.NewReader(data)), limit)
+		require.NoError(t, err)
+		assert.Equal(t, data[max(0, len(data)-limit):], string(got), "limit=%d", limit)
+	}
+}
+
+// A tail kept a while (set aside) must not hold on to the large buffer it was
+// cut from, here grown by a long first line.
+func TestReadTail_ReturnsItsOwnCopy(t *testing.T) {
+	data := strings.Repeat("x", 4<<20) + "\nshort-1\nshort-2\n"
+	tail, err := readTail(strings.NewReader(data), 2)
+	require.NoError(t, err)
+	assert.Equal(t, "short-1\nshort-2\n", string(tail))
+	assert.Less(t, cap(tail), 1024)
 }
 
 func TestExtractLogsFromArtifact_AllLinesInStepOrder(t *testing.T) {
