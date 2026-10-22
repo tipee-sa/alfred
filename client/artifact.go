@@ -91,8 +91,14 @@ func selectArtifactTasks(job *proto.JobStatus, requestedTasks []string) (downloa
 		case proto.TaskStatus_RUNNING:
 			partial = true
 			downloadable = append(downloadable, task.Name)
-		case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED, proto.TaskStatus_ABORTED, proto.TaskStatus_TIMED_OUT:
+		case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED, proto.TaskStatus_TIMED_OUT:
 			downloadable = append(downloadable, task.Name)
+		case proto.TaskStatus_ABORTED:
+			// Cancelled while still queued, it never ran and has no artifact:
+			// not a failed download.
+			if task.StartedAt != nil {
+				downloadable = append(downloadable, task.Name)
+			}
 		}
 	}
 
