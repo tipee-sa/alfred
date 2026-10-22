@@ -199,3 +199,38 @@ func TestWatchLoop_VerboseTruncatesFramesButNotTheSummary(t *testing.T) {
 	assert.Contains(t, summary, "task-30")
 	assert.NotContains(t, summary, "…")
 }
+
+// failingWriter fails every write, like stdout redirected to /dev/full.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errNoSpace }
+
+var errNoSpace = fmt.Errorf("no space left on device")
+
+func TestWatch_WriteErrorsAreReturned(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	completed := jobWithTasks(now, proto.TaskStatus_COMPLETED)
+	completed.CompletedAt = timestamppb.New(now)
+	stream := func(msgs ...*proto.JobStatus) <-chan recvResult {
+		msgCh := make(chan recvResult, len(msgs)+1)
+		for _, msg := range msgs {
+			msgCh <- recvResult{msg: msg}
+		}
+		msgCh <- recvResult{err: io.EOF}
+		return msgCh
+	}
+
+	for _, plain := range []bool{true, false} {
+		err := printWatchOnce(context.Background(), stream(completed), newTestRenderer(now), failingWriter{}, plain)
+		assert.ErrorIs(t, err, errNoSpace, "--once (plain: %v) must not report a snapshot it could not write", plain)
+	}
+
+	err := runWatchPlain(context.Background(), stream(jobWithTasks(now, proto.TaskStatus_RUNNING), completed), newTestRenderer(now), failingWriter{}, nil)
+	assert.ErrorIs(t, err, errNoSpace, "a change line")
+
+	err = runWatchPlain(context.Background(), stream(completed), newTestRenderer(now), failingWriter{}, nil)
+	assert.ErrorIs(t, err, errNoSpace, "the final summary of a completed job, off a terminal")
+
+	err = runWatchLoop(context.Background(), stream(completed), newTestRenderer(now), "test-job", failingWriter{}, nil, nil, nil, nil)
+	assert.ErrorIs(t, err, errNoSpace, "the final summary of a completed job, on a terminal")
+}

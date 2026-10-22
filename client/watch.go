@@ -267,7 +267,9 @@ func runWatchPlain(
 		current := taskStatusNames(result.msg)
 		// The completed state is left to the summary, which follows it.
 		if result.msg.CompletedAt == nil && (previous == nil || !maps.Equal(previous, current)) {
-			fmt.Fprintln(w, renderer.renderPlainLine(result.msg, previous))
+			if _, err := fmt.Fprintln(w, renderer.renderPlainLine(result.msg, previous)); err != nil {
+				return err
+			}
 		}
 		previous = current
 		if onMessage != nil {
@@ -287,12 +289,12 @@ func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watc
 		if result.err != nil {
 			return fmt.Errorf("failed to receive job status: %w", result.err)
 		}
+		summary := renderer.renderSummary
 		if plain {
-			fmt.Fprint(w, renderer.renderPlainSummary(result.msg))
-		} else {
-			fmt.Fprint(w, renderer.renderSummary(result.msg))
+			summary = renderer.renderPlainSummary
 		}
-		return nil
+		_, err := fmt.Fprint(w, summary(result.msg))
+		return err // the snapshot is the command's output: failing to write it is a failure
 	case <-ctx.Done():
 		return errWatchInterrupted(renderer.jobName)
 	}
@@ -300,10 +302,12 @@ func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watc
 
 // finishWatch writes the job's last known status once its stream has ended. The server ends
 // the stream right after sending the completed state, but also when it shuts down: only the
-// former leaves a final status to check, so the latter is an error.
+// former leaves a final status to check, so the latter is an error. So is failing to write it.
 func finishWatch(w io.Writer, lastMsg *proto.JobStatus, jobName string, summary func(*proto.JobStatus) string) error {
 	if lastMsg != nil {
-		fmt.Fprint(w, summary(lastMsg))
+		if _, err := fmt.Fprint(w, summary(lastMsg)); err != nil {
+			return err
+		}
 	}
 	if lastMsg == nil || lastMsg.CompletedAt == nil {
 		return errStreamEnded(jobName)
