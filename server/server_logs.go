@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -339,7 +340,7 @@ var errStopWalk = errors.New("stop walking the artifact")
 // them, setting aside those archived before their turn (see writeArtifactLogs).
 func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser, error) {
 	var logs []artifactLog
-	if err := walkArtifactLogs(artifactPath, func(header *tar.Header, _ io.Reader) error {
+	if err := walkArtifactLogs(context.Background(), artifactPath, func(header *tar.Header, _ io.Reader) error {
 		logs = append(logs, artifactLog{path: header.Name, name: path.Base(header.Name)})
 		return nil
 	}); err != nil {
@@ -354,19 +355,34 @@ func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser,
 		return logs[i].name < logs[j].name
 	})
 
+	// Closing the reader (the client gone, the RPC cancelled) cancels ctx, which
+	// stops the walk at its next read from the archive, even while it sets aside
+	// out-of-order logs and writes nothing to the pipe.
+	ctx, cancel := context.WithCancel(context.Background())
 	pr, pw := io.Pipe()
 	go func() {
-		// A reader closed early (client gone) fails the next write, ending this.
-		pw.CloseWithError(writeArtifactLogs(pw, artifactPath, logs, tailLines))
+		defer cancel()
+		pw.CloseWithError(writeArtifactLogs(ctx, pw, artifactPath, logs, tailLines))
 	}()
-	return pr, nil
+	return &cancelOnClose{PipeReader: pr, cancel: cancel}, nil
+}
+
+// cancelOnClose is a pipe reader whose Close also cancels the writing side.
+type cancelOnClose struct {
+	*io.PipeReader
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	c.cancel()
+	return c.PipeReader.Close()
 }
 
 // writeArtifactLogs writes logs, in order, from the archive to w, in one pass
 // over it. A log archived before its turn is set aside until the logs before it
 // are written: its tail in memory, or all of it in a temporary file shared by
 // every log set aside, so that one request holds one file open, however many.
-func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tailLines int) error {
+func writeArtifactLogs(ctx context.Context, w io.Writer, artifactPath string, logs []artifactLog, tailLines int) error {
 	turns := make(map[string][]int, len(logs)) // archive path → its indexes in logs, in order
 	for i, l := range logs {
 		turns[l.path] = append(turns[l.path], i)
@@ -391,7 +407,7 @@ func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tai
 		return nil
 	}
 
-	err := walkArtifactLogs(artifactPath, func(header *tar.Header, r io.Reader) error {
+	err := walkArtifactLogs(ctx, artifactPath, func(header *tar.Header, r io.Reader) error {
 		indexes := turns[header.Name]
 		if len(indexes) == 0 {
 			return nil
@@ -615,20 +631,36 @@ func (lw *lastByteWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// openArtifact opens an artifact archive; tests count the passes over it.
-var openArtifact = os.Open
+// openArtifact opens an artifact archive; tests watch the reads from it.
+var openArtifact = func(name string) (io.ReadCloser, error) {
+	return os.Open(name)
+}
+
+// contextReader fails its reads once ctx is done.
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c *contextReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
 
 // walkArtifactLogs calls fn for each regular .log file of a tar.zst archive, in
 // archive order, with a reader of its content. fn returning errStopWalk ends the
-// walk without error.
-func walkArtifactLogs(artifactPath string, fn func(header *tar.Header, r io.Reader) error) error {
+// walk without error. Once ctx is done, reading the archive fails, which ends
+// the walk and whatever fn is reading.
+func walkArtifactLogs(ctx context.Context, artifactPath string, fn func(header *tar.Header, r io.Reader) error) error {
 	f, err := openArtifact(artifactPath)
 	if err != nil {
 		return fmt.Errorf("failed to open artifact %q: %w", artifactPath, err)
 	}
 	defer f.Close()
 
-	zr, err := zstd.NewReader(f)
+	zr, err := zstd.NewReader(&contextReader{ctx: ctx, r: f})
 	if err != nil {
 		return fmt.Errorf("failed to create zstd reader for %q: %w", artifactPath, err)
 	}

@@ -4,15 +4,18 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path"
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/config"
@@ -452,7 +455,7 @@ func TestExtractLogsFromArtifact_ReverseOrderTakesTwoPasses(t *testing.T) {
 	oldOpen := openArtifact
 	t.Cleanup(func() { openArtifact = oldOpen })
 	opens := 0
-	openArtifact = func(name string) (*os.File, error) {
+	openArtifact = func(name string) (io.ReadCloser, error) {
 		opens++
 		return oldOpen(name)
 	}
@@ -521,6 +524,72 @@ func TestReadTail_ReturnsItsOwnCopy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "short-1\nshort-2\n", string(tail))
 	assert.Less(t, cap(tail), 1024)
+}
+
+// Closing the reader, as StreamTaskLogs does once the client is gone, stops the
+// walk: out-of-order logs are not decompressed and set aside for nobody.
+func TestExtractLogsFromArtifact_CloseStopsTheWalk(t *testing.T) {
+	// Incompressible logs in reverse order: all but the last archived are set
+	// aside before anything is written to the pipe.
+	rng := rand.New(rand.NewSource(1))
+	var files [][2]string
+	for i := 3; i >= 0; i-- {
+		raw := make([]byte, 3<<20)
+		rng.Read(raw)
+		files = append(files, [2]string{fmt.Sprintf("job-task/output/task-step-%d.log", i), base64.StdEncoding.EncodeToString(raw)})
+	}
+	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), files)
+	info, err := os.Stat(artifact)
+	require.NoError(t, err)
+
+	oldOpen := openArtifact
+	t.Cleanup(func() { openArtifact = oldOpen })
+	gate := make(chan struct{})    // holds the output pass until the reader is closed
+	walked := make(chan int64, 1) // bytes the output pass read from the archive
+	opens := 0
+	openArtifact = func(name string) (io.ReadCloser, error) {
+		f, err := oldOpen(name)
+		if err != nil {
+			return nil, err
+		}
+		if opens++; opens == 1 {
+			return f, nil // listing the logs
+		}
+		return &gatedReader{r: f, gate: gate, done: walked}, nil
+	}
+
+	r, err := extractLogsFromArtifact(artifact, allLines)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	close(gate)
+
+	select {
+	case read := <-walked:
+		assert.Less(t, read, info.Size()/4, "the archive is %d bytes", info.Size())
+	case <-time.After(10 * time.Second):
+		t.Fatal("the walk did not end after Close")
+	}
+}
+
+// gatedReader holds its reads until gate is closed, then counts them, and
+// reports the count on done when closed.
+type gatedReader struct {
+	r    io.ReadCloser
+	gate chan struct{}
+	done chan int64
+	read int64
+}
+
+func (g *gatedReader) Read(p []byte) (int, error) {
+	<-g.gate
+	n, err := g.r.Read(p)
+	g.read += int64(n)
+	return n, err
+}
+
+func (g *gatedReader) Close() error {
+	g.done <- g.read
+	return g.r.Close()
 }
 
 func TestExtractLogsFromArtifact_AllLinesInStepOrder(t *testing.T) {
