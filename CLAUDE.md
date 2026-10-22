@@ -120,8 +120,6 @@ agent, which waits silently) only surfaced at the first RPC, after gRPC's own 20
 timeout, as "error reading server preface: file already closed". The timeout bounds only that
 Ping, never later RPCs or streams; gRPC's `MinConnectTimeout` is raised above it so its 20s does
 not kill ssh first. On failure the client kills and reaps ssh before exiting.
-`--ssh-host-key` never did anything: it is hidden, ignored, and warns on stderr (not cobra's
-`MarkDeprecated`, which prints on stdout here because of `SetOut(os.Stdout)`).
 
 **Server** (`server/main.go`): gRPC server on port 25373. Initializes Docker client,
 creates scheduler with chosen provisioner, subscribes to scheduler events. Status state

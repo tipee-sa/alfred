@@ -42,10 +42,6 @@ var alfredCmd = &cobra.Command{
 			return fmt.Errorf("missing mandatory dependencies (%s): %w", strings.Join(dependencies, ", "), err)
 		}
 
-		if cmd.Flags().Changed("ssh-host-key") {
-			fmt.Fprintln(os.Stderr, color.YellowString("--ssh-host-key is deprecated and ignored: it never had any effect, ssh verifies the host key against known_hosts"))
-		}
-
 		if connectTimeoutEnvErr != nil && !cmd.Flags().Changed("connect-timeout") {
 			return connectTimeoutEnvErr
 		}
@@ -110,12 +106,6 @@ func init() {
 	alfredCmd.PersistentFlags().String("ssh-username", "alfred-user", "username to use for ssh tunneling")
 	alfredCmd.PersistentFlags().Int("ssh-port", 22, "port to use for ssh tunneling")
 	alfredCmd.PersistentFlags().Duration("connect-timeout", connectTimeoutDefault, "time allowed to establish the connection to the server, ssh tunnel included; does not limit commands once connected (env "+connectTimeoutEnv+")")
-	// It never had any effect. Hidden rather than removed, so that scripts
-	// still passing it keep working; PersistentPreRunE warns about it. Not
-	// MarkDeprecated: cobra would print its notice on stdout (see SetOut in
-	// main), into output that scripts parse, such as watch --json.
-	alfredCmd.PersistentFlags().String("ssh-host-key", "", "deprecated, ignored: ssh verifies the host key against known_hosts")
-	lo.Must0(alfredCmd.PersistentFlags().MarkHidden("ssh-host-key"))
 }
 
 func main() {
