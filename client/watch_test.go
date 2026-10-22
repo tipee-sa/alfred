@@ -12,6 +12,8 @@ import (
 	"github.com/gammadia/alfred/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -308,4 +310,38 @@ func TestRecvJobStatus_SkipsSnapshotsMissingTasks(t *testing.T) {
 	msgCh = make(chan recvResult, 10)
 	recvJobStatus(recv, msgCh, 3)
 	assert.Equal(t, completed, (<-msgCh).msg)
+}
+
+func TestJobStatusRecv_RetriesNotFoundOfAJustScheduledJob(t *testing.T) {
+	notFound := status.Error(codes.NotFound, "job 'x' not found")
+	job := jobWithTasks(time.Now(), proto.TaskStatus_QUEUED)
+	failing := func() (*proto.JobStatus, error) { return nil, notFound }
+
+	// The job is published after two lookups: run gets its status.
+	opens := 0
+	reopen := func() (func() (*proto.JobStatus, error), error) {
+		opens++
+		if opens < 2 {
+			return failing, nil
+		}
+		return func() (*proto.JobStatus, error) { return job, nil }, nil
+	}
+	msg, err := jobStatusRecv(context.Background(), failing, reopen, true)()
+	require.NoError(t, err)
+	assert.Equal(t, job, msg)
+	assert.Equal(t, 2, opens)
+
+	// watch on a job that does not exist fails at once.
+	reopen = func() (func() (*proto.JobStatus, error), error) {
+		t.Fatal("watch must not retry")
+		return nil, nil
+	}
+	_, err = jobStatusRecv(context.Background(), failing, reopen, false)()
+	assert.Equal(t, codes.NotFound, status.Code(err))
+
+	// An interrupted run stops waiting.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = jobStatusRecv(ctx, failing, reopen, true)()
+	assert.ErrorIs(t, err, context.Canceled)
 }
