@@ -14,7 +14,10 @@ import (
 var topCmd = &cobra.Command{
 	Use:   "top",
 	Short: "Show the status of the server",
-	Args:  cobra.NoArgs,
+	Long: `An interactive view of the server: its nodes with their slots, and its jobs.
+It needs a terminal (Tab switches between tables, q quits). Scripts: use
+'alfred ps' and 'alfred watch --json'.`,
+	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Fetch server version info

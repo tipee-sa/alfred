@@ -16,6 +16,8 @@ import (
 var selfUpdateCmd = &cobra.Command{
 	Use:   "self-update",
 	Short: "Update alfred client to the latest version",
+	Long: `Replaces this binary with the latest release from GitHub. A client installed
+with Nix refuses: update the flake input or profile that provides it instead.`,
 
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return nil

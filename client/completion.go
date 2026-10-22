@@ -5,6 +5,9 @@ import "github.com/spf13/cobra"
 var completionCmd = &cobra.Command{
 	Use:   "completion [bash|zsh]",
 	Short: "Generate shell completion scripts",
+	Long:  "Prints a completion script for bash or zsh, to load in the shell's startup file.",
+	Example: `  source <(alfred completion bash)
+  alfred completion zsh > "${fpath[1]}/_alfred"`,
 
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return nil

@@ -10,6 +10,8 @@ import (
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show the version number of Alfred",
+	Long: `Prints the client's version, then the server's. The client's line comes first,
+before connecting, so it shows even when the server cannot be reached.`,
 
 	// Print the client's version before connecting, so that it shows even when
 	// the server cannot be reached.
