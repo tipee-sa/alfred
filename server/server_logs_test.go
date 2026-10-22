@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/config"
@@ -217,16 +218,16 @@ func TestStreamReader_LargeContent_MultipleChunks(t *testing.T) {
 }
 
 func TestSendLogData_SplitsWholeLogsUnderMaxPacketSize(t *testing.T) {
-	// Follow mode's whole-log output (`logs -f -n all`) goes through
-	// sendLogData: one message for it would exceed what the client accepts.
+	// Follow mode's output goes through sendLogData: one message for whole
+	// logs (`logs -f -n all`) would exceed what the client accepts.
 	data := bytes.Repeat([]byte("0123456789abcde\n"), (config.MaxPacketSize+1024*1024)/16)
 
 	mock := &mockLogStream{ctx: context.Background()}
-	require.NoError(t, sendLogData(mock, data, "test-job", "test-task"))
+	require.NoError(t, sendLogData(mock, data))
 
 	var received bytes.Buffer
 	for _, chunk := range mock.chunks {
-		require.Less(t, len(chunk.Data), config.MaxPacketSize)
+		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
 		received.Write(chunk.Data)
 	}
 	assert.Greater(t, len(mock.chunks), 1)
@@ -235,8 +236,72 @@ func TestSendLogData_SplitsWholeLogsUnderMaxPacketSize(t *testing.T) {
 
 func TestSendLogData_Empty(t *testing.T) {
 	mock := &mockLogStream{ctx: context.Background()}
-	require.NoError(t, sendLogData(mock, nil, "test-job", "test-task"))
+	require.NoError(t, sendLogData(mock, nil))
 	assert.Empty(t, mock.chunks)
+}
+
+func TestSendKeepingTail_SendsAllKeepsTail(t *testing.T) {
+	content := numberedLines("line", 300000) // ~3.5 MB, over readTail's threshold
+
+	mock := &mockLogStream{ctx: context.Background()}
+	tail, sent, err := sendKeepingTail(mock, iotest.HalfReader(strings.NewReader(content)), 10)
+	require.NoError(t, err)
+
+	var received bytes.Buffer
+	for _, chunk := range mock.chunks {
+		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
+		received.Write(chunk.Data)
+	}
+	assert.Equal(t, content, received.String(), "everything read is sent")
+	assert.Equal(t, len(content), sent)
+	assert.Equal(t, string(lastNLines([]byte(content), 10)), string(tail), "only the last lines are kept")
+}
+
+func TestSendKeepingTail_SendError(t *testing.T) {
+	mock := &failingLogStream{mockLogStream{ctx: context.Background()}}
+	_, _, err := sendKeepingTail(mock, strings.NewReader("line\n"), 10)
+	assert.ErrorContains(t, err, "client gone")
+}
+
+// failingLogStream fails every Send.
+type failingLogStream struct{ mockLogStream }
+
+func (m *failingLogStream) Send(*proto.StreamTaskLogsChunk) error { return errors.New("client gone") }
+
+func TestFollowLiveLogs_WholeLogThenFinalDelta(t *testing.T) {
+	oldDataRoot, oldRead, oldInterval := dataRoot, readLiveTaskLogs, followPollInterval
+	t.Cleanup(func() { dataRoot, readLiveTaskLogs, followPollInterval = oldDataRoot, oldRead, oldInterval })
+	dataRoot = t.TempDir()
+	followPollInterval = time.Millisecond
+
+	// More lines than a poll reads, so that only the end of the initial output
+	// is kept, and the final read from the artifact is a window too.
+	header := "==> task-step-0.log <==\n"
+	live := header + numberedLines("line", 2*followWindowLines)
+	final := numberedLines("line", 2*followWindowLines+5)
+	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
+		{"job-abc-task/output/task-step-0.log", final},
+	})
+
+	var requested []int
+	readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) {
+		requested = append(requested, lines)
+		if len(requested) == 1 {
+			return io.NopCloser(strings.NewReader(live)), nil
+		}
+		return nil, errors.New("workspace torn down")
+	}
+
+	mock := &mockLogStream{ctx: context.Background()}
+	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", allLines))
+
+	var received bytes.Buffer
+	for _, chunk := range mock.chunks {
+		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
+		received.Write(chunk.Data)
+	}
+	assert.Equal(t, header+final, received.String(), "the whole log, then what the artifact adds")
+	assert.Equal(t, []int{allLines, followWindowLines}, requested)
 }
 
 // --- extractLogsFromArtifact tests ---
