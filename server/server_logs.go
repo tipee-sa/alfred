@@ -34,7 +34,7 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 
 	// Try finalized artifact first (completed task)
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
-	if _, err := os.Stat(artifact); err == nil {
+	streamArtifact := func() error {
 		log.Debug("Reading logs from finalized artifact", "job", req.Job, "task", req.Task)
 		r, err := extractLogsFromArtifact(srv.Context(), artifact, tailLines)
 		if err != nil {
@@ -43,6 +43,9 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 		}
 		defer r.Close()
 		return streamReader(srv, r, req.Job, req.Task)
+	}
+	if _, err := os.Stat(artifact); err == nil {
+		return streamArtifact()
 	}
 
 	if req.Follow {
@@ -56,13 +59,42 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 		log.Warn("Logs not found", "job", req.Job, "task", req.Task, "liveError", liveErr)
 		return status.Errorf(codes.NotFound, "no logs (yet) for task %s/%s", req.Job, req.Task)
 	}
-	log.Debug("Live log reader obtained, starting read loop", "job", req.Job, "task", req.Task)
-	defer func() {
-		if err := liveReader.Close(); err != nil {
-			log.Warn("Error closing log reader", "job", req.Job, "task", req.Task, "error", err)
+	log.Debug("Live log reader obtained, copying it aside", "job", req.Job, "task", req.Task)
+	// Read whole before sending, as fast as the disk takes it rather than as
+	// the client does: the task may end meanwhile, and its workspace go with
+	// the logs not read yet. If it does, nothing is sent yet, and the artifact,
+	// archived before the workspace is deleted, has them all.
+	spooled, spoolErr := spoolLogs(srv.Context(), liveReader)
+	if err := liveReader.Close(); err != nil {
+		log.Warn("Error closing log reader", "job", req.Job, "task", req.Task, "error", err)
+	}
+	if spoolErr != nil {
+		if _, err := os.Stat(artifact); err == nil {
+			log.Debug("Live logs gone while read, sending the artifact's", "job", req.Job, "task", req.Task, "error", spoolErr)
+			return streamArtifact()
 		}
-	}()
-	return streamReader(srv, liveReader, req.Job, req.Task)
+		return fmt.Errorf("failed to read live logs: %w", spoolErr)
+	}
+	defer spooled.Close()
+	return streamReader(srv, spooled, req.Job, req.Task)
+}
+
+// spoolLogs copies r to a temporary file, unlinked at once, and returns it
+// ready to be read from the start.
+func spoolLogs(ctx context.Context, r io.Reader) (*os.File, error) {
+	f, err := createSpool()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(f, &contextReader{ctx: ctx, r: r}); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 const (
@@ -570,23 +602,23 @@ func readTail(r io.Reader, n int) ([]byte, error) {
 // which only the end matters: what was written after the last poll.
 const followFinalMaxBytes = 32 << 20
 
-// followTruncatedNotice is sent when the output written after follow mode's
-// last poll exceeds followFinalMaxBytes, in place of what is cut.
-const followTruncatedNotice = "\n[alfred: more output was written after the last poll than follow mode sends at the end; the start of it is cut. `alfred logs JOB TASK -n all` prints whole logs.]\n"
+// followTruncatedNotice is sent before what follow mode's final read keeps,
+// when that read was cut (see finalFollowDelta).
+const followTruncatedNotice = "\n[alfred: follow mode sends at most the last 32 MiB of logs at the end, and more was written: output after the last poll may be missing. `alfred logs JOB TASK -n all` prints whole logs.]\n"
 
 // finalFollowDelta returns what the finalized logs read from r add to
-// lastContent, the last poll's read. It keeps only the last
-// followFinalMaxBytes of them: if what was written since that poll does not
-// fit, the delta starts with followTruncatedNotice rather than silently lose
-// the start.
+// lastContent, the last poll's read. It keeps only their last
+// followFinalMaxBytes. When it had to cut, the delta starts with
+// followTruncatedNotice, whatever it found: matching lastContent's last lines
+// in what is kept cannot prove the cut held only output already seen (a
+// repeated line matches anywhere), so it may have dropped unseen output.
 func finalFollowDelta(lastContent []byte, r io.Reader) ([]byte, error) {
 	finalContent, truncated, err := readLastBytes(r, followFinalMaxBytes)
 	if err != nil {
 		return nil, err
 	}
 	delta := findNewContent(lastContent, finalContent)
-	// No overlap with the last poll in what is kept: the cut held unseen output.
-	if truncated && len(lastContent) > 0 && len(delta) == len(finalContent) {
+	if truncated {
 		return append([]byte(followTruncatedNotice), delta...), nil
 	}
 	return delta, nil

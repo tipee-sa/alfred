@@ -407,6 +407,70 @@ func TestStreamTaskLogs_FollowRefusesWholeLogs(t *testing.T) {
 	assert.Empty(t, mock.chunks)
 }
 
+// A running task's logs are read whole before anything is sent. If they
+// vanish meanwhile (the task ended, its workspace deleted), nothing partial is
+// sent: the artifact, archived before the workspace went, is sent instead.
+func TestStreamTaskLogs_LiveLogsReadWholeFirst(t *testing.T) {
+	oldDataRoot, oldRead := dataRoot, readLiveTaskLogs
+	t.Cleanup(func() { dataRoot, readLiveTaskLogs = oldDataRoot, oldRead })
+	dataRoot = t.TempDir()
+	artifact := path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst")
+	live := "==> task-step-0.log <==\n" + numberedLines("live", 50)
+
+	stream := func() (string, error) {
+		mock := &mockLogStream{ctx: context.Background()}
+		err := (&server{}).StreamTaskLogs(&proto.StreamTaskLogsRequest{Job: "job-abc", Task: "task", TailLines: -1}, mock)
+		var received bytes.Buffer
+		for _, chunk := range mock.chunks {
+			received.Write(chunk.Data)
+		}
+		return received.String(), err
+	}
+
+	// The task still running: its live logs.
+	readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(live)), nil
+	}
+	got, err := stream()
+	require.NoError(t, err)
+	assert.Equal(t, live, got)
+
+	// The logs vanish halfway, with no artifact: an error, nothing partial.
+	vanishing := func(onVanish func()) func(job, task string, lines int) (io.ReadCloser, error) {
+		return func(job, task string, lines int) (io.ReadCloser, error) {
+			return io.NopCloser(&vanishingReader{data: strings.NewReader(live[:100]), onVanish: onVanish}), nil
+		}
+	}
+	readLiveTaskLogs = vanishing(func() {})
+	got, err = stream()
+	assert.Error(t, err)
+	assert.Empty(t, got)
+
+	// The logs vanish halfway as the task ends and its artifact is saved: the
+	// artifact's logs, and none of the live read.
+	readLiveTaskLogs = vanishing(func() {
+		createOrderedTestArtifact(t, artifact, [][2]string{{"job-abc-task/output/task-step-0.log", numberedLines("final", 80)}})
+	})
+	got, err = stream()
+	require.NoError(t, err)
+	assert.Equal(t, "==> task-step-0.log <==\n"+numberedLines("final", 80), got)
+}
+
+// vanishingReader reads data, then fails like tail on a log deleted with the
+// workspace, after running onVanish (which may save the artifact).
+type vanishingReader struct {
+	data     *strings.Reader
+	onVanish func()
+}
+
+func (v *vanishingReader) Read(p []byte) (int, error) {
+	if v.data.Len() > 0 {
+		return v.data.Read(p)
+	}
+	v.onVanish()
+	return 0, errors.New("tail: cannot open 'task-step-1.log' for reading: No such file or directory")
+}
+
 func TestStreamTaskLogs_NegativeTailLinesReturnsWholeLog(t *testing.T) {
 	oldDataRoot := dataRoot
 	dataRoot = t.TempDir()
@@ -509,11 +573,15 @@ func TestFinalFollowDelta(t *testing.T) {
 	assert.Len(t, kept, followFinalMaxBytes)
 	assert.True(t, strings.HasSuffix(unseen, kept))
 
-	// Cut, but only output already seen: the delta is exact, no notice.
-	big := header + numberedLines("seen", followFinalMaxBytes/8)
-	delta, err = finalFollowDelta([]byte(lastNLines([]byte(big), 1000)), strings.NewReader(big+"last\n"))
+	// Cut, even if what was cut may all have been seen: the notice still,
+	// as matching lines cannot prove it. Here repeated lines make the last
+	// poll's last lines match inside new output, after unseen output was cut.
+	working := strings.Repeat("working\n", 1000)
+	unseenRepeated := strings.Repeat("working\n", followFinalMaxBytes/8+1000) // ~ the limit and more
+	delta, err = finalFollowDelta([]byte(header+working), strings.NewReader(header+working+unseenRepeated+"done\n"))
 	require.NoError(t, err)
-	assert.Equal(t, "last\n", string(delta))
+	assert.True(t, strings.HasPrefix(string(delta), followTruncatedNotice), "a cut always says so")
+	assert.True(t, strings.HasSuffix(string(delta), "done\n"))
 }
 
 // A tail kept a while (set aside) must not hold on to the large buffer it was
