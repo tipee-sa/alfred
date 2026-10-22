@@ -252,7 +252,7 @@ func TestExtractLogsFromArtifact_SingleLogFile(t *testing.T) {
 		"job-task/output/task-step-0.log": "line1\nline2\nline3\n",
 	})
 
-	r, err := extractLogsFromArtifact(artifact, 100)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 100)
 	require.NoError(t, err)
 	defer r.Close()
 
@@ -266,7 +266,7 @@ func TestExtractLogsFromArtifact_MultipleLogFiles(t *testing.T) {
 		"job-task/output/task-step-1.log": "step1-line1\nstep1-line2\n",
 	})
 
-	r, err := extractLogsFromArtifact(artifact, 100)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 100)
 	require.NoError(t, err)
 	defer r.Close()
 
@@ -280,7 +280,7 @@ func TestExtractLogsFromArtifact_TailsLines(t *testing.T) {
 		"job-task/output/task-step-0.log": "line1\nline2\nline3\nline4\nline5\n",
 	})
 
-	r, err := extractLogsFromArtifact(artifact, 2)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 2)
 	require.NoError(t, err)
 	defer r.Close()
 
@@ -295,7 +295,7 @@ func TestExtractLogsFromArtifact_SkipsNonLogFiles(t *testing.T) {
 		"job-task/output/result.json":     `{"ok":true}`,
 	})
 
-	r, err := extractLogsFromArtifact(artifact, 100)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 100)
 	require.NoError(t, err)
 	defer r.Close()
 
@@ -308,13 +308,13 @@ func TestExtractLogsFromArtifact_NoLogFiles(t *testing.T) {
 		"job-task/output/data.txt": "no logs here\n",
 	})
 
-	_, err := extractLogsFromArtifact(artifact, 100)
+	_, err := extractLogsFromArtifact(context.Background(), artifact, 100)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no .log files found")
 }
 
 func TestExtractLogsFromArtifact_NonexistentFile(t *testing.T) {
-	_, err := extractLogsFromArtifact("/nonexistent/path.tar.zst", 100)
+	_, err := extractLogsFromArtifact(context.Background(), "/nonexistent/path.tar.zst", 100)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to open artifact")
 }
@@ -327,7 +327,7 @@ func TestExtractLogsFromArtifact_SortsFilesByName(t *testing.T) {
 		"job-task/output/task-step-1.log": "step1\n",
 	})
 
-	r, err := extractLogsFromArtifact(artifact, 100)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 100)
 	require.NoError(t, err)
 	defer r.Close()
 
@@ -473,7 +473,7 @@ func TestExtractLogsFromArtifact_ReverseOrderTakesTwoPasses(t *testing.T) {
 		spools    int // one file for every whole log set aside, none for tails
 	}{{allLines, expectedAll, 1}, {2, expectedTail, 0}} {
 		opens, spools = 0, 0
-		r, err := extractLogsFromArtifact(artifact, c.tailLines)
+		r, err := extractLogsFromArtifact(context.Background(), artifact, c.tailLines)
 		require.NoError(t, err)
 		assert.Equal(t, c.expected, readAllAndClose(t, r), "tailLines=%d", c.tailLines)
 		assert.Equal(t, 2, opens, "tailLines=%d", c.tailLines)
@@ -526,9 +526,10 @@ func TestReadTail_ReturnsItsOwnCopy(t *testing.T) {
 	assert.Less(t, cap(tail), 1024)
 }
 
-// Closing the reader, as StreamTaskLogs does once the client is gone, stops the
-// walk: out-of-order logs are not decompressed and set aside for nobody.
-func TestExtractLogsFromArtifact_CloseStopsTheWalk(t *testing.T) {
+// Closing the reader, or cancelling the RPC's context while a read waits on the
+// pipe, stops the walk: out-of-order logs are not decompressed and set aside for
+// nobody, and the waiting read gets an error rather than hang.
+func TestExtractLogsFromArtifact_StopsTheWalk(t *testing.T) {
 	// Incompressible logs in reverse order: all but the last archived are set
 	// aside before anything is written to the pipe.
 	rng := rand.New(rand.NewSource(1))
@@ -542,32 +543,56 @@ func TestExtractLogsFromArtifact_CloseStopsTheWalk(t *testing.T) {
 	info, err := os.Stat(artifact)
 	require.NoError(t, err)
 
-	oldOpen := openArtifact
-	t.Cleanup(func() { openArtifact = oldOpen })
-	gate := make(chan struct{})    // holds the output pass until the reader is closed
-	walked := make(chan int64, 1) // bytes the output pass read from the archive
-	opens := 0
-	openArtifact = func(name string) (io.ReadCloser, error) {
-		f, err := oldOpen(name)
-		if err != nil {
-			return nil, err
-		}
-		if opens++; opens == 1 {
-			return f, nil // listing the logs
-		}
-		return &gatedReader{r: f, gate: gate, done: walked}, nil
-	}
+	for _, c := range []struct {
+		name string
+		stop func(r io.ReadCloser, cancel context.CancelFunc)
+	}{
+		{"reader closed", func(r io.ReadCloser, _ context.CancelFunc) { require.NoError(t, r.Close()) }},
+		{"RPC cancelled", func(_ io.ReadCloser, cancel context.CancelFunc) { cancel() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			oldOpen := openArtifact
+			t.Cleanup(func() { openArtifact = oldOpen })
+			gate := make(chan struct{})   // holds the output pass until stopped
+			walked := make(chan int64, 1) // bytes the output pass read from the archive
+			opens := 0
+			openArtifact = func(name string) (io.ReadCloser, error) {
+				f, err := oldOpen(name)
+				if err != nil {
+					return nil, err
+				}
+				if opens++; opens == 1 {
+					return f, nil // listing the logs
+				}
+				return &gatedReader{r: f, gate: gate, done: walked}, nil
+			}
 
-	r, err := extractLogsFromArtifact(artifact, allLines)
-	require.NoError(t, err)
-	require.NoError(t, r.Close())
-	close(gate)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r, err := extractLogsFromArtifact(ctx, artifact, allLines)
+			require.NoError(t, err)
+			readErr := make(chan error, 1)
+			go func() { // a read waiting on the pipe, as streamReader's
+				_, err := io.ReadAll(r)
+				readErr <- err
+			}()
 
-	select {
-	case read := <-walked:
-		assert.Less(t, read, info.Size()/4, "the archive is %d bytes", info.Size())
-	case <-time.After(10 * time.Second):
-		t.Fatal("the walk did not end after Close")
+			c.stop(r, cancel)
+			close(gate)
+
+			select {
+			case read := <-walked:
+				assert.Less(t, read, info.Size()/4, "the archive is %d bytes", info.Size())
+			case <-time.After(10 * time.Second):
+				t.Fatal("the walk did not end")
+			}
+			select {
+			case err := <-readErr:
+				assert.Error(t, err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("the waiting read did not end")
+			}
+		})
 	}
 }
 
@@ -601,7 +626,7 @@ func TestExtractLogsFromArtifact_AllLinesInStepOrder(t *testing.T) {
 		{"job-task/output/task-step-1.log", "no final newline"},
 	})
 
-	r, err := extractLogsFromArtifact(artifact, allLines)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, allLines)
 	require.NoError(t, err)
 
 	expected := "==> task-step-0.log <==\n" + numberedLines("step0", 300) +
@@ -619,13 +644,13 @@ func TestExtractLogsFromArtifact_LogOver10MB(t *testing.T) {
 		{"job-task/output/task-step-0.log", stepLog},
 	})
 
-	r, err := extractLogsFromArtifact(artifact, 2)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, 2)
 	require.NoError(t, err)
 	assert.Equal(t, "==> task-step-0.log <==\n"+
 		"a fairly long line of test output, number-299999\n"+
 		"a fairly long line of test output, number-300000\n", readAllAndClose(t, r))
 
-	r, err = extractLogsFromArtifact(artifact, allLines)
+	r, err = extractLogsFromArtifact(context.Background(), artifact, allLines)
 	require.NoError(t, err)
 	all := readAllAndClose(t, r)
 	assert.Equal(t, len("==> task-step-0.log <==\n")+len(stepLog), len(all))
@@ -637,7 +662,7 @@ func TestExtractLogsFromArtifact_CloseBeforeEnd(t *testing.T) {
 		{"job-task/output/task-step-0.log", numberedLines("line", 100000)},
 	})
 
-	r, err := extractLogsFromArtifact(artifact, allLines)
+	r, err := extractLogsFromArtifact(context.Background(), artifact, allLines)
 	require.NoError(t, err)
 	_, err = io.ReadFull(r, make([]byte, 10))
 	require.NoError(t, err)

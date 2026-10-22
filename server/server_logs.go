@@ -36,7 +36,7 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
 	if _, err := os.Stat(artifact); err == nil {
 		log.Debug("Reading logs from finalized artifact", "job", req.Job, "task", req.Task)
-		r, err := extractLogsFromArtifact(artifact, tailLines)
+		r, err := extractLogsFromArtifact(srv.Context(), artifact, tailLines)
 		if err != nil {
 			log.Error("Failed to extract logs from artifact", "job", req.Job, "task", req.Task, "artifact", artifact, "error", err)
 			return fmt.Errorf("failed to extract logs from artifact: %w", err)
@@ -117,7 +117,7 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 		artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
 		if _, statErr := os.Stat(artifact); statErr == nil {
 			log.Debug("Follow mode: task completed while waiting for logs", "job", job, "task", task)
-			r, extractErr := extractLogsFromArtifact(artifact, tailLines)
+			r, extractErr := extractLogsFromArtifact(srv.Context(), artifact, tailLines)
 			if extractErr != nil {
 				return fmt.Errorf("failed to extract logs from artifact: %w", extractErr)
 			}
@@ -169,7 +169,7 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
 				if _, statErr := os.Stat(artifact); statErr == nil {
 					// Whole logs: streamed (or spooled to disk), never buffered per file.
-					if r, extractErr := extractLogsFromArtifact(artifact, allLines); extractErr == nil {
+					if r, extractErr := extractLogsFromArtifact(srv.Context(), artifact, allLines); extractErr == nil {
 						delta, readErr := finalFollowDelta(lastContent, r)
 						r.Close()
 						if readErr == nil {
@@ -338,9 +338,9 @@ var errStopWalk = errors.New("stop walking the artifact")
 // lists them in whatever order they were archived, so this takes two passes
 // over the archive, whatever that order: one to list the logs, one to output
 // them, setting aside those archived before their turn (see writeArtifactLogs).
-func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser, error) {
+func extractLogsFromArtifact(ctx context.Context, artifactPath string, tailLines int) (io.ReadCloser, error) {
 	var logs []artifactLog
-	if err := walkArtifactLogs(context.Background(), artifactPath, func(header *tar.Header, _ io.Reader) error {
+	if err := walkArtifactLogs(ctx, artifactPath, func(header *tar.Header, _ io.Reader) error {
 		logs = append(logs, artifactLog{path: header.Name, name: path.Base(header.Name)})
 		return nil
 	}); err != nil {
@@ -355,10 +355,12 @@ func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser,
 		return logs[i].name < logs[j].name
 	})
 
-	// Closing the reader (the client gone, the RPC cancelled) cancels ctx, which
-	// stops the walk at its next read from the archive, even while it sets aside
-	// out-of-order logs and writes nothing to the pipe.
-	ctx, cancel := context.WithCancel(context.Background())
+	// ctx done (the RPC cancelled, the client gone) or the reader closed stops
+	// the walk at its next read from the archive, even while it sets aside
+	// out-of-order logs and writes nothing to the pipe: a read waiting on the
+	// pipe then gets the walk's error. Waiting for the next write would not do,
+	// as the RPC only notices the client is gone when it next sends.
+	ctx, cancel := context.WithCancel(ctx)
 	pr, pw := io.Pipe()
 	go func() {
 		defer cancel()
