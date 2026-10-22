@@ -167,13 +167,13 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 				log.Debug("Follow mode: live reader gone, checking artifact for final content", "job", job, "task", task)
 				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
 				if _, statErr := os.Stat(artifact); statErr == nil {
-					if r, extractErr := extractLogsFromArtifact(artifact, 1000000); extractErr == nil {
-						// Only the end: artifact logs are no longer capped at 10 MB per file.
-						finalContent, readErr := readLastBytes(r, followFinalMaxBytes)
+					// Whole logs: streamed (or spooled to disk), never buffered per file.
+					if r, extractErr := extractLogsFromArtifact(artifact, allLines); extractErr == nil {
+						delta, readErr := finalFollowDelta(lastContent, r)
 						r.Close()
 						if readErr == nil {
 							// In chunks: the delta may exceed what the client accepts in one message.
-							_ = sendLogData(srv, findNewContent(lastContent, finalContent))
+							_ = sendLogData(srv, delta)
 						}
 					}
 				}
@@ -549,27 +549,52 @@ func readTail(r io.Reader, n int) ([]byte, error) {
 
 // followFinalMaxBytes bounds follow mode's final read from the artifact, of
 // which only the end matters: what was written after the last poll.
-const followFinalMaxBytes = 16 << 20
+const followFinalMaxBytes = 32 << 20
 
-// readLastBytes returns the last limit bytes of r, holding at most about twice
-// that rather than all of r.
-func readLastBytes(r io.Reader, limit int) ([]byte, error) {
+// followTruncatedNotice is sent when the output written after follow mode's
+// last poll exceeds followFinalMaxBytes, in place of what is cut.
+const followTruncatedNotice = "\n[alfred: more output was written after the last poll than follow mode sends at the end; the start of it is cut. `alfred logs JOB TASK -n all` prints whole logs.]\n"
+
+// finalFollowDelta returns what the finalized logs read from r add to
+// lastContent, the last poll's read. It keeps only the last
+// followFinalMaxBytes of them: if what was written since that poll does not
+// fit, the delta starts with followTruncatedNotice rather than silently lose
+// the start.
+func finalFollowDelta(lastContent []byte, r io.Reader) ([]byte, error) {
+	finalContent, truncated, err := readLastBytes(r, followFinalMaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	delta := findNewContent(lastContent, finalContent)
+	// No overlap with the last poll in what is kept: the cut held unseen output.
+	if truncated && len(lastContent) > 0 && len(delta) == len(finalContent) {
+		return append([]byte(followTruncatedNotice), delta...), nil
+	}
+	return delta, nil
+}
+
+// readLastBytes returns the last limit bytes of r, and whether r had more,
+// holding at most about twice that rather than all of r.
+func readLastBytes(r io.Reader, limit int) ([]byte, bool, error) {
 	var buf []byte
+	truncated := false
 	chunk := make([]byte, 32*1024)
 	for {
 		k, err := r.Read(chunk)
 		buf = append(buf, chunk[:k]...)
 		if len(buf) > 2*limit {
 			buf = buf[:copy(buf, buf[len(buf)-limit:])]
+			truncated = true
 		}
 		if err == io.EOF {
 			if len(buf) > limit {
 				buf = buf[len(buf)-limit:]
+				truncated = true
 			}
-			return buf, nil
+			return buf, truncated, nil
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 }

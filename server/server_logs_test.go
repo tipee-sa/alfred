@@ -481,10 +481,36 @@ func TestExtractLogsFromArtifact_ReverseOrderTakesTwoPasses(t *testing.T) {
 func TestReadLastBytes(t *testing.T) {
 	data := numberedLines("line", 100_000) // ~1.2 MB
 	for _, limit := range []int{1, 1000, 64 * 1024, len(data), 2 * len(data)} {
-		got, err := readLastBytes(iotest.HalfReader(strings.NewReader(data)), limit)
+		got, truncated, err := readLastBytes(iotest.HalfReader(strings.NewReader(data)), limit)
 		require.NoError(t, err)
 		assert.Equal(t, data[max(0, len(data)-limit):], string(got), "limit=%d", limit)
+		assert.Equal(t, limit < len(data), truncated, "limit=%d", limit)
 	}
+}
+
+func TestFinalFollowDelta(t *testing.T) {
+	header := "==> task-step-0.log <==\n"
+	seen := header + numberedLines("seen", 1000)
+
+	// What was written after the last poll fits: exactly that, no notice.
+	delta, err := finalFollowDelta([]byte(seen), strings.NewReader(seen+numberedLines("new", 1000)))
+	require.NoError(t, err)
+	assert.Equal(t, numberedLines("new", 1000), string(delta))
+
+	// It doesn't fit: the end of it, after a notice saying the start is cut.
+	unseen := numberedLines("new", followFinalMaxBytes/8) // ~ 2x the limit
+	delta, err = finalFollowDelta([]byte(seen), strings.NewReader(seen+unseen))
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(delta), followTruncatedNotice))
+	kept := string(delta[len(followTruncatedNotice):])
+	assert.Len(t, kept, followFinalMaxBytes)
+	assert.True(t, strings.HasSuffix(unseen, kept))
+
+	// Cut, but only output already seen: the delta is exact, no notice.
+	big := header + numberedLines("seen", followFinalMaxBytes/8)
+	delta, err = finalFollowDelta([]byte(lastNLines([]byte(big), 1000)), strings.NewReader(big+"last\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "last\n", string(delta))
 }
 
 // A tail kept a while (set aside) must not hold on to the large buffer it was
