@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fatih/color"
 	"github.com/gammadia/alfred/proto"
 	"github.com/rivo/uniseg"
 	"github.com/samber/lo"
@@ -236,9 +237,15 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 
 // renderOutput composes the full watch display and returns the output string
 // and the number of display lines (for cursor repositioning).
+//
+// The display is redrawn by moving the cursor back up over it, which cannot reach lines that
+// have scrolled off the terminal: it must fit, so its task lists are truncated even with -v.
+// Only what is written once (renderSummary) shows them in full.
 func (r *watchRenderer) renderOutput(msg *proto.JobStatus) (output string, displayLines int) {
 	timestamp := r.renderTimestamp(msg)
-	_, stats := r.renderStats(msg)
+	frame := *r
+	frame.verbose = false
+	_, stats := frame.renderStats(msg)
 	processed, total := taskProgressCount(msg.Tasks)
 	pct := 0
 	if total > 0 {
@@ -251,4 +258,106 @@ func (r *watchRenderer) renderOutput(msg *proto.JobStatus) (output string, displ
 	}
 	displayLines = visualLineCount(output, r.termWidth()) - 1 // -1: cursor is already on the last line
 	return
+}
+
+// jobProgress returns the job's state ("running" or "completed", as in `watch --json`), how
+// many of its tasks have ended, out of how many, and that as a percentage.
+func jobProgress(msg *proto.JobStatus) (state string, processed, total, pct int) {
+	processed, total = taskProgressCount(msg.Tasks)
+	if total > 0 {
+		pct = processed * 100 / total
+	}
+	return lo.Ternary(msg.CompletedAt != nil, "completed", "running"), processed, total, pct
+}
+
+// renderSummary returns the job's status as written once, not redrawn: the summary at the end,
+// or --once on a terminal. Nothing needs to fit, so with -v its task lists are not truncated.
+func (r *watchRenderer) renderSummary(msg *proto.JobStatus) string {
+	_, stats := r.renderStats(msg)
+	state, processed, total, pct := jobProgress(msg)
+	mark := lo.Ternary(msg.CompletedAt != nil, color.HiGreenString("✓"), color.HiYellowString("⚙"))
+	out := fmt.Sprintf("%s Job '%s' %s (%s%d/%d %d%%, %s)\n", mark, r.jobName, state, emojiLabel("📝"), processed, total, pct, r.renderTimestamp(msg))
+	if stats != "" {
+		out += stats + "\n"
+	}
+	return out
+}
+
+// plainNamesLimit is how many task names a plain line lists per status, unless -v.
+const plainNamesLimit = 20
+
+// taskStatusNames maps each task's name to its status, named as in `watch --json`.
+func taskStatusNames(msg *proto.JobStatus) map[string]string {
+	statuses := make(map[string]string, len(msg.Tasks))
+	for _, t := range msg.Tasks {
+		statuses[t.Name] = taskStatusName(t)
+	}
+	return statuses
+}
+
+// renderPlainHeader returns the job's state, progress and task counts as one line without
+// colours or emoji, for output that is not a terminal, statuses named as in `watch --json`:
+//
+//	Job 'my-job' running (1/3 33%, 1m5s) | 1 queued, 1 running, 1 completed
+func (r *watchRenderer) renderPlainHeader(msg *proto.JobStatus) string {
+	state, processed, total, pct := jobProgress(msg)
+	end := r.now()
+	if msg.CompletedAt != nil {
+		end = msg.CompletedAt.AsTime()
+	}
+	header := fmt.Sprintf("Job '%s' %s (%d/%d %d%%, %s)", r.jobName, state, processed, total, pct, end.Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second))
+
+	counts := lo.CountValues(lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return taskStatusName(t) }))
+	parts := lo.FilterMap(taskStatuses, func(status string, _ int) (string, bool) {
+		return fmt.Sprintf("%d %s", counts[status], status), counts[status] > 0
+	})
+	if len(parts) > 0 {
+		header += " | " + strings.Join(parts, ", ")
+	}
+	return header
+}
+
+// renderPlainLine returns the plain line written for a status change: the header, then the
+// tasks whose status differs from previous (task name → status), grouped by their new status.
+// With previous nil (the first line), it is only the header.
+//
+//	Job 'my-job' running (2/3 66%, 1m9s) | 1 running, 1 failed, 1 completed | failed: task-2 | running: task-3
+func (r *watchRenderer) renderPlainLine(msg *proto.JobStatus, previous map[string]string) string {
+	line := r.renderPlainHeader(msg)
+	if previous == nil {
+		return line
+	}
+	changed := lo.Filter(msg.Tasks, func(t *proto.TaskStatus, _ int) bool { return previous[t.Name] != taskStatusName(t) })
+	for _, group := range r.plainTaskGroups(changed) {
+		line += " | " + group
+	}
+	return line
+}
+
+// renderPlainSummary returns the job's status without colours or emoji: the header, then
+// every task, one line per status.
+//
+//	Job 'my-job' completed (3/3 100%, 2m1s) | 1 failed, 2 completed
+//	  failed: task-2
+//	  completed: task-1 task-3
+func (r *watchRenderer) renderPlainSummary(msg *proto.JobStatus) string {
+	var out strings.Builder
+	out.WriteString(r.renderPlainHeader(msg) + "\n")
+	for _, group := range r.plainTaskGroups(msg.Tasks) {
+		out.WriteString("  " + group + "\n")
+	}
+	return out.String()
+}
+
+// plainTaskGroups returns "status: name name …" for each status the tasks have, in the order
+// of taskStatuses. Unless -v, each lists at most plainNamesLimit names and says how many more.
+func (r *watchRenderer) plainTaskGroups(tasks []*proto.TaskStatus) []string {
+	byStatus := lo.GroupBy(tasks, func(t *proto.TaskStatus) string { return taskStatusName(t) })
+	return lo.FilterMap(taskStatuses, func(status string, _ int) (string, bool) {
+		names := lo.Map(byStatus[status], func(t *proto.TaskStatus, _ int) string { return t.Name })
+		if !r.verbose && len(names) > plainNamesLimit {
+			return fmt.Sprintf("%s: %s … (%d more)", status, strings.Join(names[:plainNamesLimit], " "), len(names)-plainNamesLimit), true
+		}
+		return fmt.Sprintf("%s: %s", status, strings.Join(names, " ")), len(names) > 0
+	})
 }

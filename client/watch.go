@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ func init() {
 	watchCmd.Flags().Bool("abort-on-failure", false, "cancel remaining tasks when a task exits with code 42 (excludes exit 43)")
 	watchCmd.Flags().Bool("abort-on-error", false, "cancel remaining tasks when a task fails (excludes exit 42 and 43)")
 	watchCmd.Flags().Bool("json", false, "write one JSON line to stdout per status change, for scripts")
-	watchCmd.Flags().Bool("once", false, "print the current status once and exit, even if the job is still running")
+	watchCmd.Flags().Bool("once", false, "print the current status once to stdout and exit, even if the job is still running (with -v, untruncated)")
 }
 
 var watchCmd = &cobra.Command{
@@ -93,49 +94,20 @@ var watchCmd = &cobra.Command{
 			return runWatchJSON(cmd.Context(), msgCh, args[0], cmd.OutOrStdout(), once, abortIfNeeded)
 		}
 
+		// --once: the current status is the command's output, so it goes to stdout.
+		if once {
+			out := cmd.OutOrStdout()
+			return printWatchOnce(cmd.Context(), msgCh, newWatchRenderer(args[0], verbose, out), out, !isTerminal(out))
+		}
+
+		// Off a terminal (an agent's shell, CI, a pipe), redrawing in place would write a copy
+		// of the display every second: write one plain line per status change instead.
+		if !isTerminal(os.Stderr) {
+			return runWatchPlain(cmd.Context(), msgCh, newWatchRenderer(args[0], verbose, os.Stderr), os.Stderr, abortIfNeeded)
+		}
+
 		spinner := ui.NewSpinner("Waiting for job data")
-
-		renderer := &watchRenderer{
-			jobName: args[0],
-			verbose: verbose,
-			termWidth: func() int {
-				w, _, _ := term.GetSize(int(os.Stderr.Fd()))
-				if w <= 0 {
-					return 80
-				}
-				return w
-			},
-			now: time.Now,
-		}
-
-		// Verbose or --once: one-shot dump of current state, no refresh loop.
-		// Useful when the output is too large for in-place terminal updates.
-		if verbose || once {
-			spinner.FinalMSG = ""
-			spinner.Stop()
-
-			result := <-msgCh
-			if result.err != nil {
-				return fmt.Errorf("failed to receive job status: %w", result.err)
-			}
-			msg := result.msg
-
-			_, stats := renderer.renderStats(msg)
-			timestamp := renderer.renderTimestamp(msg)
-			processed, total := taskProgressCount(msg.Tasks)
-			pct := 0
-			if total > 0 {
-				pct = processed * 100 / total
-			}
-			status := "running"
-			statusColor := color.HiYellowString("⚙")
-			if msg.CompletedAt != nil {
-				status = "completed"
-				statusColor = color.HiGreenString("✓")
-			}
-			fmt.Fprintf(os.Stderr, "%s Job '%s' %s (%s%d/%d %d%%, %s)\n%s\n", statusColor, args[0], status, emojiLabel("📝"), processed, total, pct, timestamp, stats)
-			return nil
-		}
+		renderer := newWatchRenderer(args[0], verbose, os.Stderr)
 
 		return runWatchLoop(
 			cmd.Context(),
@@ -151,9 +123,10 @@ var watchCmd = &cobra.Command{
 	},
 }
 
-// runWatchLoop runs the watch event loop, processing messages from msgCh,
-// rendering output and managing cursor visibility. Returns nil on clean
-// exits (EOF, context cancellation) and the stream error for real failures.
+// runWatchLoop runs the watch event loop on a terminal, processing messages from msgCh,
+// redrawing the display in place and managing cursor visibility. Once the stream ends, it
+// replaces the display with the job's summary. Returns nil only if it saw the job complete;
+// an interruption, a stream that ends before the job completed, or a stream error is an error.
 //
 // Callbacks handle spinner lifecycle (nil-safe):
 //   - onFirstMessage: called when first message arrives (e.g. stop spinner)
@@ -209,25 +182,13 @@ func runWatchLoop(
 				if result.err == io.EOF {
 					if started {
 						if displayLines > 0 {
-							fmt.Fprintf(w, "\033[%dA\r\033[J", displayLines)
+							fmt.Fprintf(w, "\033[%dA", displayLines)
 						}
-						fmt.Fprint(w, "\033[?25h")
+						fmt.Fprint(w, "\r\033[J\033[?25h")
 					} else if onCleanStop != nil {
 						onCleanStop()
 					}
-					if lastMsg != nil {
-						_, stats := renderer.renderStats(lastMsg)
-						timestamp := renderer.renderTimestamp(lastMsg)
-						processed, total := taskProgressCount(lastMsg.Tasks)
-						pct := 0
-						if total > 0 {
-							pct = processed * 100 / total
-						}
-						fmt.Fprintf(w, "%s Job '%s' completed (%s%d/%d %d%%, %s)\n%s\n", color.HiGreenString("✓"), jobName, emojiLabel("📝"), processed, total, pct, timestamp, stats)
-					} else {
-						fmt.Fprintf(w, "%s Job '%s' completed\n", color.HiGreenString("✓"), jobName)
-					}
-					return nil
+					return finishWatch(w, lastMsg, jobName, renderer.renderSummary)
 				}
 				if ctx.Err() == context.Canceled {
 					if !started && onCleanStop != nil {
@@ -237,7 +198,7 @@ func runWatchLoop(
 					if started {
 						fmt.Fprint(w, "\n")
 					}
-					return nil
+					return errWatchInterrupted(jobName)
 				}
 				if started {
 					if displayLines > 0 {
@@ -270,4 +231,119 @@ func runWatchLoop(
 			render()
 		}
 	}
+}
+
+// runWatchPlain follows the job when stderr is not a terminal (an agent's shell, CI, a pipe):
+// one plain line, without escape codes, each time a task changes status, then the job's summary
+// once the stream ends. Nothing is rewritten on a timer, so a log holds each change once.
+// It returns like runWatchLoop.
+func runWatchPlain(
+	ctx context.Context,
+	msgCh <-chan recvResult,
+	renderer *watchRenderer,
+	w io.Writer,
+	onMessage func(*proto.JobStatus),
+) error {
+	var lastMsg *proto.JobStatus
+	var previous map[string]string // task name → its status on the previous message; nil before the first
+	for {
+		var result recvResult
+		select {
+		case result = <-msgCh:
+		case <-ctx.Done():
+			return errWatchInterrupted(renderer.jobName)
+		}
+		if result.err == io.EOF {
+			return finishWatch(w, lastMsg, renderer.jobName, renderer.renderPlainSummary)
+		}
+		if result.err != nil {
+			if ctx.Err() != nil {
+				return errWatchInterrupted(renderer.jobName)
+			}
+			return result.err
+		}
+
+		lastMsg = result.msg
+		current := taskStatusNames(result.msg)
+		// The completed state is left to the summary, which follows it.
+		if result.msg.CompletedAt == nil && (previous == nil || !maps.Equal(previous, current)) {
+			if _, err := fmt.Fprintln(w, renderer.renderPlainLine(result.msg, previous)); err != nil {
+				return err
+			}
+		}
+		previous = current
+		if onMessage != nil {
+			onMessage(result.msg)
+		}
+	}
+}
+
+// printWatchOnce writes the job's current status, as received first from msgCh, and returns.
+// With plain, it is written without colours or emoji, as off a terminal.
+func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watchRenderer, w io.Writer, plain bool) error {
+	select {
+	case result := <-msgCh:
+		if result.err == io.EOF {
+			return errStreamEnded(renderer.jobName)
+		}
+		if result.err != nil {
+			return fmt.Errorf("failed to receive job status: %w", result.err)
+		}
+		summary := renderer.renderSummary
+		if plain {
+			summary = renderer.renderPlainSummary
+		}
+		_, err := fmt.Fprint(w, summary(result.msg))
+		return err // the snapshot is the command's output: failing to write it is a failure
+	case <-ctx.Done():
+		return errWatchInterrupted(renderer.jobName)
+	}
+}
+
+// finishWatch writes the job's last known status once its stream has ended. The server ends
+// the stream right after sending the completed state, but also when it shuts down: only the
+// former leaves a final status to check, so the latter is an error. So is failing to write it.
+func finishWatch(w io.Writer, lastMsg *proto.JobStatus, jobName string, summary func(*proto.JobStatus) string) error {
+	if lastMsg != nil {
+		if _, err := fmt.Fprint(w, summary(lastMsg)); err != nil {
+			return err
+		}
+	}
+	if lastMsg == nil || lastMsg.CompletedAt == nil {
+		return errStreamEnded(jobName)
+	}
+	return nil
+}
+
+func errWatchInterrupted(jobName string) error {
+	return fmt.Errorf("interrupted before job '%s' completed", jobName)
+}
+
+func errStreamEnded(jobName string) error {
+	return fmt.Errorf("stream ended before job '%s' completed", jobName)
+}
+
+func newWatchRenderer(jobName string, verbose bool, w io.Writer) *watchRenderer {
+	return &watchRenderer{
+		jobName:   jobName,
+		verbose:   verbose,
+		termWidth: func() int { return terminalWidth(w) },
+		now:       time.Now,
+	}
+}
+
+// isTerminal tells whether w writes to a terminal.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// terminalWidth returns the width of the terminal w writes to, or 80 if it is not one.
+func terminalWidth(w io.Writer) int {
+	if f, ok := w.(*os.File); ok {
+		if width, _, err := term.GetSize(int(f.Fd())); err == nil && width > 0 {
+			return width
+		}
+	}
+	return 80
 }
