@@ -11,7 +11,10 @@ import (
 var psCmd = &cobra.Command{
 	Use:   "ps",
 	Short: "List jobs",
-	Args:  cobra.NoArgs,
+	Long: `Lists the jobs the server knows: when each was scheduled, who started it, and
+its name. The server keeps jobs in memory, so a restart forgets them (their
+artifacts stay on disk).`,
+	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := client.WatchJobs(cmd.Context(), &proto.WatchJobsRequest{})

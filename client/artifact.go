@@ -19,7 +19,17 @@ import (
 var artifactCmd = &cobra.Command{
 	Use:   "artifact JOB [TASK...]",
 	Short: "Download artifact",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Downloads the artifact of each task of JOB, or of the TASKs given: what the
+task wrote to ALFRED_OUTPUT, as DIR/TASK.tar.zst. Each file written is printed
+on stdout, one per line.
+
+A task still running gives a partial snapshot (with a warning); a task that has
+not started has nothing to download yet. Exit code 1 if a requested task does
+not exist or a download failed, after downloading the rest.`,
+	Example: `  alfred artifact my-job-crazy-cat -o var/artifacts
+  alfred artifact my-job-crazy-cat task-1 task-2 -o var/artifacts
+  tar --zstd -xf var/artifacts/task-1.tar.zst -C var/artifacts`,
+	Args: cobra.MinimumNArgs(1),
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		spinner := ui.NewSpinner("Loading artifacts")
