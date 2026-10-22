@@ -3,6 +3,7 @@ package jobfile
 import (
 	"os"
 	"path"
+	"path/filepath"
 	"testing"
 
 	"github.com/samber/lo"
@@ -114,4 +115,14 @@ func TestJobValidate(t *testing.T) {
 			assert.Equal(t, "", tt.expected)
 		})
 	}
+}
+
+func TestJobfileDir(t *testing.T) {
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+
+	assert.Equal(t, "/srv/jobs", jobfileDir("/srv/jobs/job.yaml"), "absolute path, not joined to the working directory")
+	assert.Equal(t, filepath.Join(wd, "hack"), jobfileDir("hack/job.yaml"))
+	assert.Equal(t, wd, jobfileDir("job.yaml"))
+	assert.Equal(t, filepath.Dir(wd), jobfileDir("../job.yaml"))
 }
