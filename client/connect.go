@@ -58,9 +58,7 @@ func (o connectOptions) describe() string {
 //
 // ctx bounds the life of the connection (the ssh tunnel is killed when it is done).
 func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
-	var tunnelsMutex sync.Mutex
-	var tunnels []net.Conn
-	var tunnelsClosed bool // set on failure: a dial still in flight must not start ssh after the cleanup
+	var tunnels tunnelSet
 
 	conn, err := grpc.Dial(
 		o.remote(),
@@ -79,19 +77,10 @@ func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
 				return dialer.DialContext(dialCtx, "tcp", addr)
 			}
 
-			// Starting ssh and registering it happen under one lock, so the
-			// cleanup below either sees the tunnel or stops it from starting.
-			tunnelsMutex.Lock()
-			defer tunnelsMutex.Unlock()
-			if tunnelsClosed {
-				return nil, errors.New("connection abandoned")
-			}
-			// Not dialCtx: the tunnel must outlive the dial.
-			tunnel, err := sossh.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", o.host, o.sshPort), o.sshUsername, fmt.Sprintf("127.0.0.1:%s", o.port))
-			if err == nil {
-				tunnels = append(tunnels, tunnel)
-			}
-			return tunnel, err
+			return tunnels.open(func() (net.Conn, error) {
+				// Not dialCtx: the tunnel must outlive the dial.
+				return sossh.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", o.host, o.sshPort), o.sshUsername, fmt.Sprintf("127.0.0.1:%s", o.port))
+			})
 		}),
 	)
 	if err != nil {
@@ -107,12 +96,7 @@ func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
 		_ = conn.Close()
 		// gRPC closes the tunnel too, but in the background: make sure ssh is
 		// gone before the client exits, or it would linger, still waiting.
-		tunnelsMutex.Lock()
-		tunnelsClosed = true
-		for _, tunnel := range tunnels {
-			_ = tunnel.Close()
-		}
-		tunnelsMutex.Unlock()
+		tunnels.close()
 
 		if ctx.Err() == nil && errors.Is(pingCtx.Err(), context.DeadlineExceeded) {
 			return nil, connectTimeoutError(o)
@@ -121,6 +105,41 @@ func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
 	}
 
 	return conn, nil
+}
+
+// tunnelSet tracks the ssh tunnels a connection starts, so that a failed
+// connect can close them itself. Starting a tunnel and registering it happen
+// under one lock, so close either sees a tunnel or stops it from starting: a
+// dial still in flight when the connect fails must not start an ssh that the
+// cleanup has already missed.
+type tunnelSet struct {
+	mutex   sync.Mutex
+	tunnels []net.Conn
+	closed  bool
+}
+
+func (s *tunnelSet) open(start func() (net.Conn, error)) (net.Conn, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.closed {
+		return nil, errors.New("connection abandoned")
+	}
+	tunnel, err := start()
+	if err == nil {
+		s.tunnels = append(s.tunnels, tunnel)
+	}
+	return tunnel, err
+}
+
+// close closes every tunnel opened so far, and makes later opens fail without
+// starting one.
+func (s *tunnelSet) close() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.closed = true
+	for _, tunnel := range s.tunnels {
+		_ = tunnel.Close()
+	}
 }
 
 func connectTimeoutError(o connectOptions) error {

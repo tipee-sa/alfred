@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gammadia/alfred/client/sossh"
 	"github.com/gammadia/alfred/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,12 +111,7 @@ func TestConnectFailsFastWhenRefused(t *testing.T) {
 }
 
 func TestConnectTimeoutKillsSSH(t *testing.T) {
-	// An ssh that never gets anywhere, like one waiting on a locked SSH agent.
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "ssh.pid")
-	script := "#!/bin/sh\necho $$ > " + pidFile + "\nexec sleep 60\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755))
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	pidFile := installHangingSSH(t)
 
 	_, err := connect(context.Background(), connectOptions{
 		host:         "alfred.example",
@@ -130,11 +126,63 @@ func TestConnectTimeoutKillsSSH(t *testing.T) {
 	assert.Contains(t, err.Error(), "locked agent")
 	assert.Contains(t, err.Error(), "`ssh -p 2222 someone@alfred.example`")
 
+	assertSSHGone(t, pidFile)
+}
+
+// installHangingSSH puts on PATH an ssh that never gets anywhere, like one
+// waiting on a locked SSH agent, and returns the file it writes its pid to.
+func installHangingSSH(t *testing.T) string {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "ssh.pid")
+	script := "#!/bin/sh\necho $$ > " + pidFile + "\nexec sleep 60\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return pidFile
+}
+
+func assertSSHGone(t *testing.T, pidFile string) {
+	t.Helper()
 	content, err := os.ReadFile(pidFile)
 	require.NoError(t, err, "the fake ssh should have been started")
 	pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
 	require.NoError(t, err)
-	assert.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH, "ssh must be killed and reaped once connect returns")
+	assert.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH, "ssh must be killed and reaped")
+}
+
+func startHangingTunnel() (net.Conn, error) {
+	return sossh.DialContext(context.Background(), "tcp", "alfred.example:2222", "someone", "127.0.0.1:25373")
+}
+
+func TestTunnelSetClosesOpenedTunnels(t *testing.T) {
+	pidFile := installHangingSSH(t)
+	var tunnels tunnelSet
+
+	_, err := tunnels.open(startHangingTunnel)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { _, err := os.Stat(pidFile); return err == nil }, 5*time.Second, 10*time.Millisecond)
+
+	tunnels.close()
+	assertSSHGone(t, pidFile)
+}
+
+func TestTunnelSetStartsNoSSHOnceClosed(t *testing.T) {
+	// The race: gRPC dials in the background, so a dial can come after a
+	// failed connect has closed the tunnels. It must not start an ssh that
+	// nothing would close.
+	installHangingSSH(t) // should the guard break, never start a real ssh
+	var tunnels tunnelSet
+	tunnels.close()
+
+	started := false
+	tunnel, err := tunnels.open(func() (net.Conn, error) {
+		started = true
+		return startHangingTunnel()
+	})
+	if tunnel != nil {
+		t.Cleanup(func() { tunnel.Close() })
+	}
+	assert.Error(t, err)
+	assert.False(t, started, "no ssh may start once the set is closed")
 }
 
 func TestConnectTimeoutFlagDefault(t *testing.T) {
