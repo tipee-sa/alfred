@@ -94,10 +94,23 @@ var followPollInterval = 10 * time.Second
 
 // followWindowLines is how many lines per step log follow mode reads on each
 // poll: enough to cover new output plus overlap with the last read. 10,000
-// lines covers ~10s of output for even the most verbose tasks. It also bounds
-// what is kept of the initial output for delta detection, so that whole logs
-// (`-f -n all`) are never held in memory.
+// lines covers ~10s of output for even the most verbose tasks. It also caps
+// the initial output: follow mode holds what it read last, so it never reads
+// whole logs (`-f -n all` starts with these last 10,000 lines).
 const followWindowLines = 10000
+
+// followMaxBytes caps each read of follow mode, for logs of very long lines.
+const followMaxBytes = 16 << 20
+
+// followLines is how many lines per step log follow mode starts with when
+// asked for tailLines: at most followWindowLines, which is also what allLines
+// gets.
+func followLines(tailLines int) int {
+	if tailLines <= 0 || tailLines > followWindowLines {
+		return followWindowLines
+	}
+	return tailLines
+}
 
 // followLiveLogs implements the follow (-f) mode for live task logs.
 // It waits for logs to become available, sends the initial tail output,
@@ -109,6 +122,9 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 	defer ticker.Stop()
 
 	// Wait for logs to become available (task may be queued or starting up).
+	// The initial output is read whole before any of it is sent, so that a
+	// read failing midway (the workspace torn down) still falls back to the
+	// artifact below, with nothing sent twice.
 	//
 	// lastContent is the last known content, for delta detection. On each poll
 	// we read the last followWindowLines lines. Since logs are append-only, new
@@ -116,18 +132,14 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 	// and send only the new bytes.
 	var lastContent []byte
 	for {
-		reader, err := readLiveTaskLogs(job, task, tailLines)
+		content, err := readLiveLogs(job, task, followLines(tailLines))
 		if err == nil {
-			// Send the last tailLines lines (whole logs for allLines) as they
-			// are read, keeping only their end.
-			var sent int
-			lastContent, sent, err = sendKeepingTail(srv, reader, followWindowLines)
-			reader.Close()
-			if err != nil {
-				log.Error("Failed to send initial follow output", "job", job, "task", task, "sentBytes", sent, "error", err)
+			if err := sendLogData(srv, content); err != nil {
+				log.Error("Failed to send initial follow output", "job", job, "task", task, "error", err)
 				return fmt.Errorf("failed to send initial follow output: %w", err)
 			}
-			log.Debug("Follow mode started", "job", job, "task", task, "sentBytes", sent)
+			log.Debug("Follow mode started", "job", job, "task", task, "sentBytes", len(content))
+			lastContent = content
 			break
 		}
 
@@ -325,14 +337,48 @@ func sendArtifactDelta(srv proto.Alfred_StreamTaskLogsServer, artifact string, p
 }
 
 // readLiveLogs reads live log content for a task, tailing up to the given number
-// of lines (all of them for allLines).
+// of lines per step log, for follow mode: past followMaxBytes, only the last
+// lines that fit are kept.
 func readLiveLogs(job, task string, lines int) ([]byte, error) {
 	reader, err := readLiveTaskLogs(job, task, lines)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
-	return io.ReadAll(reader)
+	return readLastBytes(reader, followMaxBytes)
+}
+
+// readLastBytes reads r whole and returns its last lines that fit in limit
+// bytes (all of r if it does), holding at most about twice that.
+func readLastBytes(r io.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	trimmed := false
+	chunk := make([]byte, logChunkSize)
+	for {
+		n, err := r.Read(chunk)
+		buf = append(buf, chunk[:n]...)
+		if len(buf) > 2*limit {
+			buf = buf[:copy(buf, buf[len(buf)-limit:])]
+			trimmed = true
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(buf) > limit {
+		buf = buf[len(buf)-limit:]
+		trimmed = true
+	}
+	if trimmed {
+		// Drop the line cut in its middle.
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
+		}
+	}
+	return buf, nil
 }
 
 // lastNLines returns the last n lines from data. If data has fewer than n lines,
@@ -378,29 +424,6 @@ func sendLogData(srv proto.Alfred_StreamTaskLogsServer, data []byte) error {
 		data = data[n:]
 	}
 	return nil
-}
-
-// logSender is an io.Writer that sends what is written to it as log chunks.
-type logSender struct {
-	srv  proto.Alfred_StreamTaskLogsServer
-	sent int
-}
-
-func (w *logSender) Write(p []byte) (int, error) {
-	if err := sendLogData(w.srv, p); err != nil {
-		return 0, err
-	}
-	w.sent += len(p)
-	return len(p), nil
-}
-
-// sendKeepingTail sends the contents of r as it reads them, and returns their
-// last n lines (holding about that much, as readTail does) and how many bytes
-// it sent.
-func sendKeepingTail(srv proto.Alfred_StreamTaskLogsServer, r io.Reader, n int) ([]byte, int, error) {
-	w := &logSender{srv: srv}
-	tail, err := readTail(io.TeeReader(r, w), n)
-	return tail, w.sent, err
 }
 
 // streamReader sends the contents of reader as StreamTaskLogsChunks.

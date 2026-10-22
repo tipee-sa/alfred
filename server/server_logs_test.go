@@ -287,45 +287,61 @@ func TestSendLogData_Empty(t *testing.T) {
 	assert.Empty(t, mock.chunks)
 }
 
-func TestSendKeepingTail_SendsAllKeepsTail(t *testing.T) {
-	content := numberedLines("line", 300000) // ~3.5 MB, over readTail's threshold
+func TestReadLastBytes(t *testing.T) {
+	content := numberedLines("line", 1000)
 
-	mock := &mockLogStream{ctx: context.Background()}
-	tail, sent, err := sendKeepingTail(mock, iotest.HalfReader(strings.NewReader(content)), 10)
+	got, err := readLastBytes(strings.NewReader(content), len(content))
 	require.NoError(t, err)
+	assert.Equal(t, content, string(got), "all of it when it fits")
 
-	var received bytes.Buffer
-	for _, chunk := range mock.chunks {
-		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
-		received.Write(chunk.Data)
-	}
-	assert.Equal(t, content, received.String(), "everything read is sent")
-	assert.Equal(t, len(content), sent)
-	assert.Equal(t, string(lastNLines([]byte(content), 10)), string(tail), "only the last lines are kept")
+	got, err = readLastBytes(iotest.HalfReader(strings.NewReader(content)), 100)
+	require.NoError(t, err)
+	want := content[len(content)-100:]
+	want = want[strings.IndexByte(want, '\n')+1:]
+	assert.Equal(t, want, string(got), "the last whole lines that fit")
 }
 
-func TestSendKeepingTail_SendError(t *testing.T) {
-	mock := &failingLogStream{mockLogStream{ctx: context.Background()}}
-	_, _, err := sendKeepingTail(mock, strings.NewReader("line\n"), 10)
-	assert.ErrorContains(t, err, "client gone")
-}
-
-// failingLogStream fails every Send.
-type failingLogStream struct{ mockLogStream }
-
-func (m *failingLogStream) Send(*proto.StreamTaskLogsChunk) error { return errors.New("client gone") }
-
-func TestFollowLiveLogs_WholeLogThenWholeFinalDelta(t *testing.T) {
+// setUpFollow makes followLiveLogs testable without a scheduler: live reads
+// return what live returns, and polls come at once.
+func setUpFollow(t *testing.T, live func(call, lines int) (io.ReadCloser, error)) *[]int {
+	t.Helper()
 	oldDataRoot, oldRead, oldInterval := dataRoot, readLiveTaskLogs, followPollInterval
 	t.Cleanup(func() { dataRoot, readLiveTaskLogs, followPollInterval = oldDataRoot, oldRead, oldInterval })
 	dataRoot = t.TempDir()
 	followPollInterval = time.Millisecond
 
-	// More lines than a poll reads, so that only the end of the initial output
-	// is kept; then, before the task completes, more new lines than a poll
-	// reads, in that step log and in a new one: none of them may be lost.
+	var requested []int
+	readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) {
+		requested = append(requested, lines)
+		return live(len(requested), lines)
+	}
+	return &requested
+}
+
+func receivedChunks(t *testing.T, mock *mockLogStream) string {
+	t.Helper()
+	var received bytes.Buffer
+	for _, chunk := range mock.chunks {
+		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
+		received.Write(chunk.Data)
+	}
+	return received.String()
+}
+
+var errTornDown = errors.New("workspace torn down")
+
+func TestFollowLiveLogs_AllStartsWithWindowThenWholeFinalDelta(t *testing.T) {
+	// `-f -n all` starts with the last followWindowLines lines; then, before
+	// the task completes, more new lines than a poll reads, in that step log
+	// and in a new one: none of them may be lost.
 	header := "==> task-step-0.log <==\n"
-	live := header + numberedLines("line", 2*followWindowLines)
+	live := numberedLines("line", 2*followWindowLines)
+	requested := setUpFollow(t, func(call, lines int) (io.ReadCloser, error) {
+		if call == 1 {
+			return io.NopCloser(strings.NewReader(header + string(lastNLines([]byte(live), lines)))), nil
+		}
+		return nil, errTornDown
+	})
 	final := numberedLines("line", 3*followWindowLines+5)
 	step1 := numberedLines("step1", followWindowLines+5)
 	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
@@ -333,25 +349,60 @@ func TestFollowLiveLogs_WholeLogThenWholeFinalDelta(t *testing.T) {
 		{"job-abc-task/output/task-step-1.log", step1},
 	})
 
-	var requested []int
-	readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) {
-		requested = append(requested, lines)
-		if len(requested) == 1 {
-			return io.NopCloser(strings.NewReader(live)), nil
-		}
-		return nil, errors.New("workspace torn down")
-	}
-
 	mock := &mockLogStream{ctx: context.Background()}
 	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", allLines))
 
-	var received bytes.Buffer
-	for _, chunk := range mock.chunks {
-		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
-		received.Write(chunk.Data)
-	}
-	assert.Equal(t, header+final+"\n==> task-step-1.log <==\n"+step1, received.String(), "the whole log, then all that the artifact adds")
-	assert.Equal(t, []int{allLines, followWindowLines}, requested)
+	assert.Equal(t,
+		header+string(lastNLines([]byte(final), 2*followWindowLines+5))+"\n==> task-step-1.log <==\n"+step1,
+		receivedChunks(t, mock),
+		"the last lines a poll reads, then all that the artifact adds")
+	assert.Equal(t, []int{followWindowLines, followWindowLines}, *requested)
+}
+
+func TestFollowLiveLogs_ReadFailingMidwayFallsBackToArtifact(t *testing.T) {
+	// The workspace torn down while the first read drains: tail has output a
+	// first step log, then fails on the next one.
+	requested := setUpFollow(t, func(call, lines int) (io.ReadCloser, error) {
+		if call == 1 {
+			return io.NopCloser(io.MultiReader(
+				strings.NewReader("==> task-step-0.log <==\nline-1\n"),
+				iotest.ErrReader(errTornDown),
+			)), nil
+		}
+		return nil, errTornDown
+	})
+	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
+		{"job-abc-task/output/task-step-0.log", "line-1\nline-2\n"},
+		{"job-abc-task/output/task-step-1.log", "x\n"},
+	})
+
+	mock := &mockLogStream{ctx: context.Background()}
+	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", 100))
+
+	assert.Equal(t, "==> task-step-0.log <==\nline-1\nline-2\n\n==> task-step-1.log <==\nx\n", receivedChunks(t, mock),
+		"the logs from the artifact, nothing sent twice")
+	assert.Equal(t, []int{100}, *requested)
+}
+
+func TestFollowLiveLogs_UnchangedRepetitiveOutputSentOnce(t *testing.T) {
+	// `-f -n 10000` on 10,000 identical lines: the polls read the same output,
+	// so there is nothing new to send, nor at the end from the artifact.
+	header := "==> task-step-0.log <==\n"
+	waiting := strings.Repeat("waiting\n", followWindowLines)
+	setUpFollow(t, func(call, lines int) (io.ReadCloser, error) {
+		if call <= 3 {
+			return io.NopCloser(strings.NewReader(header + waiting)), nil
+		}
+		return nil, errTornDown
+	})
+	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
+		{"job-abc-task/output/task-step-0.log", waiting},
+	})
+
+	mock := &mockLogStream{ctx: context.Background()}
+	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", followWindowLines))
+
+	assert.Equal(t, header+waiting, receivedChunks(t, mock))
 }
 
 // --- extractLogsFromArtifact tests ---

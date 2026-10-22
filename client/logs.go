@@ -113,6 +113,6 @@ func recvLogsLoop(ctx context.Context, recv func() (*proto.StreamTaskLogsChunk, 
 }
 
 func init() {
-	logsCmd.Flags().VarP(&logsTailLines, "lines", "n", "number of lines to show from the end of each step log, or \"all\"")
+	logsCmd.Flags().VarP(&logsTailLines, "lines", "n", "number of lines to show from the end of each step log, or \"all\" (at most 10000 with -f while the task runs)")
 	logsCmd.Flags().BoolP("follow", "f", false, "follow log output (like tail -f)")
 }
