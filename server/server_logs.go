@@ -25,6 +25,11 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 	}
 
 	tailLines := requestedTailLines(req)
+	// Follow mode reads the window it compares against whole, so it takes a
+	// number of lines: whole logs are for `logs -n all` without -f.
+	if req.Follow && tailLines == allLines {
+		return status.Errorf(codes.InvalidArgument, "whole logs (-n all) cannot be followed: use -n all without -f, or -f with -n N")
+	}
 
 	// Try finalized artifact first (completed task)
 	artifact := path.Join(dataRoot, "artifacts", req.Job, fmt.Sprintf("%s.tar.zst", req.Task))
@@ -89,57 +94,21 @@ var readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) 
 	return scheduler.ReadLiveTaskLogs(job, task, lines)
 }
 
-// followPollInterval is how often follow mode looks for new output.
-var followPollInterval = 10 * time.Second
-
-// followWindowLines is how many lines per step log follow mode reads on each
-// poll: enough to cover new output plus overlap with the last read. 10,000
-// lines covers ~10s of output for even the most verbose tasks. It also caps
-// the initial output: follow mode holds what it read last, so it never reads
-// whole logs (`-f -n all` starts with these last 10,000 lines).
-const followWindowLines = 10000
-
-// followMaxBytes caps each read of follow mode, for logs of very long lines.
-const followMaxBytes = 16 << 20
-
-// followLines is how many lines per step log follow mode starts with when
-// asked for tailLines: at most followWindowLines, which is also what allLines
-// gets.
-func followLines(tailLines int) int {
-	if tailLines <= 0 || tailLines > followWindowLines {
-		return followWindowLines
-	}
-	return tailLines
-}
-
 // followLiveLogs implements the follow (-f) mode for live task logs.
 // It waits for logs to become available, sends the initial tail output,
 // then polls every 10 seconds for new content using byte-offset delta
 // detection (log output is append-only because steps run sequentially
 // and log files are append-only).
 func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task string, tailLines int) error {
-	ticker := time.NewTicker(followPollInterval)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	// Wait for logs to become available (task may be queued or starting up).
-	// The initial output is read whole before any of it is sent, so that a
-	// read failing midway (the workspace torn down) still falls back to the
-	// artifact below, with nothing sent twice.
-	//
-	// lastContent is the last known content, for delta detection. On each poll
-	// we read the last followWindowLines lines. Since logs are append-only, new
-	// content appears at the end. We find the overlap with the previous read
-	// and send only the new bytes.
-	var lastContent []byte
+	// Wait for logs to become available (task may be queued or starting up)
+	var allContent []byte
 	for {
-		content, err := readLiveLogs(job, task, followLines(tailLines))
+		content, err := readLiveLogs(job, task, tailLines)
 		if err == nil {
-			if err := sendLogData(srv, content); err != nil {
-				log.Error("Failed to send initial follow output", "job", job, "task", task, "error", err)
-				return fmt.Errorf("failed to send initial follow output: %w", err)
-			}
-			log.Debug("Follow mode started", "job", job, "task", task, "sentBytes", len(content))
-			lastContent = content
+			allContent = content
 			break
 		}
 
@@ -164,6 +133,24 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 		}
 	}
 
+	// Send only the last tailLines lines as initial output
+	if len(allContent) > 0 {
+		if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
+			Data:   allContent,
+			Length: uint32(len(allContent)),
+		}); sendErr != nil {
+			log.Error("Failed to send initial follow chunk", "job", job, "task", task, "error", sendErr)
+			return fmt.Errorf("failed to send initial follow chunk: %w", sendErr)
+		}
+	}
+	log.Debug("Follow mode started", "job", job, "task", task, "sentBytes", len(allContent))
+
+	// Track last known content for delta detection.
+	// On each poll we read the last N lines. Since logs are append-only, new content
+	// appears at the end. We find the overlap with the previous read and send only
+	// the new bytes.
+	lastContent := allContent
+
 	// Poll for new content
 	for {
 		select {
@@ -171,25 +158,33 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 			log.Debug("Follow mode: client disconnected", "job", job, "task", task)
 			return nil
 		case <-ticker.C:
-			content, err := readLiveLogs(job, task, followWindowLines)
+			// Read a generous window: enough to cover new output plus overlap with last read.
+			// 10,000 lines covers ~10s of output for even the most verbose tasks.
+			content, err := readLiveLogs(job, task, 10000)
 			if err != nil {
 				// Live reader gone — task has finished and workspace is being torn down.
 				// Try to send any remaining content from the finalized artifact.
 				log.Debug("Follow mode: live reader gone, checking artifact for final content", "job", job, "task", task)
 				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
-				if _, statErr := os.Stat(artifact); statErr != nil {
-					return nil
-				}
-				if err := sendArtifactDelta(srv, artifact, lastContent, job, task); err != nil {
-					log.Error("Follow mode: failed to send final logs from artifact", "job", job, "task", task, "artifact", artifact, "error", err)
-					return fmt.Errorf("failed to send final logs from artifact: %w", err)
+				if _, statErr := os.Stat(artifact); statErr == nil {
+					if r, extractErr := extractLogsFromArtifact(artifact, 1000000); extractErr == nil {
+						finalContent, _ := io.ReadAll(r)
+						r.Close()
+						// In chunks: artifact logs are no longer capped at 10 MB per file,
+						// so the delta may exceed what the client accepts in one message.
+						_ = sendLogData(srv, findNewContent(lastContent, finalContent))
+					}
 				}
 				return nil
 			}
 			delta := findNewContent(lastContent, content)
 			if len(delta) > 0 {
-				if err := sendLogData(srv, delta); err != nil {
-					return fmt.Errorf("failed to send follow delta: %w", err)
+				if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
+					Data:   delta,
+					Length: uint32(len(delta)),
+				}); sendErr != nil {
+					log.Error("Failed to send follow delta", "job", job, "task", task, "error", sendErr)
+					return fmt.Errorf("failed to send follow delta: %w", sendErr)
 				}
 				lastContent = content
 			}
@@ -198,188 +193,54 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 }
 
 // findNewContent compares two snapshots of tailed log output and returns only the
-// bytes that are new in `current` relative to `previous` (see newContentOffset).
+// bytes that are new in `current` relative to `previous`. Since logs are append-only,
+// the end of `previous` should appear somewhere in `current`, and everything after
+// that overlap is new content.
 func findNewContent(previous, current []byte) []byte {
-	// Reading from memory cannot fail.
-	offset, _ := newContentOffset(previous, bytes.NewReader(current))
-	if offset == int64(len(current)) {
+	if len(previous) == 0 {
+		return current
+	}
+	if bytes.Equal(previous, current) {
 		return nil
 	}
-	return current[offset:]
+
+	// If current contains all of previous (same prefix), the delta is the suffix.
+	// This is the common case when the tail window is large enough.
+	if len(current) >= len(previous) && bytes.Equal(current[:len(previous)], previous) {
+		return current[len(previous):]
+	}
+
+	// The tail window shifted: previous content is no longer a prefix of current.
+	// Find where the end of previous appears in current by searching for progressively
+	// shorter suffixes of previous. Start with the last few lines (robust against
+	// partial line matches).
+	prevStr := string(previous)
+	lastNewline := strings.LastIndex(prevStr, "\n")
+	if lastNewline > 0 {
+		// Try last 3 lines as fingerprint for reliable matching
+		lines := strings.Split(prevStr[:lastNewline], "\n")
+		for take := min(len(lines), 3); take >= 1; take-- {
+			fingerprint := strings.Join(lines[len(lines)-take:], "\n") + "\n"
+			idx := bytes.Index(current, []byte(fingerprint))
+			if idx >= 0 {
+				return current[idx+len(fingerprint):]
+			}
+		}
+	}
+
+	// No overlap found — the gap between polls was too large. Send everything as new
+	// content (may cause some duplication on the client, but no data loss).
+	return current
 }
 
-// newContentOffset returns the offset in the content of r from which it is
-// new relative to previous, an earlier snapshot of the end of the same logs.
-// Since logs are append-only, the end of previous should appear somewhere in
-// the content, and everything after that overlap is new:
-//   - if the content starts with previous (the tail window is large enough,
-//     or nothing changed), what follows it;
-//   - else the tail window shifted: what follows the first occurrence of the
-//     last 3 lines of previous, or 2, or 1 (robust against partial line
-//     matches). A last line without newline, still being written, counts as
-//     a line, so that what is appended to it is all that is new;
-//   - else, the gap between reads was too large: everything (0). This may
-//     duplicate some output on the client, but loses none.
-//
-// It reads r once, holding about len(previous) bytes rather than all of it.
-func newContentOffset(previous []byte, r io.Reader) (int64, error) {
-	if len(previous) == 0 {
-		return 0, nil
-	}
-
-	fingerprints := lastLines(previous, 3)
-	ends := make([]int64, len(fingerprints)) // after each fingerprint's first occurrence
-	keep := 0                                // of the bytes searched, for an occurrence spanning reads
-	for i, fp := range fingerprints {
-		ends[i] = -1
-		keep = max(keep, len(fp)-1)
-	}
-
-	var read int64
-	isPrefix := true // so far
-	var window []byte
-	var windowStart int64 // offset of window[0]
-	chunk := make([]byte, logChunkSize)
-	for {
-		n, err := r.Read(chunk)
-		if n > 0 {
-			data := chunk[:n]
-			if isPrefix && read < int64(len(previous)) {
-				m := min(int64(n), int64(len(previous))-read)
-				isPrefix = bytes.Equal(data[:m], previous[read:read+m])
-			}
-			read += int64(n)
-			if isPrefix && read >= int64(len(previous)) {
-				return int64(len(previous)), nil
-			}
-
-			window = append(window, data...)
-			for i, fp := range fingerprints {
-				if ends[i] >= 0 {
-					continue
-				}
-				// Only where an occurrence could end in data: earlier ones were searched.
-				from := max(0, len(window)-n-len(fp)+1)
-				if idx := bytes.Index(window[from:], fp); idx >= 0 {
-					ends[i] = windowStart + int64(from+idx+len(fp))
-				}
-			}
-			// No fingerprint at all when previous holds no line (just "\n").
-			if !isPrefix && len(ends) > 0 && ends[0] >= 0 {
-				return ends[0], nil
-			}
-			if drop := len(window) - keep; drop > 0 {
-				window = window[:copy(window, window[drop:])]
-				windowStart += int64(drop)
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	for _, end := range ends {
-		if end >= 0 {
-			return end, nil
-		}
-	}
-	return 0, nil
-}
-
-// lastLines returns the suffixes of b holding its last n lines, then n-1, ...
-// down to 1 (fewer if b has fewer lines). A last line without newline counts.
-func lastLines(b []byte, n int) [][]byte {
-	end := len(b)
-	if end > 0 && b[end-1] == '\n' {
-		end-- // the newline ending the last line, not an empty line after it
-	}
-	var starts []int // of the last line, then the one before, ...
-	for pos := end; len(starts) < n && pos > 0; {
-		i := bytes.LastIndexByte(b[:pos], '\n')
-		starts = append(starts, i+1)
-		if i < 0 {
-			break
-		}
-		pos = i
-	}
-	suffixes := make([][]byte, 0, len(starts))
-	for k := len(starts) - 1; k >= 0; k-- {
-		suffixes = append(suffixes, b[starts[k]:])
-	}
-	return suffixes
-}
-
-// sendArtifactDelta sends what the whole logs of a finalized artifact add to
-// previous (see newContentOffset). It streams them twice rather than hold
-// them: once to find where the new content starts, once to send it.
-func sendArtifactDelta(srv proto.Alfred_StreamTaskLogsServer, artifact string, previous []byte, job, task string) error {
-	r, err := extractLogsFromArtifact(artifact, allLines)
-	if err != nil {
-		return err
-	}
-	offset, err := newContentOffset(previous, r)
-	r.Close()
-	if err != nil {
-		return err
-	}
-
-	r, err = extractLogsFromArtifact(artifact, allLines)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	if _, err := io.CopyN(io.Discard, r, offset); err != nil {
-		return err
-	}
-	return streamReader(srv, r, job, task)
-}
-
-// readLiveLogs reads live log content for a task, tailing up to the given number
-// of lines per step log, for follow mode: past followMaxBytes, only the last
-// lines that fit are kept.
+// readLiveLogs reads live log content for a task, tailing up to the given number of lines.
 func readLiveLogs(job, task string, lines int) ([]byte, error) {
 	reader, err := readLiveTaskLogs(job, task, lines)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
-	return readLastBytes(reader, followMaxBytes)
-}
-
-// readLastBytes reads r whole and returns its last lines that fit in limit
-// bytes (all of r if it does), holding at most about twice that.
-func readLastBytes(r io.Reader, limit int) ([]byte, error) {
-	var buf []byte
-	trimmed := false
-	chunk := make([]byte, logChunkSize)
-	for {
-		n, err := r.Read(chunk)
-		buf = append(buf, chunk[:n]...)
-		if len(buf) > 2*limit {
-			buf = buf[:copy(buf, buf[len(buf)-limit:])]
-			trimmed = true
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(buf) > limit {
-		buf = buf[len(buf)-limit:]
-		trimmed = true
-	}
-	if trimmed {
-		// Drop the line cut in its middle.
-		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
-			buf = buf[i+1:]
-		}
-	}
-	return buf, nil
+	return io.ReadAll(reader)
 }
 
 // lastNLines returns the last n lines from data. If data has fewer than n lines,

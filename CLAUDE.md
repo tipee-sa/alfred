@@ -336,7 +336,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **`StreamTaskLogs.tail_lines`**: proto3 can't tell 0 from unset, so 0 means the default
   (100 lines) and a negative value means whole logs (`logs -n all`; an older server clamps it
   to 100). Down the stack, `lines <= 0` means whole logs (`TailLogs`, `ReadLiveTaskLogs`,
-  `extractLogsFromArtifact`), which then stream instead of being buffered.
+  `extractLogsFromArtifact`), which then stream instead of being buffered. Follow mode refuses
+  whole logs (`InvalidArgument`; the client refuses `-f -n all` first): it compares windows it
+  reads whole, by content, which only holds for a bounded number of lines.
 - **Service container logs**: Service containers now have log collection on startup failure
   (step containers always had log streaming).
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and

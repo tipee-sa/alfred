@@ -80,6 +80,23 @@ func TestLogsCmd_RequiresExactlyTwoArgs(t *testing.T) {
 	assert.Error(t, logsCmd.Args(logsCmd, []string{"job", "task", "extra"}))
 }
 
+func TestLogsCmd_FollowRefusesAllLines(t *testing.T) {
+	lines, follow := logsCmd.Flags().Lookup("lines"), logsCmd.Flags().Lookup("follow")
+	t.Cleanup(func() {
+		require.NoError(t, lines.Value.Set("100"))
+		require.NoError(t, follow.Value.Set("false"))
+	})
+
+	require.NoError(t, lines.Value.Set("all"))
+	assert.NoError(t, logsCmd.Args(logsCmd, []string{"job", "task"}), "-n all alone")
+
+	require.NoError(t, follow.Value.Set("true"))
+	assert.ErrorContains(t, logsCmd.Args(logsCmd, []string{"job", "task"}), "-n all cannot be combined with -f")
+
+	require.NoError(t, lines.Value.Set("42"))
+	assert.NoError(t, logsCmd.Args(logsCmd, []string{"job", "task"}), "-f with a number of lines")
+}
+
 // --- recvLogsLoop tests ---
 
 // mockRecv builds a recv function from a sequence of results.

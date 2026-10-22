@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
-	"time"
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/config"
@@ -21,7 +20,9 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func TestMain(m *testing.M) {
@@ -117,94 +118,6 @@ func TestLastNLines_OneLineRequestMoreThanAvailable(t *testing.T) {
 
 // --- findNewContent tests ---
 
-func TestFindNewContent_EmptyPrevious(t *testing.T) {
-	assert.Equal(t, []byte("new"), findNewContent(nil, []byte("new")))
-	assert.Equal(t, []byte("new"), findNewContent([]byte{}, []byte("new")))
-}
-
-// A previous snapshot holding no line, just "\n", yields no fingerprint: comparing it
-// with content that doesn't start with it must not panic (it took the server down).
-func TestNewContentOffset_NewlineOnlyPrevious(t *testing.T) {
-	curr := "==> /alfred/output/task-step-1.log <==\nhello\n"
-	offset, err := newContentOffset([]byte("\n"), strings.NewReader(curr))
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), offset)
-	assert.Equal(t, []byte(curr), findNewContent([]byte("\n"), []byte(curr)))
-}
-
-func TestFindNewContent_Identical(t *testing.T) {
-	data := []byte("line1\nline2\n")
-	assert.Nil(t, findNewContent(data, data))
-}
-
-func TestFindNewContent_PrefixMatch(t *testing.T) {
-	prev := []byte("line1\nline2\n")
-	curr := []byte("line1\nline2\nline3\nline4\n")
-	assert.Equal(t, []byte("line3\nline4\n"), findNewContent(prev, curr))
-}
-
-func TestFindNewContent_TailWindowShifted(t *testing.T) {
-	// Simulates the case where the tail window moved: previous starts at line1,
-	// but current starts at line2 (line1 fell off the tail window)
-	prev := []byte("line1\nline2\nline3\n")
-	curr := []byte("line2\nline3\nline4\nline5\n")
-	assert.Equal(t, []byte("line4\nline5\n"), findNewContent(prev, curr))
-}
-
-func TestFindNewContent_UnchangedPartialLastLine(t *testing.T) {
-	// A trimmed initial snapshot (no header) ending with a line still being
-	// written, then a poll of the same, unchanged output with its header.
-	prev := []byte("line1\nline2\nline3\npart")
-	curr := []byte("==> task-step-0.log <==\nline1\nline2\nline3\npart")
-	assert.Empty(t, findNewContent(prev, curr), "nothing changed")
-
-	curr = []byte("==> task-step-0.log <==\nline1\nline2\nline3\npartial line\nline5\n")
-	assert.Equal(t, "ial line\nline5\n", string(findNewContent(prev, curr)), "only what is appended to the partial line")
-}
-
-func TestNewContentOffset_StreamedInSmallReads(t *testing.T) {
-	// Fingerprints spanning reads: the same offsets byte by byte as in one read.
-	prev := []byte("==> f.log <==\nl1\nl2\nl3\nl4\nl5\nl6\npa")
-	cases := map[string]string{
-		"prefix":         string(prev) + "rtial\nl8\n",
-		"identical":      string(prev),
-		"shorter":        string(prev[:20]),
-		"window shifted": "==> f.log <==\nl3\nl4\nl5\nl6\npartial\nl8\n",
-		"3 lines twice":  "xx\nl5\nl6\npa\nl8\nl5\nl6\npa\nl9\n",
-		"2 lines only":   "l6\npa\nl8\n",
-		"last line only": "xx\npa\nl8\n",
-		"no overlap":     "something else\n",
-	}
-	for name, curr := range cases {
-		t.Run(name, func(t *testing.T) {
-			whole, err := newContentOffset(prev, strings.NewReader(curr))
-			require.NoError(t, err)
-			oneByte, err := newContentOffset(prev, iotest.OneByteReader(strings.NewReader(curr)))
-			require.NoError(t, err)
-			assert.Equal(t, whole, oneByte)
-		})
-	}
-
-	offset, err := newContentOffset(prev, iotest.OneByteReader(strings.NewReader(cases["3 lines twice"])))
-	require.NoError(t, err)
-	assert.Equal(t, "\nl8\nl5\nl6\npa\nl9\n", cases["3 lines twice"][offset:], "after the first occurrence of the last 3 lines")
-	offset, err = newContentOffset(prev, iotest.OneByteReader(strings.NewReader(cases["prefix"])))
-	require.NoError(t, err)
-	assert.Equal(t, "rtial\nl8\n", cases["prefix"][offset:])
-}
-
-func TestNewContentOffset_ReadError(t *testing.T) {
-	_, err := newContentOffset([]byte("l1\n"), iotest.ErrReader(errors.New("boom")))
-	assert.ErrorContains(t, err, "boom")
-}
-
-func TestFindNewContent_NoOverlap(t *testing.T) {
-	// Gap too large, no overlap — should return everything (safe fallback)
-	prev := []byte("old content\n")
-	curr := []byte("completely different content\n")
-	assert.Equal(t, curr, findNewContent(prev, curr))
-}
-
 // --- streamReader tests ---
 
 // mockLogStream implements proto.Alfred_StreamTaskLogsServer for testing.
@@ -295,124 +208,6 @@ func TestSendLogData_Empty(t *testing.T) {
 	mock := &mockLogStream{ctx: context.Background()}
 	require.NoError(t, sendLogData(mock, nil))
 	assert.Empty(t, mock.chunks)
-}
-
-func TestReadLastBytes(t *testing.T) {
-	content := numberedLines("line", 1000)
-
-	got, err := readLastBytes(strings.NewReader(content), len(content))
-	require.NoError(t, err)
-	assert.Equal(t, content, string(got), "all of it when it fits")
-
-	got, err = readLastBytes(iotest.HalfReader(strings.NewReader(content)), 100)
-	require.NoError(t, err)
-	want := content[len(content)-100:]
-	want = want[strings.IndexByte(want, '\n')+1:]
-	assert.Equal(t, want, string(got), "the last whole lines that fit")
-}
-
-// setUpFollow makes followLiveLogs testable without a scheduler: live reads
-// return what live returns, and polls come at once.
-func setUpFollow(t *testing.T, live func(call, lines int) (io.ReadCloser, error)) *[]int {
-	t.Helper()
-	oldDataRoot, oldRead, oldInterval := dataRoot, readLiveTaskLogs, followPollInterval
-	t.Cleanup(func() { dataRoot, readLiveTaskLogs, followPollInterval = oldDataRoot, oldRead, oldInterval })
-	dataRoot = t.TempDir()
-	followPollInterval = time.Millisecond
-
-	var requested []int
-	readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) {
-		requested = append(requested, lines)
-		return live(len(requested), lines)
-	}
-	return &requested
-}
-
-func receivedChunks(t *testing.T, mock *mockLogStream) string {
-	t.Helper()
-	var received bytes.Buffer
-	for _, chunk := range mock.chunks {
-		require.LessOrEqual(t, len(chunk.Data), logChunkSize)
-		received.Write(chunk.Data)
-	}
-	return received.String()
-}
-
-var errTornDown = errors.New("workspace torn down")
-
-func TestFollowLiveLogs_AllStartsWithWindowThenWholeFinalDelta(t *testing.T) {
-	// `-f -n all` starts with the last followWindowLines lines; then, before
-	// the task completes, more new lines than a poll reads, in that step log
-	// and in a new one: none of them may be lost.
-	header := "==> task-step-0.log <==\n"
-	live := numberedLines("line", 2*followWindowLines)
-	requested := setUpFollow(t, func(call, lines int) (io.ReadCloser, error) {
-		if call == 1 {
-			return io.NopCloser(strings.NewReader(header + string(lastNLines([]byte(live), lines)))), nil
-		}
-		return nil, errTornDown
-	})
-	final := numberedLines("line", 3*followWindowLines+5)
-	step1 := numberedLines("step1", followWindowLines+5)
-	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
-		{"job-abc-task/output/task-step-0.log", final},
-		{"job-abc-task/output/task-step-1.log", step1},
-	})
-
-	mock := &mockLogStream{ctx: context.Background()}
-	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", allLines))
-
-	assert.Equal(t,
-		header+string(lastNLines([]byte(final), 2*followWindowLines+5))+"\n==> task-step-1.log <==\n"+step1,
-		receivedChunks(t, mock),
-		"the last lines a poll reads, then all that the artifact adds")
-	assert.Equal(t, []int{followWindowLines, followWindowLines}, *requested)
-}
-
-func TestFollowLiveLogs_ReadFailingMidwayFallsBackToArtifact(t *testing.T) {
-	// The workspace torn down while the first read drains: tail has output a
-	// first step log, then fails on the next one.
-	requested := setUpFollow(t, func(call, lines int) (io.ReadCloser, error) {
-		if call == 1 {
-			return io.NopCloser(io.MultiReader(
-				strings.NewReader("==> task-step-0.log <==\nline-1\n"),
-				iotest.ErrReader(errTornDown),
-			)), nil
-		}
-		return nil, errTornDown
-	})
-	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
-		{"job-abc-task/output/task-step-0.log", "line-1\nline-2\n"},
-		{"job-abc-task/output/task-step-1.log", "x\n"},
-	})
-
-	mock := &mockLogStream{ctx: context.Background()}
-	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", 100))
-
-	assert.Equal(t, "==> task-step-0.log <==\nline-1\nline-2\n\n==> task-step-1.log <==\nx\n", receivedChunks(t, mock),
-		"the logs from the artifact, nothing sent twice")
-	assert.Equal(t, []int{100}, *requested)
-}
-
-func TestFollowLiveLogs_UnchangedRepetitiveOutputSentOnce(t *testing.T) {
-	// `-f -n 10000` on 10,000 identical lines: the polls read the same output,
-	// so there is nothing new to send, nor at the end from the artifact.
-	header := "==> task-step-0.log <==\n"
-	waiting := strings.Repeat("waiting\n", followWindowLines)
-	setUpFollow(t, func(call, lines int) (io.ReadCloser, error) {
-		if call <= 3 {
-			return io.NopCloser(strings.NewReader(header + waiting)), nil
-		}
-		return nil, errTornDown
-	})
-	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
-		{"job-abc-task/output/task-step-0.log", waiting},
-	})
-
-	mock := &mockLogStream{ctx: context.Background()}
-	require.NoError(t, (&server{}).followLiveLogs(mock, "job-abc", "task", followWindowLines))
-
-	assert.Equal(t, header+waiting, receivedChunks(t, mock))
 }
 
 // --- extractLogsFromArtifact tests ---
@@ -521,27 +316,6 @@ func TestExtractLogsFromArtifact_NonexistentFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to open artifact")
 }
 
-func TestFindNewContent_LiveToArtifactTransition(t *testing.T) {
-	// With the TailLogs fix (basenames in headers), live logs and artifact
-	// extraction now use the same header format. Verify findNewContent handles
-	// the transition correctly: the live snapshot has 2 lines, the artifact
-	// has all 3 lines, and we should get only the new line.
-	prev := []byte("==> task-step-0.log <==\nline1\nline2\n")
-	curr := []byte("==> task-step-0.log <==\nline1\nline2\nline3\n")
-	delta := findNewContent(prev, curr)
-	assert.Equal(t, []byte("line3\n"), delta, "should return only the new line appended after the live snapshot")
-}
-
-func TestFindNewContent_LiveToArtifactTransition_MultipleFiles(t *testing.T) {
-	// Transition with multiple step files: live had partial output,
-	// artifact has complete output including a new step file.
-	prev := []byte("==> task-step-0.log <==\nstep0-line1\nstep0-line2\n")
-	curr := []byte("==> task-step-0.log <==\nstep0-line1\nstep0-line2\n\n==> task-step-1.log <==\nstep1-line1\n")
-	delta := findNewContent(prev, curr)
-	assert.Equal(t, []byte("\n==> task-step-1.log <==\nstep1-line1\n"), delta,
-		"should return the new step file content")
-}
-
 func TestExtractLogsFromArtifact_SortsFilesByName(t *testing.T) {
 	// Deliberately insert in reverse order to verify sorting
 	artifact := createTestArtifact(t, map[string]string{
@@ -612,6 +386,22 @@ func readAllAndClose(t *testing.T, r io.ReadCloser) string {
 	content, err := io.ReadAll(r)
 	require.NoError(t, err)
 	return string(content)
+}
+
+// Follow mode compares windows it reads whole, so whole logs are refused there
+// rather than read into memory, even for a finished task.
+func TestStreamTaskLogs_FollowRefusesWholeLogs(t *testing.T) {
+	oldDataRoot := dataRoot
+	dataRoot = t.TempDir()
+	t.Cleanup(func() { dataRoot = oldDataRoot })
+	createOrderedTestArtifact(t, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst"), [][2]string{
+		{"job-abc-task/output/task-step-0.log", "line\n"},
+	})
+
+	mock := &mockLogStream{ctx: context.Background()}
+	err := (&server{}).StreamTaskLogs(&proto.StreamTaskLogsRequest{Job: "job-abc", Task: "task", TailLines: -1, Follow: true}, mock)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Empty(t, mock.chunks)
 }
 
 func TestStreamTaskLogs_NegativeTailLinesReturnsWholeLog(t *testing.T) {
@@ -712,4 +502,56 @@ func TestReadTail_MatchesLastNLines(t *testing.T) {
 func TestReadTail_ReadError(t *testing.T) {
 	_, err := readTail(iotest.ErrReader(errors.New("boom")), 10)
 	assert.ErrorContains(t, err, "boom")
+}
+
+func TestFindNewContent_EmptyPrevious(t *testing.T) {
+	assert.Equal(t, []byte("new"), findNewContent(nil, []byte("new")))
+	assert.Equal(t, []byte("new"), findNewContent([]byte{}, []byte("new")))
+}
+
+func TestFindNewContent_Identical(t *testing.T) {
+	data := []byte("line1\nline2\n")
+	assert.Nil(t, findNewContent(data, data))
+}
+
+func TestFindNewContent_PrefixMatch(t *testing.T) {
+	prev := []byte("line1\nline2\n")
+	curr := []byte("line1\nline2\nline3\nline4\n")
+	assert.Equal(t, []byte("line3\nline4\n"), findNewContent(prev, curr))
+}
+
+func TestFindNewContent_TailWindowShifted(t *testing.T) {
+	// Simulates the case where the tail window moved: previous starts at line1,
+	// but current starts at line2 (line1 fell off the tail window)
+	prev := []byte("line1\nline2\nline3\n")
+	curr := []byte("line2\nline3\nline4\nline5\n")
+	assert.Equal(t, []byte("line4\nline5\n"), findNewContent(prev, curr))
+}
+
+func TestFindNewContent_NoOverlap(t *testing.T) {
+	// Gap too large, no overlap — should return everything (safe fallback)
+	prev := []byte("old content\n")
+	curr := []byte("completely different content\n")
+	assert.Equal(t, curr, findNewContent(prev, curr))
+}
+
+func TestFindNewContent_LiveToArtifactTransition(t *testing.T) {
+	// With the TailLogs fix (basenames in headers), live logs and artifact
+	// extraction now use the same header format. Verify findNewContent handles
+	// the transition correctly: the live snapshot has 2 lines, the artifact
+	// has all 3 lines, and we should get only the new line.
+	prev := []byte("==> task-step-0.log <==\nline1\nline2\n")
+	curr := []byte("==> task-step-0.log <==\nline1\nline2\nline3\n")
+	delta := findNewContent(prev, curr)
+	assert.Equal(t, []byte("line3\n"), delta, "should return only the new line appended after the live snapshot")
+}
+
+func TestFindNewContent_LiveToArtifactTransition_MultipleFiles(t *testing.T) {
+	// Transition with multiple step files: live had partial output,
+	// artifact has complete output including a new step file.
+	prev := []byte("==> task-step-0.log <==\nstep0-line1\nstep0-line2\n")
+	curr := []byte("==> task-step-0.log <==\nstep0-line1\nstep0-line2\n\n==> task-step-1.log <==\nstep1-line1\n")
+	delta := findNewContent(prev, curr)
+	assert.Equal(t, []byte("\n==> task-step-1.log <==\nstep1-line1\n"), delta,
+		"should return the new step file content")
 }

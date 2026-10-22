@@ -16,7 +16,16 @@ var logsCmd = &cobra.Command{
 	Use:     "logs JOB TASK",
 	Aliases: []string{"tail"},
 	Short:   "Stream step logs for a task",
-	Args:    cobra.ExactArgs(2),
+	// Checked here rather than in RunE: Args runs before connecting to the server.
+	Args: func(cmd *cobra.Command, args []string) error {
+		if err := cobra.ExactArgs(2)(cmd, args); err != nil {
+			return err
+		}
+		if follow, _ := cmd.Flags().GetBool("follow"); follow && logsTailLines == allTailLines {
+			return fmt.Errorf("-n all cannot be combined with -f: use -n all to print whole logs, or -f with -n N")
+		}
+		return nil
+	},
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		follow, err := cmd.Flags().GetBool("follow")
@@ -113,6 +122,6 @@ func recvLogsLoop(ctx context.Context, recv func() (*proto.StreamTaskLogsChunk, 
 }
 
 func init() {
-	logsCmd.Flags().VarP(&logsTailLines, "lines", "n", "number of lines to show from the end of each step log, or \"all\" (at most 10000 with -f while the task runs)")
+	logsCmd.Flags().VarP(&logsTailLines, "lines", "n", "number of lines to show from the end of each step log, or \"all\" for whole logs (not with -f)")
 	logsCmd.Flags().BoolP("follow", "f", false, "follow log output (like tail -f)")
 }
