@@ -11,6 +11,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gammadia/alfred/proto"
@@ -64,8 +65,13 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 	// the client does: the task may end meanwhile, and its workspace go with
 	// the logs not read yet. If it does, nothing is sent yet, and the artifact,
 	// archived before the workspace is deleted, has them all.
-	spooled, spoolErr := spoolLogs(srv.Context(), liveReader)
-	if err := liveReader.Close(); err != nil {
+	// The RPC cancelled, the client gone: close the live reader, which also
+	// releases a read blocked in it (a stalled SSH stream), not only the next.
+	live := &closeOnce{ReadCloser: liveReader}
+	stopClosing := context.AfterFunc(srv.Context(), func() { live.Close() })
+	spooled, spoolErr := spoolLogs(srv.Context(), live)
+	stopClosing()
+	if err := live.Close(); err != nil {
 		log.Warn("Error closing log reader", "job", req.Job, "task", req.Task, "error", err)
 	}
 	if spoolErr != nil {
@@ -77,6 +83,19 @@ func (s *server) StreamTaskLogs(req *proto.StreamTaskLogsRequest, srv proto.Alfr
 	}
 	defer spooled.Close()
 	return streamReader(srv, spooled, req.Job, req.Task)
+}
+
+// closeOnce closes its ReadCloser once, however many times and from however
+// many goroutines it is closed.
+type closeOnce struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (c *closeOnce) Close() error {
+	c.once.Do(func() { c.err = c.ReadCloser.Close() })
+	return c.err
 }
 
 // spoolLogs copies r to a temporary file, unlinked at once, and returns it
@@ -204,9 +223,13 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 					if r, extractErr := extractLogsFromArtifact(srv.Context(), artifact, allLines); extractErr == nil {
 						delta, readErr := finalFollowDelta(lastContent, r)
 						r.Close()
-						if readErr == nil {
-							// In chunks: the delta may exceed what the client accepts in one message.
-							_ = sendLogData(srv, delta)
+						if readErr != nil {
+							// Not a clean end: the client would take the logs for complete.
+							return fmt.Errorf("failed to read the final logs from the artifact: %w", readErr)
+						}
+						// In chunks: the delta may exceed what the client accepts in one message.
+						if err := sendLogData(srv, delta); err != nil {
+							return err
 						}
 					}
 				}
@@ -572,25 +595,48 @@ func writeArtifactLog(w io.Writer, separate bool, name string, r io.Reader, tail
 // that cannot be among the last ones.
 const tailTrimThreshold = 1 << 20
 
-// readTail returns the last n lines of r, holding about tailTrimThreshold
-// bytes (or twice the size of those lines, if larger) rather than all of r.
+// tailMaxBytes bounds what readTail returns, however long the lines: very long
+// lines, or none at all, would otherwise make the last n lines the whole log.
+const tailMaxBytes = 16 << 20
+
+// tailCutNotice starts a tail that tailMaxBytes cut short of its first line.
+const tailCutNotice = "[alfred: the last lines of this log exceed 16 MiB; only their last 16 MiB follow]\n"
+
+// readTail returns the last n lines of r, at most tailMaxBytes of them (after
+// tailCutNotice if that cuts them), holding about tailTrimThreshold bytes (or
+// twice the tail, if larger) rather than all of r.
 func readTail(r io.Reader, n int) ([]byte, error) {
 	var buf []byte
+	cut := false // buf starts inside a line, cut by tailMaxBytes
 	limit := tailTrimThreshold
+	keepTail := func() {
+		// The last n lines of what is read so far hold all of the last n lines
+		// of r that it overlaps: those are all that is kept.
+		tail := lastNLines(buf, n)
+		if len(tail) < len(buf) {
+			cut = false // starts after a newline
+		}
+		if len(tail) > tailMaxBytes {
+			tail, cut = tail[len(tail)-tailMaxBytes:], true
+		}
+		buf = buf[:copy(buf, tail)]
+	}
 	chunk := make([]byte, 32*1024)
 	for {
 		k, err := r.Read(chunk)
 		buf = append(buf, chunk[:k]...)
 		if len(buf) > limit {
-			// The last n lines of what is read so far hold all of the last n lines
-			// of r that it overlaps: those are all that is kept.
-			buf = buf[:copy(buf, lastNLines(buf, n))]
+			keepTail()
 			limit = max(tailTrimThreshold, 2*len(buf))
 		}
 		if err == io.EOF {
+			keepTail()
 			// A copy: the tail may be held a while (set aside), and buf can be
 			// much larger than it.
-			return bytes.Clone(lastNLines(buf, n)), nil
+			if cut {
+				return append([]byte(tailCutNotice), buf...), nil
+			}
+			return bytes.Clone(buf), nil
 		}
 		if err != nil {
 			return nil, err

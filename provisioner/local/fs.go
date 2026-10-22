@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/gammadia/alfred/provisioner/internal"
 )
@@ -107,11 +108,11 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 // cmdReader reads a command's stdout. At EOF it waits for the command and
 // returns its failure, if any, in place of EOF.
 type cmdReader struct {
-	stdout io.ReadCloser
-	cmd    *exec.Cmd
-	stderr *bytes.Buffer
-	waited bool
-	err    error
+	stdout   io.ReadCloser
+	cmd      *exec.Cmd
+	stderr   *bytes.Buffer
+	waitOnce sync.Once
+	err      error
 }
 
 func (r *cmdReader) Read(p []byte) (int, error) {
@@ -124,25 +125,23 @@ func (r *cmdReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// wait waits for the command once, however many times it is called, from
+// Read at EOF and from Close, which may run at the same time.
 func (r *cmdReader) wait() error {
-	if !r.waited {
-		r.waited = true
+	r.waitOnce.Do(func() {
 		if err := r.cmd.Wait(); err != nil {
 			r.err = fmt.Errorf("failed to tail log files: %w (stderr: %s)", err, strings.TrimSpace(r.stderr.String()))
 		}
-	}
+	})
 	return r.err
 }
 
 // Close stops reading early if need be: closing the pipe makes a command
-// still writing to it fail (SIGPIPE), so the wait does not block.
+// still writing to it fail (SIGPIPE), so the wait does not block, and a Read
+// blocked on the pipe returns. It may be called during a Read.
 func (r *cmdReader) Close() error {
-	if r.waited {
-		return nil
-	}
 	r.stdout.Close()
-	r.waited = true
-	_ = r.cmd.Wait()
+	_ = r.wait()
 	return nil
 }
 

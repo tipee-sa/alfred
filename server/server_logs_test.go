@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -471,6 +472,46 @@ func (v *vanishingReader) Read(p []byte) (int, error) {
 	return 0, errors.New("tail: cannot open 'task-step-1.log' for reading: No such file or directory")
 }
 
+// A read blocked in the live reader (a stalled SSH stream) ends when the RPC
+// is cancelled: cancelling closes the reader.
+func TestStreamTaskLogs_CancelReleasesAStalledLiveRead(t *testing.T) {
+	oldDataRoot, oldRead := dataRoot, readLiveTaskLogs
+	t.Cleanup(func() { dataRoot, readLiveTaskLogs = oldDataRoot, oldRead })
+	dataRoot = t.TempDir()
+	stalled := &stalledReader{closed: make(chan struct{})}
+	readLiveTaskLogs = func(job, task string, lines int) (io.ReadCloser, error) { return stalled, nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- (&server{}).StreamTaskLogs(&proto.StreamTaskLogsRequest{Job: "job-abc", Task: "task", TailLines: -1}, &mockLogStream{ctx: ctx})
+	}()
+	time.Sleep(50 * time.Millisecond) // the copy is now blocked in Read
+	cancel()
+	select {
+	case err := <-done:
+		assert.Error(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the RPC is still blocked on the live reader")
+	}
+}
+
+// stalledReader blocks every Read until closed, like a stalled stream.
+type stalledReader struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *stalledReader) Read(p []byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *stalledReader) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
 func TestStreamTaskLogs_NegativeTailLinesReturnsWholeLog(t *testing.T) {
 	oldDataRoot := dataRoot
 	dataRoot = t.TempDir()
@@ -586,6 +627,32 @@ func TestFinalFollowDelta(t *testing.T) {
 
 // A tail kept a while (set aside) must not hold on to the large buffer it was
 // cut from, here grown by a long first line.
+// readTail holds and returns at most tailMaxBytes, whatever the lines' length.
+func TestReadTail_BoundedForVeryLongLines(t *testing.T) {
+	// No newline at all: the last 16 MiB, after the notice.
+	huge := io.LimitReader(repeatByte('x'), 40<<20)
+	tail, err := readTail(huge, 100)
+	require.NoError(t, err)
+	assert.Equal(t, len(tailCutNotice)+tailMaxBytes, len(tail))
+	assert.True(t, strings.HasPrefix(string(tail), tailCutNotice))
+
+	// A huge line before the last lines asked for: those lines exactly.
+	r := io.MultiReader(io.LimitReader(repeatByte('x'), 40<<20), strings.NewReader("\nshort-1\nshort-2\n"))
+	tail, err = readTail(r, 2)
+	require.NoError(t, err)
+	assert.Equal(t, "short-1\nshort-2\n", string(tail))
+}
+
+// repeatByte reads b forever.
+type repeatByte byte
+
+func (b repeatByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(b)
+	}
+	return len(p), nil
+}
+
 func TestReadTail_ReturnsItsOwnCopy(t *testing.T) {
 	data := strings.Repeat("x", 4<<20) + "\nshort-1\nshort-2\n"
 	tail, err := readTail(strings.NewReader(data), 2)
