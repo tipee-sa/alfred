@@ -4,8 +4,10 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 	"testing"
 
+	"github.com/gammadia/alfred/provisioner/internal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -131,4 +133,25 @@ func TestTailLogsIgnoresNonLogFiles(t *testing.T) {
 	assert.Contains(t, output, "log line")
 	assert.NotContains(t, output, "not a log")
 	assert.NotContains(t, output, "{}")
+}
+
+// Whole logs (lines <= 0): each file whole, or its last MaxLogBytes bytes.
+func TestTailLogsWholeLogsBounded(t *testing.T) {
+	root := t.TempDir()
+	f := newFs(root)
+	logDir := "job-abc/output"
+	require.NoError(t, os.MkdirAll(path.Join(root, logDir), 0755))
+
+	small := "line1\nline2\nline3\n"
+	large := strings.Repeat("0123456789abcdef", internal.MaxLogBytes/16+1000) // over the limit
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-0.log"), []byte(small), 0644))
+	require.NoError(t, os.WriteFile(path.Join(root, logDir, "task-step-1.log"), []byte(large), 0644))
+
+	rc, err := f.TailLogs(logDir, 0)
+	require.NoError(t, err)
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+
+	assert.Equal(t, "==> task-step-0.log <==\n"+small+"\n==> task-step-1.log <==\n"+large[len(large)-internal.MaxLogBytes:], string(data))
 }

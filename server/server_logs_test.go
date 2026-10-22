@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -15,7 +17,9 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func TestMain(m *testing.M) {
@@ -349,4 +353,83 @@ func TestExtractLogsFromArtifact_SortsFilesByName(t *testing.T) {
 	content, _ := io.ReadAll(r)
 	expected := "==> task-step-0.log <==\nstep0\n\n==> task-step-1.log <==\nstep1\n\n==> task-step-2.log <==\nstep2\n"
 	assert.Equal(t, expected, string(content))
+}
+
+// --- whole logs (-n all) ---
+
+func TestRequestedTailLines(t *testing.T) {
+	for tailLines, expected := range map[int32]int{5: 5, 0: defaultTailLines, -1: allLines, -42: allLines} {
+		assert.Equal(t, expected, requestedTailLines(&proto.StreamTaskLogsRequest{TailLines: tailLines}), "TailLines=%d", tailLines)
+	}
+}
+
+// numberedLines returns n lines "<prefix>-1\n" … "<prefix>-n\n".
+func numberedLines(prefix string, n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "%s-%d\n", prefix, i)
+	}
+	return b.String()
+}
+
+func streamTaskLogs(t *testing.T, req *proto.StreamTaskLogsRequest) (string, error) {
+	t.Helper()
+	mock := &mockLogStream{ctx: context.Background()}
+	err := (&server{}).StreamTaskLogs(req, mock)
+	var received bytes.Buffer
+	for _, chunk := range mock.chunks {
+		received.Write(chunk.Data)
+	}
+	return received.String(), err
+}
+
+func TestStreamTaskLogs_WholeLogsFromArtifact(t *testing.T) {
+	oldDataRoot := dataRoot
+	dataRoot = t.TempDir()
+	t.Cleanup(func() { dataRoot = oldDataRoot })
+
+	stepLog := numberedLines("line", 250)
+	artifact := createTestArtifact(t, map[string]string{"job-abc-task/output/task-step-0.log": stepLog})
+	require.NoError(t, os.MkdirAll(path.Join(dataRoot, "artifacts", "job-abc"), 0755))
+	require.NoError(t, os.Rename(artifact, path.Join(dataRoot, "artifacts", "job-abc", "task.tar.zst")))
+
+	header := "==> task-step-0.log <==\n"
+	for tailLines, expected := range map[int32]string{
+		-1: header + stepLog, // logs -n all
+		0:  header + string(lastNLines([]byte(stepLog), defaultTailLines)),
+		2:  header + "line-249\nline-250\n",
+	} {
+		got, err := streamTaskLogs(t, &proto.StreamTaskLogsRequest{Job: "job-abc", Task: "task", TailLines: tailLines})
+		require.NoError(t, err)
+		assert.Equal(t, expected, got, "TailLines=%d", tailLines)
+	}
+}
+
+// Follow mode compares successive reads of a bounded window: it refuses whole
+// logs rather than read them on every poll.
+func TestStreamTaskLogs_FollowRefusesWholeLogs(t *testing.T) {
+	got, err := streamTaskLogs(t, &proto.StreamTaskLogsRequest{Job: "job-abc", Task: "task", TailLines: -1, Follow: true})
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	assert.Empty(t, got)
+}
+
+// A log larger than maxLogSize keeps its end: its last lines are its real last
+// lines, and whole, it is its last maxLogSize bytes.
+func TestExtractLogsFromArtifact_LargeLogKeepsItsEnd(t *testing.T) {
+	stepLog := numberedLines("line", 1_200_000) // ~13 MB
+	require.Greater(t, len(stepLog), maxLogSize)
+	artifact := createTestArtifact(t, map[string]string{"job-task/output/task-step-0.log": stepLog})
+	header := "==> task-step-0.log <==\n"
+
+	r, err := extractLogsFromArtifact(artifact, 2)
+	require.NoError(t, err)
+	content, _ := io.ReadAll(r)
+	r.Close()
+	assert.Equal(t, header+"line-1199999\nline-1200000\n", string(content))
+
+	r, err = extractLogsFromArtifact(artifact, allLines)
+	require.NoError(t, err)
+	content, _ = io.ReadAll(r)
+	r.Close()
+	assert.Equal(t, header+stepLog[len(stepLog)-maxLogSize:], string(content))
 }

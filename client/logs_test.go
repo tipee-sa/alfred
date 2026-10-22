@@ -32,11 +32,69 @@ func TestLogsCmd_HasLinesFlag(t *testing.T) {
 	assert.Equal(t, "100", f.DefValue)
 }
 
+func TestLogsCmd_UsageNamesJobAndTask(t *testing.T) {
+	assert.Equal(t, "logs JOB TASK", logsCmd.Use)
+}
+
+func TestParseTailLines(t *testing.T) {
+	for value, want := range map[string]int32{"1": 1, "100": 100, "250000": 250000, "all": allTailLines} {
+		got, err := parseTailLines(value)
+		require.NoError(t, err, value)
+		assert.Equal(t, want, got, value)
+	}
+
+	for _, value := range []string{"0", "-1", "-100", "", "ALL", "10x", "1.5", "99999999999"} {
+		_, err := parseTailLines(value)
+		assert.Error(t, err, "%q should be rejected", value)
+	}
+}
+
+func TestAllTailLinesIsNegative(t *testing.T) {
+	// Zero is proto3's "unset" (the server's default of 100), and an old server
+	// clamps anything <= 0 to that default: "all" must stay negative.
+	assert.Less(t, int32(allTailLines), int32(0))
+}
+
+func TestLogsCmd_LinesFlagParsing(t *testing.T) {
+	f := logsCmd.Flags().Lookup("lines")
+	require.NotNil(t, f)
+	t.Cleanup(func() { require.NoError(t, f.Value.Set("100")) })
+
+	require.NoError(t, f.Value.Set("all"))
+	assert.Equal(t, tailLinesValue(allTailLines), logsTailLines)
+	assert.Equal(t, "all", f.Value.String())
+
+	require.NoError(t, f.Value.Set("42"))
+	assert.Equal(t, tailLinesValue(42), logsTailLines)
+	assert.Equal(t, "42", f.Value.String())
+
+	assert.Error(t, f.Value.Set("0"))
+	assert.Error(t, f.Value.Set("everything"))
+	assert.Equal(t, tailLinesValue(42), logsTailLines, "a rejected value leaves the flag unchanged")
+}
+
 func TestLogsCmd_RequiresExactlyTwoArgs(t *testing.T) {
 	assert.Error(t, logsCmd.Args(logsCmd, []string{}))
 	assert.Error(t, logsCmd.Args(logsCmd, []string{"job"}))
 	assert.NoError(t, logsCmd.Args(logsCmd, []string{"job", "task"}))
 	assert.Error(t, logsCmd.Args(logsCmd, []string{"job", "task", "extra"}))
+}
+
+func TestLogsCmd_FollowRefusesAllLines(t *testing.T) {
+	lines, follow := logsCmd.Flags().Lookup("lines"), logsCmd.Flags().Lookup("follow")
+	t.Cleanup(func() {
+		require.NoError(t, lines.Value.Set("100"))
+		require.NoError(t, follow.Value.Set("false"))
+	})
+
+	require.NoError(t, lines.Value.Set("all"))
+	assert.NoError(t, logsCmd.Args(logsCmd, []string{"job", "task"}), "-n all alone")
+
+	require.NoError(t, follow.Value.Set("true"))
+	assert.ErrorContains(t, logsCmd.Args(logsCmd, []string{"job", "task"}), "-n all cannot be combined with -f")
+
+	require.NoError(t, lines.Value.Set("42"))
+	assert.NoError(t, logsCmd.Args(logsCmd, []string{"job", "task"}), "-f with a number of lines")
 }
 
 // --- recvLogsLoop tests ---

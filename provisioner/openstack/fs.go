@@ -105,13 +105,14 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 	var stderr bytes.Buffer
 	session.Stderr = &stderr
 
-	// Collect all output at once (tail output is bounded by -n lines).
+	// Collect all output at once (tail output is bounded: -n lines, or the last
+	// MaxLogBytes of each file for whole logs).
 	// Using session.Output avoids SSH stdout pipe EOF delivery issues that cause
 	// the streaming read loop to hang.
 	output, err := session.Output(fmt.Sprintf(
-		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -v -n %d`,
+		`cd %s && files=$(ls -1 *.log 2>/dev/null | sort) && test -n "$files" && echo "$files" | xargs tail -v %s`,
 		shellescape.Quote(f.HostPath(dir)),
-		lines,
+		strings.Join(internal.TailArgs(lines), " "),
 	))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read logs: %w (stderr: %s)", err, stderr.String())
