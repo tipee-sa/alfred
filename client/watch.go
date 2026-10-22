@@ -38,6 +38,9 @@ func addWatchFlags(cmd *cobra.Command) {
 // watchOptions holds the flags registered by addWatchFlags.
 type watchOptions struct {
 	abortOnFailure, abortOnError, json, once bool
+	// tasks, when set, is how many tasks the job was scheduled with: its status is shown only
+	// once it lists them all (see recvJobStatus).
+	tasks int
 }
 
 func watchOptionsFromFlags(cmd *cobra.Command) watchOptions {
@@ -103,15 +106,7 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 	// Buffered channel (1) allows the goroutine to send one message ahead without blocking.
 	// The goroutine exits when Recv returns an error (io.EOF on stream end, or real error).
 	msgCh := make(chan recvResult, 1)
-	go func() {
-		for {
-			msg, err := c.Recv() // blocks until server sends or stream ends
-			msgCh <- recvResult{msg, err}
-			if err != nil {
-				return // EOF or error: stop reading
-			}
-		}
-	}()
+	go recvJobStatus(c.Recv, msgCh, opts.tasks)
 
 	// JSON mode: no spinner, colors or cursor control, so it works headless and piped.
 	if jsonOutput {
@@ -144,6 +139,25 @@ func watchJob(cmd *cobra.Command, jobName string, opts watchOptions) error {
 		func() { spinner.Fail() },
 		abortIfNeeded,
 	)
+}
+
+// recvJobStatus sends every status that recv returns to msgCh, until recv fails (io.EOF when
+// the stream ends). With minTasks set, it skips the statuses that list fewer tasks, until the
+// job completes. The server adds a new job's tasks one event at a time, so right after
+// ScheduleJob it can send the job with only some of them: a one-shot output (run --once, the
+// first line of run --json) would then miss tasks without any error.
+func recvJobStatus(recv func() (*proto.JobStatus, error), msgCh chan<- recvResult, minTasks int) {
+	for {
+		msg, err := recv() // blocks until server sends or stream ends
+		if err == nil && len(msg.Tasks) < minTasks && msg.CompletedAt == nil {
+			continue
+		}
+		minTasks = 0 // tasks are never removed from a job: no need to check again
+		msgCh <- recvResult{msg, err}
+		if err != nil {
+			return // EOF or error: stop reading
+		}
+	}
 }
 
 // runWatchLoop runs the watch event loop on a terminal, processing messages from msgCh,
