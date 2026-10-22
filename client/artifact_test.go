@@ -7,6 +7,7 @@ import (
 	"github.com/gammadia/alfred/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestArtifactCmd_UsageNamesJobAndTasks(t *testing.T) {
@@ -41,6 +42,23 @@ func TestSelectArtifactTasks_RequestedRunningIsPartial(t *testing.T) {
 	assert.Equal(t, []string{"busy"}, downloadable)
 	assert.Empty(t, unknown)
 	assert.True(t, partial)
+}
+
+// A job cancelled with tasks still queued completes with them aborted, never
+// run: they have no artifact, so asking for one would fail the command.
+func TestSelectArtifactTasks_AbortedBeforeStartingHasNoArtifact(t *testing.T) {
+	job := &proto.JobStatus{Name: "job-abc", Tasks: []*proto.TaskStatus{
+		{Name: "cut-short", Status: proto.TaskStatus_ABORTED, StartedAt: timestamppb.Now()},
+		{Name: "never-ran", Status: proto.TaskStatus_ABORTED},
+	}}
+	downloadable, unknown, partial := selectArtifactTasks(job, nil)
+	assert.Equal(t, []string{"cut-short"}, downloadable)
+	assert.Empty(t, unknown)
+	assert.False(t, partial)
+
+	downloadable, unknown, _ = selectArtifactTasks(job, []string{"never-ran"})
+	assert.Empty(t, downloadable)
+	assert.Empty(t, unknown, "it exists, it just has no artifact")
 }
 
 func TestDownloadArtifacts_GoesOnPastFailures(t *testing.T) {
