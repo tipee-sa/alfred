@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -15,6 +16,7 @@ type Spinner struct {
 	*spinner.Spinner
 	msg  string
 	done bool
+	w    io.Writer // where the final message goes when not spinning
 }
 
 // NewSpinner creates a new spinner with the given message.
@@ -28,6 +30,7 @@ func NewSpinner(msg string) *Spinner {
 			spinner.WithSuffix(" "+msg),
 		),
 		msg: msg,
+		w:   os.Stderr,
 	}
 	s.Start()
 	return s
@@ -46,23 +49,24 @@ func (s *Spinner) UpdateMessage(msg string) {
 // Success stops the spinner and prints a success message.
 // This function is safe to call on a nil Spinner.
 func (s *Spinner) Success(msg ...string) {
-	s.finish(color.HiGreenString("✓"), msg)
+	s.finish("✓", color.FgHiGreen, msg)
 }
 
 // Warn stops the spinner and prints a warning message.
 // This function is safe to call on a nil Spinner.
 func (s *Spinner) Warn(msg ...string) {
-	s.finish(color.HiYellowString("!"), msg)
+	s.finish("!", color.FgHiYellow, msg)
 }
 
 // Fail stops the spinner and prints a failure message.
 // This function is safe to call on a nil Spinner.
 func (s *Spinner) Fail(msg ...string) {
-	s.finish(color.HiRedString("✗"), msg)
+	s.finish("✗", color.FgHiRed, msg)
 }
 
-// finish stops the spinner and prints its final message, once.
-func (s *Spinner) finish(mark string, msg []string) {
+// finish stops the spinner and prints its final message, once. The mark is coloured only while
+// spinning: fatih/color decides from stdout, which can be a terminal when stderr is a log file.
+func (s *Spinner) finish(mark string, markColor color.Attribute, msg []string) {
 	if s == nil || s.done {
 		return
 	}
@@ -70,12 +74,11 @@ func (s *Spinner) finish(mark string, msg []string) {
 	if len(msg) == 0 {
 		msg = []string{s.msg}
 	}
-	final := fmt.Sprintf("%s %s\n", mark, msg[0])
 	if !s.Active() {
 		// Not spinning (stderr is not a terminal), so Stop would print nothing.
-		fmt.Fprint(os.Stderr, final)
+		fmt.Fprintf(s.w, "%s %s\n", mark, msg[0])
 		return
 	}
-	s.Spinner.FinalMSG = final
+	s.Spinner.FinalMSG = fmt.Sprintf("%s %s\n", color.New(markColor).Sprint(mark), msg[0])
 	s.Stop()
 }
