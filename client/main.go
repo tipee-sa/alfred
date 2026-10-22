@@ -42,6 +42,12 @@ var alfredCmd = &cobra.Command{
 			return fmt.Errorf("missing mandatory dependencies (%s): %w", strings.Join(dependencies, ", "), err)
 		}
 
+		// `run --dry-run` only builds and prints the job: it needs no server, so
+		// it must keep working when the server cannot be reached.
+		if dryRun, err := cmd.Flags().GetBool("dry-run"); err == nil && dryRun {
+			return nil
+		}
+
 		if connectTimeoutEnvErr != nil && !cmd.Flags().Changed("connect-timeout") {
 			return connectTimeoutEnvErr
 		}

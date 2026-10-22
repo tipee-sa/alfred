@@ -60,6 +60,7 @@ func (o connectOptions) describe() string {
 func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
 	var tunnelsMutex sync.Mutex
 	var tunnels []net.Conn
+	var tunnelsClosed bool // set on failure: a dial still in flight must not start ssh after the cleanup
 
 	conn, err := grpc.Dial(
 		o.remote(),
@@ -78,12 +79,17 @@ func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
 				return dialer.DialContext(dialCtx, "tcp", addr)
 			}
 
+			// Starting ssh and registering it happen under one lock, so the
+			// cleanup below either sees the tunnel or stops it from starting.
+			tunnelsMutex.Lock()
+			defer tunnelsMutex.Unlock()
+			if tunnelsClosed {
+				return nil, errors.New("connection abandoned")
+			}
 			// Not dialCtx: the tunnel must outlive the dial.
 			tunnel, err := sossh.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", o.host, o.sshPort), o.sshUsername, fmt.Sprintf("127.0.0.1:%s", o.port))
 			if err == nil {
-				tunnelsMutex.Lock()
 				tunnels = append(tunnels, tunnel)
-				tunnelsMutex.Unlock()
 			}
 			return tunnel, err
 		}),
@@ -102,6 +108,7 @@ func connect(ctx context.Context, o connectOptions) (*grpc.ClientConn, error) {
 		// gRPC closes the tunnel too, but in the background: make sure ssh is
 		// gone before the client exits, or it would linger, still waiting.
 		tunnelsMutex.Lock()
+		tunnelsClosed = true
 		for _, tunnel := range tunnels {
 			_ = tunnel.Close()
 		}
