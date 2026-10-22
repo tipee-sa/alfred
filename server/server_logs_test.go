@@ -15,6 +15,7 @@ import (
 	"testing/iotest"
 
 	"github.com/gammadia/alfred/proto"
+	"github.com/gammadia/alfred/server/config"
 	"github.com/gammadia/alfred/server/log"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
@@ -162,12 +163,12 @@ func (m *mockLogStream) Send(chunk *proto.StreamTaskLogsChunk) error {
 	})
 	return nil
 }
-func (m *mockLogStream) Context() context.Context              { return m.ctx }
-func (m *mockLogStream) SetHeader(metadata.MD) error           { return nil }
-func (m *mockLogStream) SendHeader(metadata.MD) error          { return nil }
-func (m *mockLogStream) SetTrailer(metadata.MD)                {}
-func (m *mockLogStream) SendMsg(interface{}) error             { return nil }
-func (m *mockLogStream) RecvMsg(interface{}) error             { return nil }
+func (m *mockLogStream) Context() context.Context     { return m.ctx }
+func (m *mockLogStream) SetHeader(metadata.MD) error  { return nil }
+func (m *mockLogStream) SendHeader(metadata.MD) error { return nil }
+func (m *mockLogStream) SetTrailer(metadata.MD)       {}
+func (m *mockLogStream) SendMsg(interface{}) error    { return nil }
+func (m *mockLogStream) RecvMsg(interface{}) error    { return nil }
 
 func TestStreamReader_SendsAllContent(t *testing.T) {
 	content := "line1\nline2\nline3\n"
@@ -213,6 +214,29 @@ func TestStreamReader_LargeContent_MultipleChunks(t *testing.T) {
 		received.Write(chunk.Data)
 	}
 	assert.Equal(t, content, received.String())
+}
+
+func TestSendLogData_SplitsWholeLogsUnderMaxPacketSize(t *testing.T) {
+	// Follow mode's whole-log output (`logs -f -n all`) goes through
+	// sendLogData: one message for it would exceed what the client accepts.
+	data := bytes.Repeat([]byte("0123456789abcde\n"), (config.MaxPacketSize+1024*1024)/16)
+
+	mock := &mockLogStream{ctx: context.Background()}
+	require.NoError(t, sendLogData(mock, data, "test-job", "test-task"))
+
+	var received bytes.Buffer
+	for _, chunk := range mock.chunks {
+		require.Less(t, len(chunk.Data), config.MaxPacketSize)
+		received.Write(chunk.Data)
+	}
+	assert.Greater(t, len(mock.chunks), 1)
+	assert.True(t, bytes.Equal(data, received.Bytes()), "every byte is sent, in order")
+}
+
+func TestSendLogData_Empty(t *testing.T) {
+	mock := &mockLogStream{ctx: context.Background()}
+	require.NoError(t, sendLogData(mock, nil, "test-job", "test-task"))
+	assert.Empty(t, mock.chunks)
 }
 
 // --- extractLogsFromArtifact tests ---

@@ -123,15 +123,9 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 		}
 	}
 
-	// Send only the last tailLines lines as initial output
-	if len(allContent) > 0 {
-		if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
-			Data:   allContent,
-			Length: uint32(len(allContent)),
-		}); sendErr != nil {
-			log.Error("Failed to send initial follow chunk", "job", job, "task", task, "error", sendErr)
-			return fmt.Errorf("failed to send initial follow chunk: %w", sendErr)
-		}
+	// Send only the last tailLines lines (whole logs for allLines) as initial output
+	if err := sendLogData(srv, allContent, job, task); err != nil {
+		return fmt.Errorf("failed to send initial follow output: %w", err)
 	}
 	log.Debug("Follow mode started", "job", job, "task", task, "sentBytes", len(allContent))
 
@@ -156,29 +150,23 @@ func (s *server) followLiveLogs(srv proto.Alfred_StreamTaskLogsServer, job, task
 				// Try to send any remaining content from the finalized artifact.
 				log.Debug("Follow mode: live reader gone, checking artifact for final content", "job", job, "task", task)
 				artifact := path.Join(dataRoot, "artifacts", job, fmt.Sprintf("%s.tar.zst", task))
-				if _, statErr := os.Stat(artifact); statErr == nil {
-					if r, extractErr := extractLogsFromArtifact(artifact, allLines); extractErr == nil {
-						finalContent, _ := io.ReadAll(r)
-						r.Close()
-						delta := findNewContent(lastContent, finalContent)
-						if len(delta) > 0 {
-							_ = srv.Send(&proto.StreamTaskLogsChunk{
-								Data:   delta,
-								Length: uint32(len(delta)),
-							})
-						}
-					}
+				if _, statErr := os.Stat(artifact); statErr != nil {
+					return nil
+				}
+				finalContent, err := readArtifactLogs(artifact)
+				if err != nil {
+					log.Error("Follow mode: failed to read final logs from artifact", "job", job, "task", task, "artifact", artifact, "error", err)
+					return fmt.Errorf("failed to read final logs from artifact: %w", err)
+				}
+				if err := sendLogData(srv, findNewContent(lastContent, finalContent), job, task); err != nil {
+					return fmt.Errorf("failed to send final follow output: %w", err)
 				}
 				return nil
 			}
 			delta := findNewContent(lastContent, content)
 			if len(delta) > 0 {
-				if sendErr := srv.Send(&proto.StreamTaskLogsChunk{
-					Data:   delta,
-					Length: uint32(len(delta)),
-				}); sendErr != nil {
-					log.Error("Failed to send follow delta", "job", job, "task", task, "error", sendErr)
-					return fmt.Errorf("failed to send follow delta: %w", sendErr)
+				if err := sendLogData(srv, delta, job, task); err != nil {
+					return fmt.Errorf("failed to send follow delta: %w", err)
 				}
 				lastContent = content
 			}
@@ -238,6 +226,16 @@ func readLiveLogs(job, task string, lines int) ([]byte, error) {
 	return io.ReadAll(reader)
 }
 
+// readArtifactLogs reads the whole logs of a finalized artifact.
+func readArtifactLogs(artifact string) ([]byte, error) {
+	r, err := extractLogsFromArtifact(artifact, allLines)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
 // lastNLines returns the last n lines from data. If data has fewer than n lines,
 // all of data is returned.
 func lastNLines(data []byte, n int) []byte {
@@ -262,6 +260,12 @@ func lastNLines(data []byte, n int) []byte {
 		}
 	}
 	return data
+}
+
+// sendLogData sends data in bounded chunks, like streamReader: one message
+// for whole logs could exceed what the client accepts (config.MaxPacketSize).
+func sendLogData(srv proto.Alfred_StreamTaskLogsServer, data []byte, job, task string) error {
+	return streamReader(srv, bytes.NewReader(data), job, task)
 }
 
 // streamReader sends the contents of reader as StreamTaskLogsChunks.

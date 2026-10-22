@@ -131,6 +131,10 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 // session.Stdout, not StdoutPipe). It waits for the first byte, so that a
 // failure before any output (no log files yet) is returned here, as it is
 // for a tail.
+//
+// Closing the reader also closes the session: once the pipe is closed, the
+// SSH channel is no longer drained, so a remote tail with more to send would
+// block on the channel window, and session.Wait with it, forever.
 func (f *fs) streamLogs(command string) (io.ReadCloser, error) {
 	session, err := newSession(f.ssh)
 	if err != nil {
@@ -157,16 +161,29 @@ func (f *fs) streamLogs(command string) (io.ReadCloser, error) {
 		session.Close()
 	}()
 
-	br := bufio.NewReader(pr)
-	if _, err := br.Peek(1); err != nil && err != io.EOF {
-		pr.Close()
+	rc := &sessionPipeReader{Reader: bufio.NewReader(pr), pipe: pr, session: session}
+	if _, err := rc.Reader.Peek(1); err != nil && err != io.EOF {
+		rc.Close()
 		return nil, err
 	}
+	return rc, nil
+}
 
-	return struct {
-		io.Reader
-		io.Closer
-	}{br, pr}, nil
+// sessionPipeReader reads a session's stdout through a pipe, and closes both
+// the pipe and the session when closed.
+type sessionPipeReader struct {
+	*bufio.Reader
+	pipe    *io.PipeReader
+	session *ssh.Session
+}
+
+func (r *sessionPipeReader) Close() error {
+	r.pipe.Close()
+	// The waiter goroutine may have closed the session already (io.EOF then).
+	if err := r.session.Close(); err != nil && err != io.EOF {
+		return err
+	}
+	return nil
 }
 
 // Archive returns a .tar.zst of the given path.
