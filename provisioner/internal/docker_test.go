@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,10 @@ type mockDocker struct {
 	containerWaitErrCh chan error
 	stepExitCode       int64
 
+	// Like the daemon when a create request is cancelled in flight: the object
+	// is created, but the call returns the context's error (and no ID).
+	createDespiteCancel bool
+
 	// Override specific behaviors
 	networkCreateErr    error
 	containerCreateErr  error
@@ -56,13 +61,18 @@ func newMockDocker() *mockDocker {
 	}
 }
 
-func (m *mockDocker) NetworkCreate(_ context.Context, name string, _ network.CreateOptions) (network.CreateResponse, error) {
+func (m *mockDocker) NetworkCreate(ctx context.Context, name string, _ network.CreateOptions) (network.CreateResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.networkCreateErr != nil {
 		return network.CreateResponse{}, m.networkCreateErr
 	}
-	m.networksCreated = append(m.networksCreated, name)
+	if !slices.Contains(m.networksCreated, name) {
+		m.networksCreated = append(m.networksCreated, name)
+	}
+	if m.createDespiteCancel && ctx.Err() != nil {
+		return network.CreateResponse{}, ctx.Err()
+	}
 	return network.CreateResponse{ID: "net-" + name}, nil
 }
 
@@ -73,13 +83,18 @@ func (m *mockDocker) NetworkRemove(_ context.Context, networkID string) error {
 	return nil
 }
 
-func (m *mockDocker) ContainerCreate(_ context.Context, config *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, containerName string) (container.CreateResponse, error) {
+func (m *mockDocker) ContainerCreate(ctx context.Context, config *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *ocispec.Platform, containerName string) (container.CreateResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.containerCreateErr != nil {
 		return container.CreateResponse{}, m.containerCreateErr
 	}
-	m.containersCreated = append(m.containersCreated, containerName)
+	if !slices.Contains(m.containersCreated, containerName) {
+		m.containersCreated = append(m.containersCreated, containerName)
+	}
+	if m.createDespiteCancel && ctx.Err() != nil {
+		return container.CreateResponse{}, ctx.Err()
+	}
 	return container.CreateResponse{ID: "ctr-" + containerName}, nil
 }
 
@@ -349,6 +364,31 @@ func TestRunContainer_ContextCancellation(t *testing.T) {
 	// Cleanup should still happen
 	if len(docker.networksRemoved) != 1 {
 		t.Fatalf("expected network cleanup, got %d removes", len(docker.networksRemoved))
+	}
+}
+
+// A task aborted while it starts (cancelled as the slot it got is handed to it)
+// must not leave behind what the daemon created for it: a create request
+// cancelled in flight still creates the object, without returning its ID.
+func TestRunContainer_AbortedWhileStartingLeavesNothingBehind(t *testing.T) {
+	docker := newMockDocker()
+	docker.createDespiteCancel = true
+	fs := newMockFS()
+	task := testTask([]string{"step-image:latest"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := RunContainer(ctx, docker, task, fs, noopRunConfig(), nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled in error chain, got %v", err)
+	}
+
+	if len(docker.networksCreated) != 1 || len(docker.networksRemoved) != 1 {
+		t.Fatalf("expected the network created and removed, got created=%v removed=%v", docker.networksCreated, docker.networksRemoved)
+	}
+	if len(docker.containersRemoved) != len(docker.containersCreated) {
+		t.Fatalf("expected every container created removed, got created=%v removed=%v", docker.containersCreated, docker.containersRemoved)
 	}
 }
 
