@@ -10,7 +10,9 @@ var scriptingHelp = &cobra.Command{
 	Long: `Using alfred from scripts, CI and AI agents.
 
 No terminal is needed, except for 'alfred top'. Without one, colors and
-spinners are off and 'run' and 'watch' print one plain line per status change.
+spinners are off and 'run' and 'watch' print one plain line per status change,
+on stderr. stdout carries only what a command produces (JSON lines, --once's
+status, run -n's job, artifact's file paths), so it can be piped.
 
 Start a job, get its name
   alfred run --async --json job.yaml | jq -r .job
@@ -40,6 +42,9 @@ Exit codes
                upload, scheduling, connection), or if the job's final status
                was not seen (interrupted, connection lost, server shutdown).
                Otherwise 0, whatever the tasks' outcome: read their statuses.
+               With --once, run --async or run -n, 0 does not mean the job
+               completed: only that its status was printed, that it was
+               scheduled, or that it was built (-n schedules nothing).
   artifact     1 if a requested task does not exist or a download failed.
 
 Logs and artifacts
