@@ -430,6 +430,45 @@ func TestStreamTaskLogs_NegativeTailLinesReturnsWholeLog(t *testing.T) {
 	assert.Equal(t, header+"line-249\nline-250\n", stream(2))
 }
 
+// Logs archived in reverse step order are output in step order with two passes
+// over the archive (list, then output), not one pass per log.
+func TestExtractLogsFromArtifact_ReverseOrderTakesTwoPasses(t *testing.T) {
+	var files [][2]string
+	expectedAll, expectedTail := "", ""
+	for i := 9; i >= 0; i-- {
+		files = append(files, [2]string{fmt.Sprintf("job-task/output/task-step-%d.log", i), numberedLines(fmt.Sprintf("step%d", i), 5)})
+	}
+	for i := 0; i < 10; i++ {
+		sep := ""
+		if i > 0 {
+			sep = "\n"
+		}
+		header := fmt.Sprintf("%s==> task-step-%d.log <==\n", sep, i)
+		expectedAll += header + numberedLines(fmt.Sprintf("step%d", i), 5)
+		expectedTail += header + string(lastNLines([]byte(numberedLines(fmt.Sprintf("step%d", i), 5)), 2))
+	}
+	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), files)
+
+	oldOpen := openArtifact
+	t.Cleanup(func() { openArtifact = oldOpen })
+	opens := 0
+	openArtifact = func(name string) (*os.File, error) {
+		opens++
+		return oldOpen(name)
+	}
+
+	for _, c := range []struct {
+		tailLines int
+		expected  string
+	}{{allLines, expectedAll}, {2, expectedTail}} {
+		opens = 0
+		r, err := extractLogsFromArtifact(artifact, c.tailLines)
+		require.NoError(t, err)
+		assert.Equal(t, c.expected, readAllAndClose(t, r), "tailLines=%d", c.tailLines)
+		assert.Equal(t, 2, opens, "tailLines=%d", c.tailLines)
+	}
+}
+
 func TestExtractLogsFromArtifact_AllLinesInStepOrder(t *testing.T) {
 	// Archived out of step order, so that it takes more than one pass.
 	artifact := createOrderedTestArtifact(t, path.Join(t.TempDir(), "task.tar.zst"), [][2]string{

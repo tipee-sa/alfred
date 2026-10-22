@@ -331,9 +331,10 @@ var errStopWalk = errors.New("stop walking the artifact")
 //
 // The output is streamed, never held whole: a tail keeps the last lines of one
 // file at a time, and allLines copies each file straight from the archive.
-// Files are output in name order (step order); tar has no random access and
-// lists them in whatever order they were archived, so this takes one pass over
-// the archive per run of files found out of order (a single pass when sorted).
+// Files are output in name order (step order). tar has no random access and
+// lists them in whatever order they were archived, so this takes two passes
+// over the archive, whatever that order: one to list the logs, one to output
+// them, setting aside those archived before their turn (see writeArtifactLogs).
 func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser, error) {
 	var logs []artifactLog
 	if err := walkArtifactLogs(artifactPath, func(header *tar.Header, _ io.Reader) error {
@@ -359,32 +360,117 @@ func extractLogsFromArtifact(artifactPath string, tailLines int) (io.ReadCloser,
 	return pr, nil
 }
 
-// writeArtifactLogs writes logs, in order, from the archive to w.
+// writeArtifactLogs writes logs, in order, from the archive to w, in one pass
+// over it. A log archived before its turn is set aside until the logs before it
+// are written: its tail in memory, or all of it in a temporary file.
 func writeArtifactLogs(w io.Writer, artifactPath string, logs []artifactLog, tailLines int) error {
+	turns := make(map[string][]int, len(logs)) // archive path → its indexes in logs, in order
+	for i, l := range logs {
+		turns[l.path] = append(turns[l.path], i)
+	}
+	setAside := make(map[int]*setAsideLog)
+	defer func() {
+		for _, l := range setAside {
+			l.discard()
+		}
+	}()
+
 	next := 0
-	for next < len(logs) {
-		before := next
-		err := walkArtifactLogs(artifactPath, func(header *tar.Header, r io.Reader) error {
-			if header.Name != logs[next].path {
-				return nil
+	writeSetAside := func() error {
+		for l, ok := setAside[next]; ok; l, ok = setAside[next] {
+			delete(setAside, next)
+			err := writeArtifactLog(w, next > 0, logs[next].name, l.reader(), tailLines)
+			l.discard()
+			if err != nil {
+				return err
 			}
+			next++
+		}
+		return nil
+	}
+
+	err := walkArtifactLogs(artifactPath, func(header *tar.Header, r io.Reader) error {
+		indexes := turns[header.Name]
+		if len(indexes) == 0 {
+			return nil
+		}
+		i := indexes[0]
+		turns[header.Name] = indexes[1:]
+
+		if i == next {
 			if err := writeArtifactLog(w, next > 0, logs[next].name, r, tailLines); err != nil {
 				return err
 			}
 			next++
-			if next == len(logs) {
-				return errStopWalk
+			if err := writeSetAside(); err != nil {
+				return err
 			}
-			return nil
-		})
-		if err != nil {
-			return err
+		} else {
+			l, err := setAsideArtifactLog(r, tailLines)
+			if err != nil {
+				return fmt.Errorf("failed to set aside log %q: %w", logs[i].name, err)
+			}
+			setAside[i] = l
 		}
-		if next == before {
-			return fmt.Errorf("log %q vanished from artifact %q", logs[next].path, artifactPath)
+		if next == len(logs) {
+			return errStopWalk
 		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if next < len(logs) {
+		return fmt.Errorf("log %q vanished from artifact %q", logs[next].path, artifactPath)
 	}
 	return nil
+}
+
+// setAsideLog is a log read before its turn: its last lines, or, for whole
+// logs, all of it in a temporary file.
+type setAsideLog struct {
+	tail []byte
+	file *os.File
+}
+
+func setAsideArtifactLog(r io.Reader, tailLines int) (*setAsideLog, error) {
+	if tailLines > 0 {
+		tail, err := readTail(r, tailLines)
+		if err != nil {
+			return nil, err
+		}
+		return &setAsideLog{tail: tail}, nil
+	}
+
+	f, err := os.CreateTemp("", "alfred-log-*")
+	if err != nil {
+		return nil, err
+	}
+	// Unlinked at once: the open file stays readable, and nothing is left behind
+	// however the server stops.
+	_ = os.Remove(f.Name())
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &setAsideLog{file: f}, nil
+}
+
+func (l *setAsideLog) reader() io.Reader {
+	if l.file != nil {
+		return l.file
+	}
+	return bytes.NewReader(l.tail)
+}
+
+func (l *setAsideLog) discard() {
+	if l.file != nil {
+		l.file.Close()
+	}
 }
 
 // writeArtifactLog writes one file like `tail -v` does: a header line, the
@@ -463,11 +549,14 @@ func (lw *lastByteWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// openArtifact opens an artifact archive; tests count the passes over it.
+var openArtifact = os.Open
+
 // walkArtifactLogs calls fn for each regular .log file of a tar.zst archive, in
 // archive order, with a reader of its content. fn returning errStopWalk ends the
 // walk without error.
 func walkArtifactLogs(artifactPath string, fn func(header *tar.Header, r io.Reader) error) error {
-	f, err := os.Open(artifactPath)
+	f, err := openArtifact(artifactPath)
 	if err != nil {
 		return fmt.Errorf("failed to open artifact %q: %w", artifactPath, err)
 	}
