@@ -343,8 +343,8 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **stdout carries only a command's output** (JSON lines, file paths, `-n` YAML): spinners,
   headers, messages and `docker build` output go to stderr.
 - **`watch --json` is a script contract** (`client/watch_json.go`): only ever add fields or
-  statuses. Exit codes are part of it: 0 once the job's completion was seen, whatever the tasks'
-  outcome; never derive them from task statuses.
+  statuses. Exit codes are part of it: 0 once the job's completion was seen (or `--once` printed
+  its snapshot), whatever the tasks' outcome; never derive them from task statuses.
 - **Local provisioner != OpenStack provisioner**: The local provisioner doesn't create N nodes
   running Y tasks each. Instead it creates N*Y Docker containers each running 1 task. Every
   task gets its own Docker network, workspace, and service containers — even though they all
