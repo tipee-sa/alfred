@@ -1,6 +1,8 @@
 package openstack
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -25,9 +27,9 @@ func testArchives(t *testing.T, ttl time.Duration, script string) (*imageArchive
 	}
 	t.Cleanup(a.removeAll)
 	var saves atomic.Int32
-	a.save = func(tag string) *exec.Cmd {
+	a.save = func(ctx context.Context, tag string) *exec.Cmd {
 		saves.Add(1)
-		return exec.Command("sh", "-c", script, "sh", tag)
+		return exec.CommandContext(ctx, "sh", "-c", script, "sh", tag)
 	}
 	return a, &saves
 }
@@ -179,23 +181,63 @@ func TestImageArchivesCountTheTTLFromTheBuildsEnd(t *testing.T) {
 	}
 }
 
-func TestImageArchivesFailedCompressionDoesNotHangTheSave(t *testing.T) {
-	// docker save writes more than a pipe holds, and zstd exits without reading it
-	a, _ := testArchives(t, time.Hour, `exec yes`)
-	a.compress = func() *exec.Cmd { return exec.Command("sh", "-c", "echo disk full >&2; exit 1") }
-
+// returnsWithin runs open and fails the test unless it returns within 10 s.
+func returnsWithin(t *testing.T, open func() error) error {
+	t.Helper()
 	done := make(chan error, 1)
-	go func() {
-		_, _, err := a.open("alfred-image:abc")
-		done <- err
-	}()
+	go func() { done <- open() }()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "failed to compress") || !strings.Contains(err.Error(), "disk full") {
-			t.Errorf("err = %v, want the compression's failure", err)
-		}
+		return err
 	case <-time.After(10 * time.Second):
-		t.Fatal("open hung after zstd failed")
+		t.Fatal("open hung")
+		return nil
+	}
+}
+
+func TestImageArchivesFailedCompressionDoesNotHangTheSave(t *testing.T) {
+	for name, producer := range map[string]string{
+		// writes more than a pipe holds, with zstd no longer reading
+		"writing": `exec yes`,
+		// stalls without a byte, with the copy into zstd waiting on it
+		"silent": `exec sleep 60`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := testArchives(t, time.Hour, producer)
+			a.compress = func(ctx context.Context) *exec.Cmd {
+				return exec.CommandContext(ctx, "sh", "-c", "echo disk full >&2; exit 1")
+			}
+			err := returnsWithin(t, func() error { _, _, err := a.open("alfred-image:abc"); return err })
+			if err == nil || !strings.Contains(err.Error(), "failed to compress") || !strings.Contains(err.Error(), "disk full") {
+				t.Errorf("err = %v, want the compression's failure", err)
+			}
+		})
+	}
+}
+
+func TestImageArchivesShutdownReleasesBuildsAndWaits(t *testing.T) {
+	// docker save stalls: only the shutdown can end the build
+	a, _ := testArchives(t, time.Hour, `exec sleep 60`)
+
+	errs := make(chan error, 2)
+	go func() { _, _, err := a.open("alfred-image:abc"); errs <- err }() // builds
+	time.Sleep(100 * time.Millisecond)
+	go func() { _, _, err := a.open("alfred-image:abc"); errs <- err }() // waits for it
+	time.Sleep(100 * time.Millisecond)
+
+	a.removeAll()
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errs:
+			if !errors.Is(err, errArchivesClosed) {
+				t.Errorf("err = %v, want errArchivesClosed", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("an open outlived the shutdown")
+		}
+	}
+	if _, _, err := a.open("alfred-image:other"); !errors.Is(err, errArchivesClosed) {
+		t.Errorf("an open after the shutdown: err = %v, want errArchivesClosed", err)
 	}
 }
 
