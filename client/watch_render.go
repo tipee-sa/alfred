@@ -307,14 +307,20 @@ func (r *watchRenderer) renderPlainHeader(msg *proto.JobStatus) string {
 	}
 	header := fmt.Sprintf("Job '%s' %s (%d/%d %d%%, %s)", r.jobName, state, processed, total, pct, end.Sub(msg.ScheduledAt.AsTime()).Truncate(time.Second))
 
-	counts := lo.CountValues(lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return taskStatusName(t) }))
+	if counts := taskCountsText(msg.Tasks); counts != "" {
+		header += " | " + counts
+	}
+	return header
+}
+
+// taskCountsText returns how many tasks have each status, in the order of taskStatuses and
+// leaving out those at zero: "1 queued, 1 running, 1 completed".
+func taskCountsText(tasks []*proto.TaskStatus) string {
+	counts := lo.CountValues(lo.Map(tasks, func(t *proto.TaskStatus, _ int) string { return taskStatusName(t) }))
 	parts := lo.FilterMap(taskStatuses, func(status string, _ int) (string, bool) {
 		return fmt.Sprintf("%d %s", counts[status], status), counts[status] > 0
 	})
-	if len(parts) > 0 {
-		header += " | " + strings.Join(parts, ", ")
-	}
-	return header
+	return strings.Join(parts, ", ")
 }
 
 // renderPlainLine returns the plain line written for a status change: the header, then the
