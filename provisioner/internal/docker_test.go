@@ -29,8 +29,8 @@ type mockDocker struct {
 	mu sync.Mutex
 
 	// Track calls for assertions
-	networksCreated  []string
-	networksRemoved  []string
+	networksCreated   []string
+	networksRemoved   []string
 	containersCreated []string
 	containersStarted []string
 	containersRemoved []string
@@ -46,10 +46,10 @@ type mockDocker struct {
 	createDespiteCancel bool
 
 	// Override specific behaviors
-	networkCreateErr    error
-	containerCreateErr  error
-	containerStartErr   error
-	containerRemoveErr  error
+	networkCreateErr   error
+	containerCreateErr error
+	containerStartErr  error
+	containerRemoveErr error
 }
 
 func newMockDocker() *mockDocker {
@@ -183,7 +183,7 @@ func (f *mockFS) MkDir(p string) error {
 	return nil
 }
 
-func (f *mockFS) SaveContainerLogs(_, _ string) error { return nil }
+func (f *mockFS) SaveContainerLogs(_, _ string) error                      { return nil }
 func (f *mockFS) StreamContainerLogs(_ context.Context, _, _ string) error { return nil }
 
 func (f *mockFS) Archive(_ string) (io.ReadCloser, error) {

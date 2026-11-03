@@ -61,11 +61,11 @@ func creationContext(ctx context.Context) (context.Context, context.CancelFunc) 
 // network → workspace → services (parallel) → steps (sequential) → artifact archival → cleanup.
 //
 // Cleanup uses deferred calls in LIFO order. The order of defer registration matters:
-//   1. defer: remove network         (registered first → runs last)
-//   2. defer: remove workspace       (registered second → runs second-to-last)
-//   3. defer: OnWorkspaceTeardown    (unregisters live archiver)
-//   4. defer: remove service containers (one defer per service)
-//   5. (per step) defer: remove step container + cancel log streaming
+//  1. defer: remove network         (registered first → runs last)
+//  2. defer: remove workspace       (registered second → runs second-to-last)
+//  3. defer: OnWorkspaceTeardown    (unregisters live archiver)
+//  4. defer: remove service containers (one defer per service)
+//  5. (per step) defer: remove step container + cancel log streaming
 //
 // Artifact archival happens BEFORE workspace deletion (it's not deferred — it runs inline
 // after all steps). This is critical: archiving reads from /output which lives in the workspace.
@@ -546,9 +546,9 @@ func startAndWaitForService(
 		// check command hangs. The atomic bool distinguishes timeout-induced errors from real ones.
 		var healthCheckTimedOut atomic.Bool
 		go func() {
-			<-execCtx.Done()             // blocks until timeout or parent cancellation
+			<-execCtx.Done() // blocks until timeout or parent cancellation
 			healthCheckTimedOut.Store(true)
-			attach.Close()               // forces io.Copy to return with an error
+			attach.Close() // forces io.Copy to return with an error
 		}()
 
 		// Drain stdout to "wait" for the exec to complete. If the monitor goroutine

@@ -950,4 +950,3 @@ func (s *Scheduler) emptyNodesQueue() {
 	}
 	s.nodesQueue = nil
 }
-

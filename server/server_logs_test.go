@@ -158,12 +158,12 @@ func (m *mockLogStream) Send(chunk *proto.StreamTaskLogsChunk) error {
 	m.chunks = append(m.chunks, chunk)
 	return nil
 }
-func (m *mockLogStream) Context() context.Context              { return m.ctx }
-func (m *mockLogStream) SetHeader(metadata.MD) error           { return nil }
-func (m *mockLogStream) SendHeader(metadata.MD) error          { return nil }
-func (m *mockLogStream) SetTrailer(metadata.MD)                {}
-func (m *mockLogStream) SendMsg(interface{}) error             { return nil }
-func (m *mockLogStream) RecvMsg(interface{}) error             { return nil }
+func (m *mockLogStream) Context() context.Context     { return m.ctx }
+func (m *mockLogStream) SetHeader(metadata.MD) error  { return nil }
+func (m *mockLogStream) SendHeader(metadata.MD) error { return nil }
+func (m *mockLogStream) SetTrailer(metadata.MD)       {}
+func (m *mockLogStream) SendMsg(interface{}) error    { return nil }
+func (m *mockLogStream) RecvMsg(interface{}) error    { return nil }
 
 func TestStreamReader_SendsAllContent(t *testing.T) {
 	content := "line1\nline2\nline3\n"
