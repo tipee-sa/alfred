@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/gammadia/alfred/proto"
+	"github.com/gdamore/tcell/v2"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 )

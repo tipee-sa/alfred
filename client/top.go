@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/gdamore/tcell/v2"
 	"github.com/gammadia/alfred/proto"
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/spf13/cobra"
 )
