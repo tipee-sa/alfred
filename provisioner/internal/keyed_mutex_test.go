@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -46,5 +48,36 @@ func TestKeyedMutexLeavesOtherKeysFree(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("key b waited for key a")
+	}
+}
+
+func TestKeyedMutexStopsWaitingWhenCanceled(t *testing.T) {
+	var k KeyedMutex
+	unlock := k.Lock("image")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() {
+		_, err := k.LockContext(ctx, "image")
+		errs <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errs:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a canceled waiter kept waiting for the lock")
+	}
+
+	// The holder is undisturbed, and once it unlocks, nothing is left behind
+	unlock()
+	if k.len() != 0 {
+		t.Errorf("%d mutexes left, want 0", k.len())
+	}
+	if _, err := k.LockContext(context.Background(), "image"); err != nil {
+		t.Errorf("the key could not be locked again: %v", err)
 	}
 }

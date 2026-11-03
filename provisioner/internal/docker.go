@@ -72,7 +72,12 @@ type servicePullKey struct {
 }
 
 func ensureServiceImage(ctx context.Context, docker DockerClient, log *slog.Logger, ref string) error {
-	defer servicePulls.Lock(servicePullKey{docker, ref})()
+	// A task aborted while another pulls stops waiting, and frees its network and workspace
+	unlock, err := servicePulls.LockContext(ctx, servicePullKey{docker, ref})
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	list, err := RetryResult(3, func() ([]image.Summary, error) {
 		return docker.ImageList(ctx, image.ListOptions{

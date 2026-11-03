@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -123,5 +124,28 @@ func TestPullErrorReadsTheWholeProgress(t *testing.T) {
 				t.Errorf("err = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestEnsureServiceImageStopsWaitingWhenTheTaskIsAborted(t *testing.T) {
+	d := &pullingDocker{}
+	key := servicePullKey{d, "mysql:8"}
+	unlock := servicePulls.Lock(key) // another task's pull, in progress
+	defer unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errs := make(chan error, 1)
+	go func() {
+		errs <- ensureServiceImage(ctx, d, slog.New(slog.NewTextHandler(io.Discard, nil)), "mysql:8")
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-errs:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("an aborted task kept waiting for another task's pull")
 	}
 }
