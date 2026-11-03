@@ -73,11 +73,13 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 							Name: event.Task.Name,
 						}
 					}
-					if event.Slot < 0 || event.Slot >= len(node.Slots) {
-						log.Warn("EventNodeSlotUpdated has out-of-range slot", "node", event.Node, "slot", event.Slot, "numSlots", len(node.Slots))
-					} else {
-						node.Slots[event.Slot] = &proto.NodeStatus_Slot{
-							Id:   uint32(event.Slot),
+					for _, slot := range event.Slots {
+						if slot < 0 || slot >= len(node.Slots) {
+							log.Warn("EventNodeSlotUpdated has out-of-range slot", "node", event.Node, "slot", slot, "numSlots", len(node.Slots))
+							continue
+						}
+						node.Slots[slot] = &proto.NodeStatus_Slot{
+							Id:   uint32(slot),
 							Task: task,
 						}
 					}

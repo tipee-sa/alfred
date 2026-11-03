@@ -20,10 +20,12 @@ type EventNodeStatusUpdated struct {
 	Status NodeStatus
 }
 
+// EventNodeSlotUpdated carries every slot a task takes or frees on a node, so that
+// state rebuilt from the event stream never shows a multi-slot task half-placed.
 type EventNodeSlotUpdated struct {
-	Node string
-	Slot int
-	Task *NodeSlotTask
+	Node  string
+	Slots []int
+	Task  *NodeSlotTask
 }
 
 type EventNodeTerminated struct {

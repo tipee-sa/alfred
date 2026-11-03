@@ -438,18 +438,18 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 		}
 
 		// Assign the task pointer to the first task.Slots free slots
-		assigned := 0
+		assigned := make([]int, 0, task.Slots)
 		for slot := range ns.tasks {
 			if ns.tasks[slot] != nil {
 				continue
 			}
 			ns.tasks[slot] = task
-			s.broadcast(EventNodeSlotUpdated{Node: ns.nodeName, Slot: slot, Task: &NodeSlotTask{task.Job.Name, task.Name}})
-			assigned++
-			if assigned == task.Slots {
+			assigned = append(assigned, slot)
+			if len(assigned) == task.Slots {
 				break
 			}
 		}
+		s.broadcast(EventNodeSlotUpdated{Node: ns.nodeName, Slots: assigned, Task: &NodeSlotTask{task.Job.Name, task.Name}})
 
 		s.tasksQueue = s.tasksQueue[1:]
 
@@ -784,15 +784,17 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 
 			select {
 			case s.deferred <- func() {
-				freed := 0
+				var freed []int
 				for slot, t := range nodeState.tasks {
 					if t == task {
-						s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
 						nodeState.tasks[slot] = nil
-						freed++
+						freed = append(freed, slot)
 					}
 				}
-				task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", freed)
+				if len(freed) > 0 {
+					s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slots: freed, Task: nil})
+				}
+				task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", len(freed))
 				s.requestTick("aborted task during delay should give its slots to another task")
 			}:
 			case <-s.stop:
@@ -870,15 +872,17 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 	// from the main loop. wg.Done() is unconditional and outside the select so Wait() never hangs.
 	select {
 	case s.deferred <- func() {
-		freed := 0
+		var freed []int
 		for slot, t := range nodeState.tasks {
 			if t == task {
-				s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slot: slot, Task: nil})
 				nodeState.tasks[slot] = nil
-				freed++
+				freed = append(freed, slot)
 			}
 		}
-		task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", freed)
+		if len(freed) > 0 {
+			s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slots: freed, Task: nil})
+		}
+		task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", len(freed))
 		s.requestTick("executed task should give its slots to another task")
 	}:
 	case <-s.stop:

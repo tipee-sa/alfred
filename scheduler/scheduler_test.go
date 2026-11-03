@@ -901,20 +901,22 @@ func TestMultiSlotTaskAssignment(t *testing.T) {
 		return ok
 	})
 
-	// Should see 3 slot updates (assign) + 3 slot updates (free) for the task
-	slotAssigns := 0
-	slotFrees := 0
+	// One event assigns all 3 slots and one frees them: a client rebuilding state from the
+	// stream must never see the task on only some of its slots.
+	var assigns, frees []EventNodeSlotUpdated
 	for _, e := range events {
 		if su, ok := e.(EventNodeSlotUpdated); ok {
 			if su.Task != nil {
-				slotAssigns++
+				assigns = append(assigns, su)
 			} else {
-				slotFrees++
+				frees = append(frees, su)
 			}
 		}
 	}
-	assert.Equal(t, 3, slotAssigns, "expected 3 slot assignments for 3-slot task")
-	assert.Equal(t, 3, slotFrees, "expected 3 slot frees for 3-slot task")
+	require.Len(t, assigns, 1, "a 3-slot task should be assigned in a single event")
+	require.Len(t, frees, 1, "a 3-slot task should be freed in a single event")
+	assert.Len(t, assigns[0].Slots, 3, "expected 3 slots assigned for 3-slot task")
+	assert.ElementsMatch(t, assigns[0].Slots, frees[0].Slots, "the freed slots should be the assigned ones")
 }
 
 func TestMultiSlotTaskFreeing(t *testing.T) {
@@ -1211,9 +1213,9 @@ func TestSlotsDefaultToOneWhenZero(t *testing.T) {
 	for _, e := range events {
 		if su, ok := e.(EventNodeSlotUpdated); ok {
 			if su.Task != nil {
-				slotAssigns++
+				slotAssigns += len(su.Slots)
 			} else {
-				slotFrees++
+				slotFrees += len(su.Slots)
 			}
 		}
 	}
