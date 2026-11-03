@@ -223,9 +223,7 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	defer os.Remove(tmp.Name())
 
 	args = append(args, "--iidfile", tmp.Name())
-	cmd := exec.Command("docker", args...)
-
-	cmd.Dir = dir
+	cmd := buildCommand(dir, args)
 	// The build's output is progress, never the command's output: with -v it goes to stderr,
 	// so that stdout stays pure (run --json, run --dry-run). Without -v, the end of it is kept
 	// for the error, which otherwise says only "exit status 1".
@@ -255,6 +253,18 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 	}
 
 	return tag, nil
+}
+
+// buildCommand returns the docker build command, without BuildKit's default provenance
+// attestation: it records the build's time, and on the containerd image store the index it
+// sits in gives the image its ID, so every build of an unchanged image got a new ID. The
+// server and every node then took it as a new image (uploaded, archived and loaded again).
+// The variable, unlike --provenance=false, is ignored by builders that have no attestations.
+func buildCommand(dir string, args []string) *exec.Cmd {
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "BUILDX_NO_DEFAULT_ATTESTATIONS=1")
+	return cmd
 }
 
 // tailBuffer keeps the end of what is written to it: at most tailBufferBytes, of which String
