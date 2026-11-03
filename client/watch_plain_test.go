@@ -118,6 +118,7 @@ func TestWatchPlain_InterruptionIsAnError(t *testing.T) {
 	err := runWatchPlain(ctx, make(chan recvResult), newTestRenderer(time.Now()), &buf, nil)
 
 	assert.EqualError(t, err, "interrupted before job 'test-job' completed")
+	assert.ErrorIs(t, err, errInterrupted, "main does not print it")
 }
 
 func TestPrintWatchOnce(t *testing.T) {

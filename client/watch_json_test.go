@@ -174,4 +174,5 @@ func TestWatchJSON_InterruptionIsAnError(t *testing.T) {
 	err := runWatchJSON(ctx, make(chan recvResult), "test-job", &buf, false, nil)
 
 	assert.EqualError(t, err, "interrupted before job 'test-job' completed")
+	assert.ErrorIs(t, err, errInterrupted, "main does not print it")
 }
