@@ -334,6 +334,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
   deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
 - **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover
   `systemctl kill`, which the host's weekly restart timer runs.
+- **Service images are pulled once per daemon**: tasks take a lock per Docker daemon and image
+  (`servicePulls` in `provisioner/internal/docker.go`), and a pull's progress is decoded for the
+  error a failed pull ends with (the daemon answers it with a success). The OpenStack node image
+  ships with the service images, so pulls only happen when a jobfile's service image changes.
 - **Service container logs**: collected only on startup failure; step containers always stream
   theirs.
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
