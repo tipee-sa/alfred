@@ -91,6 +91,7 @@ func TestWatchLoop_ContextCancelled_BeforeStart_IsAnError(t *testing.T) {
 		nil, func() { cleanStopCalled = true }, nil, nil)
 
 	assert.EqualError(t, err, "interrupted before job 'test-job' completed", "no final status to check: not a success")
+	assert.ErrorIs(t, err, errInterrupted, "main does not print it")
 	assert.True(t, cleanStopCalled, "onCleanStop should be called")
 	assert.NotContains(t, buf.String(), "Interrupted", "should not print Interrupted message")
 }
@@ -124,6 +125,7 @@ func TestWatchLoop_ContextCancelled_AfterStart_RestoresCursor(t *testing.T) {
 	err := runWatchLoop(ctx, msgCh, newTestRenderer(now), "test-job", &buf, nil, nil, nil, nil)
 
 	assert.EqualError(t, err, "interrupted before job 'test-job' completed")
+	assert.ErrorIs(t, err, errInterrupted, "main does not print it")
 	output := buf.String()
 	assert.Contains(t, output, cursorHide, "cursor should have been hidden")
 	assert.Contains(t, output, cursorShow, "cursor should be restored")

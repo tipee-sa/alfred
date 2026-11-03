@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -408,6 +409,9 @@ func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watc
 			return errStreamEnded(renderer.jobName)
 		}
 		if result.err != nil {
+			if ctx.Err() != nil {
+				return errWatchInterrupted(renderer.jobName)
+			}
 			return fmt.Errorf("failed to receive job status: %w", result.err)
 		}
 		summary := renderer.renderSummary
@@ -436,8 +440,12 @@ func finishWatch(w io.Writer, lastMsg *proto.JobStatus, jobName string, summary 
 	return nil
 }
 
+// errInterrupted marks an error caused by the user stopping the command (Ctrl+C): it still
+// exits 1, but main does not print it, as the user knows why the command stopped.
+var errInterrupted = errors.New("interrupted")
+
 func errWatchInterrupted(jobName string) error {
-	return fmt.Errorf("interrupted before job '%s' completed", jobName)
+	return fmt.Errorf("%w before job '%s' completed", errInterrupted, jobName)
 }
 
 func errStreamEnded(jobName string) error {

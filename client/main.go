@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -126,7 +127,9 @@ func main() {
 
 	alfredCmd.SetOut(os.Stdout)
 	if err := alfredCmd.ExecuteContext(ctx); err != nil {
-		lo.Must(fmt.Fprintln(os.Stderr, color.HiRedString(fmt.Sprint(err))))
+		if !errors.Is(err, errInterrupted) {
+			lo.Must(fmt.Fprintln(os.Stderr, color.HiRedString(fmt.Sprint(err))))
+		}
 		os.Exit(1)
 	}
 }

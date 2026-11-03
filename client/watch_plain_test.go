@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -118,6 +119,7 @@ func TestWatchPlain_InterruptionIsAnError(t *testing.T) {
 	err := runWatchPlain(ctx, make(chan recvResult), newTestRenderer(time.Now()), &buf, nil)
 
 	assert.EqualError(t, err, "interrupted before job 'test-job' completed")
+	assert.ErrorIs(t, err, errInterrupted, "main does not print it")
 }
 
 func TestPrintWatchOnce(t *testing.T) {
@@ -148,6 +150,21 @@ func TestPrintWatchOnce_StreamErrorIsReturned(t *testing.T) {
 	err := printWatchOnce(context.Background(), msgCh, newTestRenderer(time.Now()), &buf, true)
 
 	assert.EqualError(t, err, "failed to receive job status: job 'x' not found")
+	assert.Empty(t, buf.String())
+}
+
+func TestPrintWatchOnce_InterruptionIsAnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Ctrl+C also fails the pending Recv: whichever case select picks, it is an interruption.
+	msgCh := make(chan recvResult, 1)
+	msgCh <- recvResult{err: errors.New("context canceled")}
+
+	var buf bytes.Buffer
+	err := printWatchOnce(ctx, msgCh, newTestRenderer(time.Now()), &buf, true)
+
+	assert.EqualError(t, err, "interrupted before job 'test-job' completed")
+	assert.ErrorIs(t, err, errInterrupted, "main does not print it")
 	assert.Empty(t, buf.String())
 }
 
