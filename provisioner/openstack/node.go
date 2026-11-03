@@ -45,11 +45,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 	n.provisioner.wg.Add(1)
 	defer func() {
 		if err != nil {
-			// Logged here, as nothing else sees it: a server left behind counts against the
-			// project's quota until someone deletes it
-			if terminateErr := n.Terminate(); terminateErr != nil {
-				n.log.Warn("Failed to delete the server of a node that failed to provision", "error", terminateErr)
-			}
+			_ = n.Terminate() // logs its own failure
 		}
 	}()
 
@@ -344,6 +340,12 @@ func (n *Node) Terminate() error {
 	err := internal.Retry(3, func() error {
 		return servers.Delete(n.provisioner.client, n.server.ID).ExtractErr()
 	})
+	if err != nil {
+		// Logged here, before wg.Done: past it, the server may exit at shutdown before a
+		// caller logs it, and two callers drop it (a failed provisioning, the shutdown). A
+		// server left behind counts against the project's quota until someone deletes it.
+		n.log.Warn("Failed to delete the node's server", "error", err)
+	}
 
 	n.provisioner.wg.Done()
 	return err

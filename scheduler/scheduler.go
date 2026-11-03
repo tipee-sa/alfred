@@ -313,11 +313,7 @@ func (s *Scheduler) Run() {
 			s.log.Info("Terminating online nodes")
 			for _, nodeState := range s.nodes {
 				if nodeState.status == NodeStatusOnline {
-					go func() {
-						if err := nodeState.node.Terminate(); err != nil {
-							nodeState.log.Warn("Failed to terminate node at shutdown", "error", err)
-						}
-					}()
+					go nodeState.node.Terminate()
 				}
 			}
 			return
