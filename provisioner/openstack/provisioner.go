@@ -45,6 +45,9 @@ type Provisioner struct {
 
 	// True if Shutdown() has been called
 	shutdown atomic.Bool
+
+	// Image transfers in progress, across all nodes
+	transfers atomic.Int32
 }
 
 // Provisioner implements scheduler.Provisioner

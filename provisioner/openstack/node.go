@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -17,7 +16,6 @@ import (
 	"github.com/gammadia/alfred/provisioner/internal"
 	"github.com/gammadia/alfred/scheduler"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"github.com/samber/lo"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -211,8 +209,11 @@ func (n *Node) RunTask(ctx context.Context, task *scheduler.Task, runConfig sche
 }
 
 func (n *Node) ensureNodeHasImage(image string) (string, error) {
+	// Tasks on a node take turns: one waits here while another's image transfers
+	lockStart := time.Now()
 	n.mutex.Lock()
 	defer n.mutex.Unlock()
+	lockWait := time.Since(lockStart)
 
 	// Clients send a tag (alfred-image:<id>), which docker load restores on the node. Older
 	// clients send a bare image ID, which gets a predictable tag on the server first.
@@ -227,7 +228,12 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 		_, _, err := n.docker.ImageInspectWithRaw(context.Background(), tag)
 		return err
 	}); err == nil {
-		n.log.Debug("Image found on node (from previous transfer)", "image", image, "tag", tag)
+		if lockWait >= time.Second {
+			// Another task on this node transferred it while this one waited
+			n.log.Info("Image found on node after waiting for a transfer", "image", image, "tag", tag, "lockWaitSeconds", lockWait.Round(100*time.Millisecond).Seconds())
+		} else {
+			n.log.Debug("Image found on node (from previous transfer)", "image", image, "tag", tag)
+		}
 		return tag, nil
 	} else {
 		n.log.Debug("Image not found on node", "image", image, "tag", tag)
@@ -247,51 +253,24 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 		n.log.Debug("Tagged image on server", "image", image, "tag", tag)
 	}
 
+	// Transfers in progress on all nodes, this one included: they share the server's CPU and uplink
+	concurrent := n.provisioner.transfers.Add(1)
+	defer n.provisioner.transfers.Add(-1)
+
 	// Transfer the image to the node via docker save | zstd | ssh | docker load.
 	// Retry the entire pipeline on failure (SSH tunnel drops, Docker daemon busy, etc.).
 	const maxTransferAttempts = 3
 	var lastTransferErr error
 	var transferAttempts int
+	var stats transferStats
 	for transferAttempts = 1; transferAttempts <= maxTransferAttempts; transferAttempts++ {
 		if transferAttempts > 1 {
 			n.log.Warn("Image transfer failed, retrying", "image", image, "tag", tag, "attempt", transferAttempts, "maxAttempts", maxTransferAttempts, "error", lastTransferErr)
 			time.Sleep(5 * time.Second)
 		}
 
-		lastTransferErr = func() error {
-			session, err := newSession(n.ssh)
-			if err != nil {
-				return err
-			}
-			defer session.Close()
-
-			n.log.Debug("Starting docker save|zstd|ssh|docker load pipeline", "tag", tag, "attempt", transferAttempts)
-			saveCmd := exec.Command("bash", "-euo", "pipefail", "-c", fmt.Sprintf("docker save '%s' | zstd --compress --adapt=min=5,max=8", tag))
-			saveOut := lo.Must(saveCmd.StdoutPipe())
-			session.Stdin = saveOut
-			var loadOutput bytes.Buffer
-			session.Stdout = &loadOutput
-			session.Stderr = os.Stderr
-
-			if err := saveCmd.Start(); err != nil {
-				return fmt.Errorf("failed to docker save image '%s': %w", image, err)
-			}
-
-			if err := session.Run("zstd --decompress | docker load"); err != nil {
-				// Ensure the local save process is cleaned up
-				saveCmd.Wait()
-				return fmt.Errorf("failed to docker load image '%s' (output: %s): %w",
-					image, strings.TrimSpace(loadOutput.String()), err)
-			}
-
-			if err := saveCmd.Wait(); err != nil {
-				return fmt.Errorf("failed to wait for docker save of image '%s': %w", image, err)
-			}
-
-			return nil
-		}()
-
-		if lastTransferErr == nil {
+		n.log.Debug("Starting docker save|zstd|ssh|docker load pipeline", "tag", tag, "attempt", transferAttempts)
+		if lastTransferErr = n.transferImage(tag, &stats); lastTransferErr == nil {
 			break
 		}
 	}
@@ -299,7 +278,11 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 		return "", fmt.Errorf("image transfer failed after %d attempts: %w", maxTransferAttempts, lastTransferErr)
 	}
 
-	n.log.Debug("Docker save|load pipeline completed", "image", image, "tag", tag, "attempts", transferAttempts)
+	n.log.Info("Image transferred to node", append([]any{
+		"image", image, "tag", tag, "attempts", transferAttempts,
+		"lockWaitSeconds", lockWait.Round(100 * time.Millisecond).Seconds(),
+		"concurrentTransfers", concurrent,
+	}, stats.logAttrs()...)...)
 
 	// Verify the image is accessible by tag
 	if err := internal.Retry(3, func() error {
