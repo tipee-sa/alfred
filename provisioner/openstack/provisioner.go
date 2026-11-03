@@ -207,8 +207,10 @@ func (p *Provisioner) Wait() {
 	p.wg.Wait()
 }
 
-// imageArchiveTTL is how long an image's archive is kept once no transfer asks for it. Nodes
-// that join a job late (replacing a failed one, or as the queue grows) reuse it meanwhile.
+// imageArchiveTTL is how long an image's archive is kept once no transfer asks for it. Every
+// job brings new images (up to ~50 a day, 140-320 MB each), so kept until the weekly restart
+// they could fill the server's disk. Nodes that join a job late (replacing a failed one)
+// reuse it meanwhile; past it, a node waits ~15 s for a rebuild.
 const imageArchiveTTL = time.Hour
 
 var uuidRegexp = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)

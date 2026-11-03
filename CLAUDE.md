@@ -325,8 +325,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   containerd: OCI index digest), so after `docker save | docker load` across stores the ID
   changes; the tag survives. The OpenStack node still re-tags bare `sha256:` IDs for old clients.
 - **One image archive for all nodes**: the server runs `docker save | zstd` once per image, into
-  `<server-data>/image-archives` (emptied at startup and shutdown, an archive unused for an hour
-  deleted), and every node's transfer streams that file. When a job lands on a running fleet, all
+  `<server-data>/image-archives` (emptied at startup and shutdown), and every node's transfer
+  streams that file. An archive unused for an hour is deleted: every job brings new images (up to
+  ~50 a day, 140-320 MB each), which would fill the disk before the weekly restart. When a job lands on a running fleet, all
   nodes want its images at once, and 15 concurrent `docker save` of one 1.1 GB image took 73-97 s
   each, against 11 s alone.
 - **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
