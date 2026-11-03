@@ -132,7 +132,8 @@ function. Node pool auto-scales based on queued tasks vs capacity. Live artifact
 
 **Provisioners**: Implement `Provisioner` interface (`Provision`, `Shutdown`, `Wait`) and
 `Node` interface (`Name`, `RunTask`, `Terminate`). Local provisioner wraps Docker on localhost.
-OpenStack provisioner creates VMs, connects via SSH, transfers images compressed with zstd.
+OpenStack provisioner creates VMs, connects via SSH, and sends each node the images its tasks need
+as zstd archives (`provisioner/openstack/archive.go`).
 
 ### RunContainer() Flow (`provisioner/internal/docker.go`)
 
@@ -323,6 +324,11 @@ The codebase uses several recurring async patterns (all annotated with inline co
   and sends that tag. The `--iidfile` ID depends on the image store (classic: config digest,
   containerd: OCI index digest), so after `docker save | docker load` across stores the ID
   changes; the tag survives. The OpenStack node still re-tags bare `sha256:` IDs for old clients.
+- **One image archive for all nodes**: the server runs `docker save | zstd` once per image, into
+  `<server-data>/image-archives` (emptied at startup and shutdown, an archive unused for an hour
+  deleted), and every node's transfer streams that file. When a job lands on a running fleet, all
+  nodes want its images at once, and 15 concurrent `docker save` of one 1.1 GB image took 73-97 s
+  each, against 11 s alone.
 - **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
   deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
 - **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover

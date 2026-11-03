@@ -48,6 +48,9 @@ type Provisioner struct {
 
 	// Image transfers in progress, across all nodes
 	transfers atomic.Int32
+
+	// One compressed docker save per image, shared by the nodes' transfers
+	archives *imageArchives
 }
 
 // Provisioner implements scheduler.Provisioner
@@ -95,6 +98,11 @@ func New(config Config) (*Provisioner, error) {
 		keypairName: fmt.Sprintf("alfred-server-%s", hostname),
 		flavorCache: make(map[string]string),
 	}
+	archives, err := newImageArchives(config.ImageArchives, imageArchiveTTL, provisioner.log)
+	if err != nil {
+		return nil, err
+	}
+	provisioner.archives = archives
 	provisioner.wg.Add(1) // One item for the provisioner itself
 
 	// Generate a temporary keypair, replacing the one a previous run may have left behind
@@ -191,12 +199,17 @@ func (p *Provisioner) Shutdown() {
 		return
 	}
 	p.deleteKeypair()
+	p.archives.removeAll()
 	p.wg.Done() // Remove the provisioner itself from the WaitGroup
 }
 
 func (p *Provisioner) Wait() {
 	p.wg.Wait()
 }
+
+// imageArchiveTTL is how long an image's archive is kept once no transfer asks for it. Nodes
+// that join a job late (replacing a failed one, or as the queue grows) reuse it meanwhile.
+const imageArchiveTTL = time.Hour
 
 var uuidRegexp = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 

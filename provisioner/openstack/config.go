@@ -25,4 +25,6 @@ type Config struct {
 	DockerHost string `json:"openstack-docker-host"`
 	// Path to workspace
 	Workspace string `json:"workspace"`
+	// Directory of the images' archives sent to nodes, emptied at startup
+	ImageArchives string `json:"image-archives"`
 }

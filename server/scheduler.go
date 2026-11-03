@@ -106,6 +106,7 @@ func createProvisioner() (schedulerpkg.Provisioner, error) {
 			SshUsername:    viper.GetString(flags.OpenstackSshUsername),
 			DockerHost:     viper.GetString(flags.OpenstackDockerHost),
 			Workspace:      viper.GetString(flags.NodeWorkspace),
+			ImageArchives:  path.Join(viper.GetString(flags.ServerData), "image-archives"),
 		}
 		logger.Debug("Provisioner config", "provisioner", p, "config", string(lo.Must(json.Marshal(config))))
 		return openstack.New(config)

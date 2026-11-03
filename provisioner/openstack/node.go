@@ -257,8 +257,8 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	concurrent := n.provisioner.transfers.Add(1)
 	defer n.provisioner.transfers.Add(-1)
 
-	// Transfer the image to the node via docker save | zstd | ssh | docker load.
-	// Retry the entire pipeline on failure (SSH tunnel drops, Docker daemon busy, etc.).
+	// Send the image's archive to the node, through ssh into docker load. Retry on failure
+	// (SSH tunnel drops, Docker daemon busy, a failed archive build, etc.).
 	const maxTransferAttempts = 3
 	var lastTransferErr error
 	var transferAttempts int
@@ -269,7 +269,7 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 			time.Sleep(5 * time.Second)
 		}
 
-		n.log.Debug("Starting docker save|zstd|ssh|docker load pipeline", "tag", tag, "attempt", transferAttempts)
+		n.log.Debug("Starting image transfer", "tag", tag, "attempt", transferAttempts)
 		if lastTransferErr = n.transferImage(tag, &stats); lastTransferErr == nil {
 			break
 		}
