@@ -409,6 +409,9 @@ func printWatchOnce(ctx context.Context, msgCh <-chan recvResult, renderer *watc
 			return errStreamEnded(renderer.jobName)
 		}
 		if result.err != nil {
+			if ctx.Err() != nil {
+				return errWatchInterrupted(renderer.jobName)
+			}
 			return fmt.Errorf("failed to receive job status: %w", result.err)
 		}
 		summary := renderer.renderSummary
