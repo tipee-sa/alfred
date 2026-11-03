@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -23,11 +22,13 @@ type imageArchives struct {
 	// An archive no transfer has asked for in this long is deleted
 	ttl time.Duration
 	log *slog.Logger
-	// The command whose output is archived (docker save), replaced in tests
-	save func(tag string) *exec.Cmd
+	// The commands that write the archive (docker save, then zstd), replaced in tests
+	save     func(tag string) *exec.Cmd
+	compress func() *exec.Cmd
 
 	mu      sync.Mutex
 	entries map[string]*imageArchive
+	stop    chan struct{} // closed by removeAll, ends the sweep
 }
 
 type imageArchive struct {
@@ -59,7 +60,7 @@ func (s *archiveStats) logAttrs() []any {
 }
 
 // newImageArchives starts with an empty dir: archives a previous run left are not trusted,
-// since it may have died writing one.
+// since it may have died writing one. It sweeps expired archives until removeAll.
 func newImageArchives(dir string, ttl time.Duration, log *slog.Logger) (*imageArchives, error) {
 	if err := os.RemoveAll(dir); err != nil {
 		return nil, fmt.Errorf("failed to clear image archives in '%s': %w", dir, err)
@@ -67,13 +68,35 @@ func newImageArchives(dir string, ttl time.Duration, log *slog.Logger) (*imageAr
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create image archives dir '%s': %w", dir, err)
 	}
-	return &imageArchives{
-		dir:     dir,
-		ttl:     ttl,
-		log:     log,
-		save:    func(tag string) *exec.Cmd { return exec.Command("docker", "save", tag) },
-		entries: make(map[string]*imageArchive),
-	}, nil
+	a := &imageArchives{
+		dir:  dir,
+		ttl:  ttl,
+		log:  log,
+		save: func(tag string) *exec.Cmd { return exec.Command("docker", "save", tag) },
+		// All cores: one archive serves every node, so its build is worth them
+		compress: func() *exec.Cmd { return exec.Command("zstd", "--compress", "-5", "-T0", "-q") },
+		entries:  make(map[string]*imageArchive),
+		stop:     make(chan struct{}),
+	}
+	go a.sweep()
+	return a, nil
+}
+
+// sweep deletes expired archives every quarter of the TTL, so they go even when no transfer
+// comes to trigger it.
+func (a *imageArchives) sweep() {
+	ticker := time.NewTicker(a.ttl / 4)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stop:
+			return
+		case <-ticker.C:
+			a.mu.Lock()
+			a.evict()
+			a.mu.Unlock()
+		}
+	}
 }
 
 // open returns the image's archive opened for reading, building it first unless another call
@@ -81,7 +104,6 @@ func newImageArchives(dir string, ttl time.Duration, log *slog.Logger) (*imageAr
 // call built it. A failed build is forgotten, so the next call tries again.
 func (a *imageArchives) open(tag string) (f *os.File, built bool, err error) {
 	a.mu.Lock()
-	a.evict()
 	archive, ok := a.entries[tag]
 	if !ok {
 		archive = &imageArchive{ready: make(chan struct{})}
@@ -106,10 +128,16 @@ func (a *imageArchives) build(tag string, archive *imageArchive) {
 	defer close(archive.ready)
 
 	archive.err = a.write(tag, archive)
+	a.mu.Lock()
 	if archive.err != nil {
-		a.mu.Lock()
 		delete(a.entries, tag)
-		a.mu.Unlock()
+	} else {
+		// Its TTL starts now, not when the build began: the transfers waiting for it are
+		// about to open it
+		archive.lastUsed = time.Now()
+	}
+	a.mu.Unlock()
+	if archive.err != nil {
 		return
 	}
 	a.log.Info("Image archive built", append([]any{"tag", tag}, archive.stats.logAttrs()...)...)
@@ -133,8 +161,7 @@ func (a *imageArchives) write(tag string, archive *imageArchive) error {
 	saveCmd.Stderr = &saveStderr
 	stats.saved = meter{r: lo.Must(saveCmd.StdoutPipe())}
 
-	// All cores: one archive now serves every node, so its build is worth them
-	zstdCmd := exec.Command("zstd", "--compress", "-5", "-T0", "-q")
+	zstdCmd := a.compress()
 	zstdCmd.Stdin = &stats.saved
 	zstdCmd.Stdout = tmp
 	zstdCmd.Stderr = &zstdStderr
@@ -150,19 +177,27 @@ func (a *imageArchives) write(tag string, archive *imageArchive) error {
 	// zstd first: its Wait ends the goroutine that reads docker save's pipe, which docker
 	// save's Wait then closes
 	zstdErr := zstdCmd.Wait()
+	if zstdErr != nil {
+		// Nothing reads docker save's output any more: it would block writing, and its Wait
+		// with it
+		_ = saveCmd.Process.Kill()
+	}
 	saveErr := saveCmd.Wait()
 	switch {
-	case saveErr != nil:
-		return fmt.Errorf("failed to docker save '%s' (output: %s): %w", tag, strings.TrimSpace(saveStderr.String()), saveErr)
+	// Checked first: docker save then only failed from the kill above
 	case zstdErr != nil:
 		return fmt.Errorf("failed to compress '%s' (output: %s): %w", tag, strings.TrimSpace(zstdStderr.String()), zstdErr)
+	case saveErr != nil:
+		return fmt.Errorf("failed to docker save '%s' (output: %s): %w", tag, strings.TrimSpace(saveStderr.String()), saveErr)
 	}
 
 	info, err := tmp.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to stat archive of '%s': %w", tag, err)
 	}
-	path := filepath.Join(a.dir, strings.NewReplacer("/", "_", ":", "_").Replace(tag)+".tar.zst")
+	// Named after the temporary file, which is unique: a name derived from the tag could
+	// be shared by two tags (team/app and team_app)
+	path := strings.TrimSuffix(tmp.Name(), ".partial") + ".tar.zst"
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("failed to store archive of '%s': %w", tag, err)
 	}
@@ -192,10 +227,15 @@ func (a *imageArchives) evict() {
 	}
 }
 
-// removeAll deletes every archive, for the provisioner's shutdown.
+// removeAll deletes every archive and ends the sweep, for the provisioner's shutdown.
 func (a *imageArchives) removeAll() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	select {
+	case <-a.stop:
+	default:
+		close(a.stop)
+	}
 	a.entries = make(map[string]*imageArchive)
 	if err := os.RemoveAll(a.dir); err != nil {
 		a.log.Warn("Failed to delete image archives", "dir", a.dir, "error", err)
