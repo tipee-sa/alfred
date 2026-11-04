@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -87,6 +88,9 @@ func TestBuildImageTagsAnImageTheDaemonKnows(t *testing.T) {
 		t.Fatal(err)
 	}
 	assert.Equal(t, first, second, "a rebuild of an unchanged image got a new ID")
+	// Only this process's: an alfred run building meanwhile has its own
 	out, _ := exec.Command("docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}", "alfred-build").Output()
-	assert.Empty(t, strings.TrimSpace(string(out)), "temporary build tags left behind")
+	ours := fmt.Sprintf("alfred-build:%d-", os.Getpid())
+	left := lo.Filter(strings.Fields(string(out)), func(tag string, _ int) bool { return strings.HasPrefix(tag, ours) })
+	assert.Empty(t, left, "temporary build tags left behind")
 }
