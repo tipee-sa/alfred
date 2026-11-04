@@ -204,25 +204,20 @@ func evaluateTemplate(source string, dir string, options ReadOptions) (string, e
 
 // buildImage builds the main Docker image for the job and returns a tag referencing it.
 //
-// The image ID written by --iidfile depends on the Docker image store: the classic store gives
-// the config digest, the containerd store the digest of the OCI index. After a docker save |
-// docker load between two daemons using different stores, the loaded image no longer has the ID
-// the client saw. Tags survive the round trip on both stores, so the image travels under one.
+// The image's ID comes from the daemon (docker image inspect of a temporary tag), not from
+// --iidfile: without attestations (see buildCommand), the containerd store's --iidfile gives a
+// digest the daemon does not know, and tagging it failed with "No such image". The ID itself
+// depends on the image store (classic: config digest, containerd: manifest digest), so after a
+// docker save | docker load between two daemons using different stores, the loaded image no
+// longer has the ID the client saw. Tags survive the round trip on both stores, so the image
+// travels under one.
 func buildImage(dockerfile string, dir string, buildOptions []string, readOptions ReadOptions) (string, error) {
+	// Unique, so that concurrent builds never take each other's image
+	buildTag := fmt.Sprintf("alfred-build:%d-%d", os.Getpid(), time.Now().UnixNano())
 	args := []string{"build", "--platform", "linux/amd64", ".", "-f", dockerfile}
 	args = append(args, buildOptions...)
+	args = append(args, "--tag", buildTag)
 
-	// Create a temporary file to store the image ID (@see --iidfile flag).
-	tmp, err := os.CreateTemp("", "alfred-image-id-")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
-	}
-
-	// We can close the file descriptor because Docker will override the file anyway.
-	_ = tmp.Close()
-	defer os.Remove(tmp.Name())
-
-	args = append(args, "--iidfile", tmp.Name())
 	cmd := buildCommand(dir, args)
 	// The build's output is progress, never the command's output: with -v it goes to stderr,
 	// so that stdout stays pure (run --json, run --dry-run). Without -v, the end of it is kept
@@ -240,15 +235,15 @@ func buildImage(dockerfile string, dir string, buildOptions []string, readOption
 		}
 		return "", fmt.Errorf("failed to build image: %w", err)
 	}
+	// Removes only the temporary tag: the image keeps the one below
+	defer func() { _ = exec.Command("docker", "image", "rm", buildTag).Run() }()
 
-	rawImageId, err := os.ReadFile(tmp.Name())
+	out, err := exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", buildTag).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to read image id: %w", err)
+		return "", fmt.Errorf("failed to read the built image's ID (output: %s): %w", strings.TrimSpace(string(out)), err)
 	}
-
-	imageId := strings.TrimSpace(string(rawImageId))
-	tag := imageTag(imageId)
-	if out, err := exec.Command("docker", "tag", imageId, tag).CombinedOutput(); err != nil {
+	tag := imageTag(strings.TrimSpace(string(out)))
+	if out, err := exec.Command("docker", "tag", buildTag, tag).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to tag image as '%s' (output: %s): %w", tag, strings.TrimSpace(string(out)), err)
 	}
 
