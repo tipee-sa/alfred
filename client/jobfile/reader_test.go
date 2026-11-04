@@ -2,6 +2,9 @@ package jobfile
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,4 +58,35 @@ func TestBuildCommandTurnsOffDefaultAttestations(t *testing.T) {
 	if !strings.Contains(env, "ALFRED_TEST_KEPT=1") {
 		t.Error("the user's environment is not passed to docker build")
 	}
+}
+
+func TestBuildImageTagsAnImageTheDaemonKnows(t *testing.T) {
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("no Docker daemon")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\nCOPY file /file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file"), []byte(dir), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := buildImage("Dockerfile", dir, nil, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "image", "rm", first).Run() })
+	if out, err := exec.Command("docker", "image", "inspect", first).CombinedOutput(); err != nil {
+		t.Fatalf("the daemon does not know %s: %s", first, out)
+	}
+
+	// An unchanged image keeps its ID, and the build's temporary tag is gone
+	second, err := buildImage("Dockerfile", dir, nil, ReadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Equal(t, first, second, "a rebuild of an unchanged image got a new ID")
+	out, _ := exec.Command("docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}", "alfred-build").Output()
+	assert.Empty(t, strings.TrimSpace(string(out)), "temporary build tags left behind")
 }
