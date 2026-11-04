@@ -41,3 +41,18 @@ func TestTailBuffer_BoundsNewlineFreeOutput(t *testing.T) {
 	assert.True(t, strings.HasSuffix(out, "xy"))
 	assert.Equal(t, len("[...]")+tailBufferBytes, len(out))
 }
+
+func TestBuildCommandTurnsOffDefaultAttestations(t *testing.T) {
+	t.Setenv("ALFRED_TEST_KEPT", "1")
+	cmd := buildCommand("/some/dir", []string{"build", "."})
+	if cmd.Dir != "/some/dir" {
+		t.Errorf("Dir = %q, want /some/dir", cmd.Dir)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	if !strings.Contains(env, "\nBUILDX_NO_DEFAULT_ATTESTATIONS=1") {
+		t.Error("BUILDX_NO_DEFAULT_ATTESTATIONS=1 not set: each build of an unchanged image gets a new ID")
+	}
+	if !strings.Contains(env, "ALFRED_TEST_KEPT=1") {
+		t.Error("the user's environment is not passed to docker build")
+	}
+}

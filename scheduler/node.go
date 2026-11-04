@@ -48,10 +48,10 @@ type nodeState struct {
 	tasks  []*Task
 	log    *slog.Logger
 
-	nodeName              string
-	earliestStart         time.Time
-	nextTaskStart         time.Time
-	terminationAttempts   int
+	nodeName            string
+	earliestStart       time.Time
+	nextTaskStart       time.Time
+	terminationAttempts int
 }
 
 func (ns *nodeState) UpdateStatus(status NodeStatus) {

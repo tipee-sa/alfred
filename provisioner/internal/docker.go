@@ -3,6 +3,8 @@ package internal
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -57,15 +59,85 @@ func creationContext(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(context.WithoutCancel(ctx), dockerCreateTimeout)
 }
 
+// servicePulls lets one task pull a service image while the others on the same Docker daemon
+// wait for it, then find it there. Tasks on a node start a second apart, so each one starting
+// before the first pull ends would pull the image too, and every pull counts against the
+// registry's rate limit. Keyed by daemon (a client: the local provisioner shares one between
+// its nodes) and image.
+var servicePulls KeyedMutex
+
+type servicePullKey struct {
+	docker DockerClient
+	image  string
+}
+
+func ensureServiceImage(ctx context.Context, docker DockerClient, log *slog.Logger, ref string) error {
+	// A task aborted while another pulls stops waiting, and frees its network and workspace
+	unlock, err := servicePulls.LockContext(ctx, servicePullKey{docker, ref})
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	list, err := RetryResult(3, func() ([]image.Summary, error) {
+		return docker.ImageList(ctx, image.ListOptions{
+			Filters: filters.NewArgs(filters.Arg("reference", ref)),
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list docker images: %w", err)
+	}
+	if len(list) > 0 {
+		log.Debug("Service image already on node")
+		return nil
+	}
+
+	log.Info("Pulling service image", "image", ref)
+	return Retry(4, func() error {
+		reader, err := docker.ImagePull(ctx, ref, image.PullOptions{})
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+		return pullError(reader)
+	})
+}
+
+// pullError reads a pull's progress to its end and returns the error it reports, if any: the
+// daemon answers a pull that fails midway (a registry's rate limit, an unknown tag) with a
+// success, then the error as the stream's last message.
+func pullError(progress io.Reader) error {
+	decoder := json.NewDecoder(progress)
+	for {
+		var message struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := decoder.Decode(&message); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to read the pull's progress: %w", err)
+		}
+		if message.ErrorDetail.Message != "" {
+			return errors.New(message.ErrorDetail.Message)
+		}
+		if message.Error != "" {
+			return errors.New(message.Error)
+		}
+	}
+}
+
 // RunContainer is the core task execution engine. It orchestrates the full lifecycle:
 // network → workspace → services (parallel) → steps (sequential) → artifact archival → cleanup.
 //
 // Cleanup uses deferred calls in LIFO order. The order of defer registration matters:
-//   1. defer: remove network         (registered first → runs last)
-//   2. defer: remove workspace       (registered second → runs second-to-last)
-//   3. defer: OnWorkspaceTeardown    (unregisters live archiver)
-//   4. defer: remove service containers (one defer per service)
-//   5. (per step) defer: remove step container + cancel log streaming
+//  1. defer: remove network         (registered first → runs last)
+//  2. defer: remove workspace       (registered second → runs second-to-last)
+//  3. defer: OnWorkspaceTeardown    (unregisters live archiver)
+//  4. defer: remove service containers (one defer per service)
+//  5. (per step) defer: remove step container + cancel log streaming
 //
 // Artifact archival happens BEFORE workspace deletion (it's not deferred — it runs inline
 // after all steps). This is critical: archiving reads from /output which lives in the workspace.
@@ -152,31 +224,11 @@ func RunContainer(
 		serviceEnv[service.Name] = env
 	}
 
-	// Ensure service images are available (sequential — avoids concurrent pulls of the same image)
+	// Ensure service images are available, one at a time, each pulled by one task at a time on
+	// its Docker daemon (see servicePulls)
 	for _, service := range task.Job.Services {
-		serviceLog := task.Log.With("service", service.Name)
-
-		list, err := RetryResult(3, func() ([]image.Summary, error) {
-			return docker.ImageList(ctx, image.ListOptions{
-				Filters: filters.NewArgs(filters.Arg("reference", service.Image)),
-			})
-		})
-		if err != nil {
-			return -1, fmt.Errorf("failed to list docker images for service '%s': %w", service.Name, err)
-		}
-
-		if len(list) == 0 {
-			serviceLog.Debug("Pulling service image")
-			reader, err := RetryResult(4, func() (io.ReadCloser, error) {
-				return docker.ImagePull(ctx, service.Image, image.PullOptions{})
-			})
-			if err != nil {
-				return -1, fmt.Errorf("failed to pull docker image for service '%s': %w", service.Name, err)
-			}
-			_, _ = io.Copy(io.Discard, reader)
-			reader.Close()
-		} else {
-			serviceLog.Debug("Service image already on node")
+		if err := ensureServiceImage(ctx, docker, task.Log.With("service", service.Name), service.Image); err != nil {
+			return -1, fmt.Errorf("failed to pull docker image for service '%s': %w", service.Name, err)
 		}
 	}
 
@@ -546,9 +598,9 @@ func startAndWaitForService(
 		// check command hangs. The atomic bool distinguishes timeout-induced errors from real ones.
 		var healthCheckTimedOut atomic.Bool
 		go func() {
-			<-execCtx.Done()             // blocks until timeout or parent cancellation
+			<-execCtx.Done() // blocks until timeout or parent cancellation
 			healthCheckTimedOut.Store(true)
-			attach.Close()               // forces io.Copy to return with an error
+			attach.Close() // forces io.Copy to return with an error
 		}()
 
 		// Drain stdout to "wait" for the exec to complete. If the monitor goroutine

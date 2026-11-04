@@ -324,6 +324,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   and sends that tag. The `--iidfile` ID depends on the image store (classic: config digest,
   containerd: OCI index digest), so after `docker save | docker load` across stores the ID
   changes; the tag survives. The OpenStack node still re-tags bare `sha256:` IDs for old clients.
+  The client builds with `BUILDX_NO_DEFAULT_ATTESTATIONS=1`: on the containerd store, the default
+  provenance attestation (it records the build's time) gave each build of an unchanged image a new
+  ID, so the server and every node took it for a new image.
 - **One image archive for all nodes**: the server runs `docker save | zstd` once per image, into
   `<server-data>/image-archives` (emptied at startup and shutdown), and every node's transfer
   streams that file. An archive unused for an hour is deleted: every job brings new images (up to
@@ -334,6 +337,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
   deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
 - **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover
   `systemctl kill`, which the host's weekly restart timer runs.
+- **Service images are pulled once per daemon**: tasks take a lock per Docker daemon and image
+  (`servicePulls` in `provisioner/internal/docker.go`), and a pull's progress is decoded for the
+  error a failed pull ends with (the daemon answers it with a success). The OpenStack node image
+  ships with the service images, so pulls only happen when a jobfile's service image changes.
 - **Service container logs**: collected only on startup failure; step containers always stream
   theirs.
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and

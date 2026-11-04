@@ -29,8 +29,9 @@ type Node struct {
 
 	terminated atomic.Bool
 
-	log   *slog.Logger
-	mutex sync.Mutex
+	log *slog.Logger
+	// One per image: a task waits for another's transfer of the same image, not of others
+	images internal.KeyedMutex
 }
 
 // Node implements scheduler.Node
@@ -44,7 +45,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 	n.provisioner.wg.Add(1)
 	defer func() {
 		if err != nil {
-			_ = n.Terminate()
+			_ = n.Terminate() // logs its own failure
 		}
 	}()
 
@@ -185,17 +186,29 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 }
 
 func (n *Node) RunTask(ctx context.Context, task *scheduler.Task, runConfig scheduler.RunTaskConfig) (int, error) {
-	// Resolve each step image to a tagged reference for this node.
+	// Resolve each step image to a tagged reference for this node, all at once: a job's first
+	// task on a node transfers them in parallel rather than one after another.
 	// Containerd image store requires tagged references — images loaded via docker load
 	// are not accessible by their config digest (SHA). Images sent as tags need no override.
+	refs := make([]string, len(task.Job.Steps))
+	errs := make([]error, len(task.Job.Steps))
+	var wg sync.WaitGroup
+	for i, image := range task.Job.Steps {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n.log.Debug("Resolving step image", "step", i, "image", image)
+			refs[i], errs[i] = n.ensureNodeHasImage(image)
+		}()
+	}
+	wg.Wait()
+
 	imageOverrides := map[string]string{}
 	for i, image := range task.Job.Steps {
-		n.log.Debug("Resolving step image", "step", i, "image", image)
-		ref, err := n.ensureNodeHasImage(image)
-		if err != nil {
-			return -1, fmt.Errorf("failed to ensure node has docker image '%s': %w", image, err)
+		if errs[i] != nil {
+			return -1, fmt.Errorf("failed to ensure node has docker image '%s': %w", image, errs[i])
 		}
-		if ref != image {
+		if ref := refs[i]; ref != image {
 			n.log.Debug("Step image resolved to different reference", "step", i, "original", image, "resolved", ref)
 			imageOverrides[image] = ref
 		}
@@ -209,10 +222,9 @@ func (n *Node) RunTask(ctx context.Context, task *scheduler.Task, runConfig sche
 }
 
 func (n *Node) ensureNodeHasImage(image string) (string, error) {
-	// Tasks on a node take turns: one waits here while another's image transfers
+	// A task waits here while another transfers the same image to this node
 	lockStart := time.Now()
-	n.mutex.Lock()
-	defer n.mutex.Unlock()
+	defer n.images.Lock(image)()
 	lockWait := time.Since(lockStart)
 
 	// Clients send a tag (alfred-image:<id>), which docker load restores on the node. Older
@@ -328,6 +340,12 @@ func (n *Node) Terminate() error {
 	err := internal.Retry(3, func() error {
 		return servers.Delete(n.provisioner.client, n.server.ID).ExtractErr()
 	})
+	if err != nil {
+		// Logged here, before wg.Done: past it, the server may exit at shutdown before a
+		// caller logs it, and two callers drop it (a failed provisioning, the shutdown). A
+		// server left behind counts against the project's quota until someone deletes it.
+		n.log.Warn("Failed to delete the node's server", "error", err)
+	}
 
 	n.provisioner.wg.Done()
 	return err

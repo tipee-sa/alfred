@@ -1598,10 +1598,10 @@ func TestConcurrentMultiSlotTaskFreeing(t *testing.T) {
 
 // failingTerminateNode is a mock node whose Terminate() fails a configurable number of times.
 type failingTerminateNode struct {
-	name          string
-	taskDone      chan struct{}
-	failCount     int // number of times Terminate() should fail before succeeding
-	mu            sync.Mutex
+	name           string
+	taskDone       chan struct{}
+	failCount      int // number of times Terminate() should fail before succeeding
+	mu             sync.Mutex
 	terminateCalls int
 }
 
