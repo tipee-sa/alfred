@@ -37,6 +37,7 @@ type DockerClient interface {
 	ContainerKill(ctx context.Context, containerID string, signal string) error
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
+	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
 	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (container.ExecCreateResponse, error)
 	ContainerExecAttach(ctx context.Context, execID string, config container.ExecStartOptions) (types.HijackedResponse, error)
 	ContainerExecInspect(ctx context.Context, execID string) (container.ExecInspect, error)
@@ -457,6 +458,8 @@ func RunContainer(
 			stepStart := time.Now()
 			stepSeconds := func() float64 { return time.Since(stepStart).Round(time.Millisecond).Seconds() }
 			task.Log.Info("Step started", "step", stepIndex, "image", image)
+			usage := watchStepUsage(ctx, docker, resp.ID)
+			defer usage.stop()
 
 			// Stream container logs to file in a background goroutine.
 			// Uses a child context so we can cancel log streaming when the container exits.
@@ -480,7 +483,7 @@ func RunContainer(
 				if err := <-logDone; err != nil && logCtx.Err() == nil {
 					task.Log.Error("Failed to stream container logs", "error", err, "step", stepIndex)
 				}
-				task.Log.Info("Step finished", "step", stepIndex, "exitCode", status.StatusCode, "durationSeconds", stepSeconds())
+				task.Log.Info("Step finished", append([]any{"step", stepIndex, "exitCode", status.StatusCode, "durationSeconds", stepSeconds()}, usage.logAttrs()...)...)
 
 				if status.StatusCode != 0 {
 					return fmt.Errorf("step %d failed with status: %d", stepIndex, status.StatusCode)
