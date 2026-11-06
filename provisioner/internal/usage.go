@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 )
@@ -11,10 +12,18 @@ import (
 // stepUsage follows a step container's resource usage through Docker's stats stream, one reading
 // a second, for the step's "Step finished" record. The node's own state (provisioner/openstack)
 // shows the whole VM; this tells which step used it.
+// stepUsageStopTimeout bounds the wait for the stats stream to end: over a node's SSH
+// connection that stopped draining, cancelling it can block, and the step's end (artifacts,
+// cleanup, its slots) must not wait for telemetry.
+var stepUsageStopTimeout = 5 * time.Second
+
 type stepUsage struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
+	// Whether the stream's goroutine ended within stepUsageStopTimeout: only then are the
+	// readings below safe to read. Set inside once.
+	ended bool
 
 	// Written by the stream's goroutine until done is closed, read after
 	readings     int
@@ -77,18 +86,27 @@ func (u *stepUsage) add(r container.StatsResponse) {
 	}
 }
 
-// stop ends the stream and waits for its goroutine. Safe to call more than once.
-func (u *stepUsage) stop() {
+// stop ends the stream and waits for its goroutine, at most stepUsageStopTimeout, and says
+// whether it ended. Safe to call more than once.
+func (u *stepUsage) stop() bool {
 	u.once.Do(func() {
 		u.cancel()
-		<-u.done
+		timer := time.NewTimer(stepUsageStopTimeout)
+		defer timer.Stop()
+		select {
+		case <-u.done:
+			u.ended = true
+		case <-timer.C:
+			// Left to end on its own, when the connection does
+		}
 	})
+	return u.ended
 }
 
-// logAttrs stops the stream and gives the usage, or nothing without a reading.
+// logAttrs stops the stream and gives the usage, or nothing without a reading or when the
+// stream did not end in time.
 func (u *stepUsage) logAttrs() []any {
-	u.stop()
-	if u.readings == 0 {
+	if !u.stop() || u.readings == 0 {
 		return nil
 	}
 	return []any{

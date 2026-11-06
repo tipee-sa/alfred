@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 )
@@ -91,5 +93,33 @@ func TestStepUsageOnCgroupV1(t *testing.T) {
 	attrs := watchStepUsage(context.Background(), docker, "step").logAttrs()
 	if len(attrs) < 2 || attrs[0] != "memoryPeakBytes" || attrs[1] != uint64(600) {
 		t.Errorf("usage %v, want memoryPeakBytes 600", attrs)
+	}
+}
+
+// stuckBody is a stats stream over a connection that stopped draining: reading and closing
+// block, whatever the context, until released.
+type stuckBody struct{ release chan struct{} }
+
+func (b stuckBody) Read([]byte) (int, error) { <-b.release; return 0, io.EOF }
+func (b stuckBody) Close() error             { <-b.release; return nil }
+
+func TestStepUsageDoesNotHoldTheStep(t *testing.T) {
+	defer func(timeout time.Duration) { stepUsageStopTimeout = timeout }(stepUsageStopTimeout)
+	stepUsageStopTimeout = 50 * time.Millisecond
+
+	body := stuckBody{release: make(chan struct{})}
+	defer close(body.release)
+	docker := newMockDocker()
+	docker.containerStatsBody = body
+
+	attrs := make(chan []any, 1)
+	go func() { attrs <- watchStepUsage(context.Background(), docker, "step").logAttrs() }()
+	select {
+	case got := <-attrs:
+		if got != nil {
+			t.Errorf("usage from a stream that never ended: %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the step waited for its stats stream past the timeout")
 	}
 }

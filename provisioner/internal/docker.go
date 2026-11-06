@@ -459,7 +459,7 @@ func RunContainer(
 			stepSeconds := func() float64 { return time.Since(stepStart).Round(time.Millisecond).Seconds() }
 			task.Log.Info("Step started", "step", stepIndex, "image", image)
 			usage := watchStepUsage(ctx, docker, resp.ID)
-			defer usage.stop()
+			defer func() { _ = usage.stop() }()
 
 			// Stream container logs to file in a background goroutine.
 			// Uses a child context so we can cancel log streaming when the container exits.
