@@ -44,8 +44,7 @@ type UnmarshalError struct {
 }
 
 // parseJobfile decodes a rendered jobfile and refuses the keys Jobfile does not have: yaml.v3
-// drops them silently otherwise, so a misspelled key quietly kept its default (a service's
-// health "wait:" for "interval:" went unnoticed for months).
+// drops them silently otherwise, and a misspelled key would quietly keep its default.
 func parseJobfile(source []byte) (Jobfile, error) {
 	var jobfile Jobfile
 	decoder := yaml.NewDecoder(bytes.NewReader(source))
