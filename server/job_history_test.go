@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"testing"
@@ -104,4 +105,26 @@ func TestJobsForList_LatestJobsAndTheRunningOnesWithoutTheirJobfile(t *testing.T
 	assert.Empty(t, list[0].Jobfile)
 	assert.Empty(t, list[0].CommandLine)
 	assert.Equal(t, "tasks: [a]", jobs[0].Jobfile, "the server's own copy keeps it")
+}
+
+// With every artifact kept (--artifact-retention 0), startup reads only the newest
+// maxCompletedJobs directories, never the whole history.
+func TestJobHistory_ReadsOnlyTheNewestDirectories(t *testing.T) {
+	withJobHistory(t)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i <= maxCompletedJobs; i++ {
+		name := fmt.Sprintf("job-%04d", i)
+		at := base.Add(time.Duration(i) * time.Minute)
+		data, err := marshalJob(&proto.JobStatus{Name: name, ScheduledAt: timestamppb.New(at), CompletedAt: timestamppb.New(at)})
+		require.NoError(t, err)
+		saveJob(name, data)
+		require.NoError(t, os.Chtimes(path.Join(dataRoot, "artifacts", name), at, at))
+	}
+
+	loadJobHistory()
+
+	require.Len(t, serverStatus.Jobs, maxCompletedJobs)
+	assert.Equal(t, "job-0001", serverStatus.Jobs[0].Name, "the oldest directory is left out")
+	assert.Equal(t, fmt.Sprintf("job-%04d", maxCompletedJobs), serverStatus.Jobs[maxCompletedJobs-1].Name)
 }

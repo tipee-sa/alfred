@@ -637,3 +637,23 @@ func TestRenderStats_LineWidthWithSlowTaskEmojis(t *testing.T) {
 		})
 	}
 }
+
+// A job rebuilt from the server's logs has tasks whose end they lost: listed, not dropped.
+func TestRenderStats_UnknownTasksAreListed(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	r := &watchRenderer{
+		now:       func() time.Time { return now },
+		verbose:   true,
+		termWidth: func() int { return 300 },
+	}
+	msg := &proto.JobStatus{
+		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
+		CompletedAt: timestamppb.New(now),
+		Tasks: []*proto.TaskStatus{
+			{Name: "lost-end", Status: proto.TaskStatus_UNKNOWN, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+		},
+	}
+	_, stats := r.renderStats(msg)
+	assert.Contains(t, stats, "❔")
+	assert.Contains(t, stats, "lost-end")
+}

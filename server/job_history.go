@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 	"path"
-	"slices"
 	"sort"
+	"time"
 
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/server/log"
@@ -42,6 +42,11 @@ func saveJob(name string, data []byte) {
 
 // loadJobHistory puts the saved jobs into serverStatus, oldest first, keeping the latest
 // maxCompletedJobs. Runs at startup, before the scheduler emits any event.
+//
+// Only the newest maxCompletedJobs directories are read: with --artifact-retention 0 the
+// artifacts are kept forever, and decoding them all (~100 kB a job) would cost memory for
+// nothing. A directory's date is its job's last write (artifacts, then job.json), close
+// enough to its order.
 func loadJobHistory() {
 	artifactsDir := path.Join(dataRoot, "artifacts")
 	entries, err := os.ReadDir(artifactsDir)
@@ -52,25 +57,42 @@ func loadJobHistory() {
 		return
 	}
 
-	var jobs []*proto.JobStatus
+	type dir struct {
+		name    string
+		modTime time.Time
+	}
+	var dirs []dir
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(path.Join(artifactsDir, entry.Name(), jobHistoryFile))
+		info, err := entry.Info()
+		if err != nil {
+			continue // deleted meanwhile
+		}
+		dirs = append(dirs, dir{entry.Name(), info.ModTime()})
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].modTime.After(dirs[j].modTime) })
+	if len(dirs) > maxCompletedJobs {
+		dirs = dirs[:maxCompletedJobs]
+	}
+
+	var jobs []*proto.JobStatus // at most maxCompletedJobs: no cap to apply after
+	for _, entry := range dirs {
+		data, err := os.ReadFile(path.Join(artifactsDir, entry.name, jobHistoryFile))
 		if err != nil {
 			if !os.IsNotExist(err) { // jobs from before the history have none
-				log.Warn("Failed to read saved job", "job", entry.Name(), "error", err)
+				log.Warn("Failed to read saved job", "job", entry.name, "error", err)
 			}
 			continue
 		}
 		job := &proto.JobStatus{}
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(data, job); err != nil {
-			log.Warn("Failed to decode saved job", "job", entry.Name(), "error", err)
+			log.Warn("Failed to decode saved job", "job", entry.name, "error", err)
 			continue
 		}
-		if job.Name != entry.Name() || job.CompletedAt == nil {
-			log.Warn("Ignoring inconsistent saved job", "job", entry.Name(), "savedName", job.Name)
+		if job.Name != entry.name || job.CompletedAt == nil {
+			log.Warn("Ignoring inconsistent saved job", "job", entry.name, "savedName", job.Name)
 			continue
 		}
 		jobs = append(jobs, job)
@@ -79,10 +101,6 @@ func loadJobHistory() {
 	sort.SliceStable(jobs, func(i, j int) bool {
 		return jobs[i].ScheduledAt.AsTime().Before(jobs[j].ScheduledAt.AsTime())
 	})
-	if len(jobs) > maxCompletedJobs {
-		// A copy, not a reslice: the backing array would keep the dropped jobs alive
-		jobs = slices.Clone(jobs[len(jobs)-maxCompletedJobs:])
-	}
 
 	serverStatusMutex.Lock()
 	serverStatus.Jobs = append(jobs, serverStatus.Jobs...)
