@@ -30,6 +30,8 @@ type Node struct {
 	terminated atomic.Bool
 
 	log *slog.Logger
+	// Reads the node's state for watchState (state.go)
+	stateReader boundedReader
 	// One per image: a task waits for another's transfer of the same image, not of others
 	images internal.KeyedMutex
 }
@@ -142,6 +144,9 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 			}
 		}
 	}()
+
+	// Log what the VM goes through while tasks run on it (state.go)
+	go n.watchState()
 
 	n.log.Debug("Wait for Docker daemon to start", "wait", initialWait)
 	select {

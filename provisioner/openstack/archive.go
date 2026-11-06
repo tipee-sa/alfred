@@ -148,6 +148,31 @@ func (a *imageArchives) open(tag string) (f *os.File, built bool, err error) {
 	return f, !ok, err
 }
 
+// prepare starts building the image's archive in the background, unless it is built or being
+// built, and returns at once. A later open waits for that build like for any other.
+func (a *imageArchives) prepare(tag string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ctx.Err() != nil {
+		return
+	}
+	if archive, ok := a.entries[tag]; ok {
+		// Counts as a use: its TTL restarts, so it outlives the provisioning of the nodes
+		// about to ask for it
+		archive.lastUsed = time.Now()
+		return
+	}
+	archive := &imageArchive{ready: make(chan struct{}), lastUsed: time.Now()}
+	a.entries[tag] = archive
+	go func() {
+		a.build(tag, archive)
+		// No transfer waits on it to report the failure; the next one retries
+		if archive.err != nil && !errors.Is(archive.err, errArchivesClosed) {
+			a.log.Warn("Failed to prepare image archive", "tag", tag, "error", archive.err)
+		}
+	}()
+}
+
 func (a *imageArchives) build(tag string, archive *imageArchive) {
 	defer close(archive.ready)
 

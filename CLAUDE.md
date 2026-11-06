@@ -346,9 +346,12 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **One image archive for all nodes**: the server runs `docker save | zstd` once per image, into
   `<server-data>/image-archives` (emptied at startup and shutdown), and every node's transfer
   streams that file. An archive unused for an hour is deleted: every job brings new images (up to
-  ~50 a day, 140-320 MB each), which would fill the disk before the weekly restart. When a job lands on a running fleet, all
-  nodes want its images at once, and 15 concurrent `docker save` of one 1.1 GB image took 73-97 s
-  each, against 11 s alone.
+  ~50 a day, 140-320 MB each), which would fill the disk before the weekly restart. When a job
+  lands on a running fleet, all nodes want its images at once, and 15 concurrent `docker save` of
+  one 1.1 GB image took 73-97 s each, against 11 s alone. The archives are built when the job
+  arrives (the scheduler calls the optional `ImagePreparer`), not at the first transfer: a new VM
+  takes a minute or more to come online, and the build (11-13 s per image) runs meanwhile. Bare
+  `sha256:` IDs from old clients are not prepared: they need their server-side tag first.
 - **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
   deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
 - **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover
@@ -363,6 +366,16 @@ The codebase uses several recurring async patterns (all annotated with inline co
   real server disagree on redo logs). Don't use it in service health benchmarks.
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion
   (LIFO defer order). Getting this wrong loses artifacts.
+- **The server's logs are its telemetry**: they reach ClickHouse through journald, and a job's
+  timeline is read from them, so a record's message and attribute keys are what queries match.
+  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). A task's records carry
+  `task.job`, `task.name` and, once scheduled, `node.name`; the stages log their end with a
+  duration ("Running task", "Task completed", "Step started"/"Step finished", "Service started",
+  "Preserved artifacts", "Node is online", "Job completed", "Loaded image from client", "Image
+  transferred to node"). "Step finished" adds the container's peak memory and CPU
+  (`provisioner/internal/usage.go`), and each OpenStack node logs "Node state" every 15 s, read
+  over its SSH connection (`provisioner/openstack/state.go`). Events, not metrics, by choice:
+  what matters is what a given job went through, not trends.
 - **Exit code 42**: Treated as "completed with warnings" (⚠️) by the watch command display.
   Task status is `FAILED` with exit code 42, `"warning"` in the JSON. Triggers
   `--abort-on-warning` but not `--abort-on-error` (which is for `"failed"` and `"timed_out"`).

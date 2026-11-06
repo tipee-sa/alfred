@@ -40,6 +40,10 @@ type mockDocker struct {
 	containerWaitCh    chan container.WaitResponse
 	containerWaitErrCh chan error
 	stepExitCode       int64
+	// The stats stream of every container, as the daemon sends it: JSON readings in a row
+	containerStats string
+	// Replaces containerStats when set
+	containerStatsBody io.ReadCloser
 
 	// Like the daemon when a create request is cancelled in flight: the object
 	// is created, but the call returns the context's error (and no ID).
@@ -131,6 +135,15 @@ func (m *mockDocker) ContainerRemove(_ context.Context, containerID string, _ co
 
 func (m *mockDocker) ContainerLogs(_ context.Context, _ string, _ container.LogsOptions) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("mock logs")), nil
+}
+
+func (m *mockDocker) ContainerStats(_ context.Context, _ string, _ bool) (container.StatsResponseReader, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.containerStatsBody != nil {
+		return container.StatsResponseReader{Body: m.containerStatsBody}, nil
+	}
+	return container.StatsResponseReader{Body: io.NopCloser(strings.NewReader(m.containerStats))}, nil
 }
 
 func (m *mockDocker) ContainerExecCreate(_ context.Context, _ string, _ container.ExecOptions) (container.ExecCreateResponse, error) {

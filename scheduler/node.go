@@ -52,6 +52,16 @@ type nodeState struct {
 	earliestStart       time.Time
 	nextTaskStart       time.Time
 	terminationAttempts int
+	// When it came online, for its lifetime at termination; zero if it never did
+	onlineAt time.Time
+}
+
+// onlineSeconds is how long the node has been online, 0 if it never was.
+func (ns *nodeState) onlineSeconds() float64 {
+	if ns.onlineAt.IsZero() {
+		return 0
+	}
+	return time.Since(ns.onlineAt).Round(time.Millisecond).Seconds()
 }
 
 func (ns *nodeState) UpdateStatus(status NodeStatus) {

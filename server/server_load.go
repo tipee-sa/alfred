@@ -25,9 +25,11 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 		return err
 	}
 
+	var imageId string
 	switch msg := msg.Message.(type) {
 	case *proto.LoadImageMessage_Init_:
-		log.Debug("Got image load init", "image", msg.Init.ImageId)
+		imageId = msg.Init.ImageId
+		log.Debug("Got image load init", "image", imageId)
 		_, _, err = docker.ImageInspectWithRaw(srv.Context(), msg.Init.ImageId)
 		if err != nil {
 			if client.IsErrNotFound(err) {
@@ -55,7 +57,10 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 		return status.Errorf(codes.InvalidArgument, "unexpected message type: %T", msg)
 	}
 
-	// Main load loop
+	// Main load loop. The time runs from the client's first chunk to docker load's end: the
+	// upload, decompression and load overlap.
+	start := time.Now()
+	var compressedBytes int64
 	cmd := exec.Command("bash", "-euo", "pipefail", "-c", "zstd --decompress | docker load")
 	cmd.WaitDelay = 10 * time.Second
 	cmd.Stderr = os.Stderr
@@ -88,10 +93,15 @@ func (s *server) LoadImage(srv proto.Alfred_LoadImageServer) (err error) {
 			if _, err = writer.Write(msg.Data.Chunk[:msg.Data.Length]); err != nil {
 				return err
 			}
+			compressedBytes += int64(msg.Data.Length)
 		case *proto.LoadImageMessage_Done_:
 			log.Debug("Got image load done")
 			writer.Close()
-			return cmd.Wait()
+			if err = cmd.Wait(); err != nil {
+				return err
+			}
+			log.Info("Loaded image from client", "image", imageId, "compressedBytes", compressedBytes, "durationSeconds", time.Since(start).Round(time.Millisecond).Seconds())
+			return nil
 		default:
 			return status.Errorf(codes.InvalidArgument, "unexpected message type: %T", msg)
 		}
