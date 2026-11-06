@@ -14,20 +14,27 @@ import (
 var psCmd = &cobra.Command{
 	Use:   "ps",
 	Short: "List jobs",
-	Long: `Lists the jobs the server knows, one per line: when each was scheduled, who
-started it, its name, its state, how many of its tasks have ended out of how
+	Long: `Lists the latest jobs, oldest first, one per line: when each was scheduled,
+who started it, its name, its state, how many of its tasks have ended out of how
 many, and how many tasks have each status.
+
+-n sets how many of the latest jobs are listed (20 by default, 0 for all of
+them); a job still running is listed whatever its age.
 
 The state is "queued" while none of the job's tasks has started, "running"
 from then on, and "completed" once every task has ended, however it ended: the
 outcome is in the task statuses ('alfred help scripting' lists them).
 
-The server keeps jobs in memory, so a restart forgets them (their artifacts
-stay on disk).`,
+The list survives server restarts: the server keeps its latest 1000 completed
+jobs, for as long as it keeps their artifacts (six months by default). A job
+still running when the server stops is listed with its tasks aborted. Jobs from
+before 2026-11-06 were rebuilt from the server's logs: who started them is not
+known, and a task whose end the logs lost is "unknown".`,
 	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := client.WatchJobs(cmd.Context(), &proto.WatchJobsRequest{})
+		limit, _ := cmd.Flags().GetUint32("limit")
+		c, err := client.WatchJobs(cmd.Context(), &proto.WatchJobsRequest{Limit: limit})
 		if err != nil {
 			return err
 		}
@@ -44,6 +51,10 @@ stay on disk).`,
 
 		return nil
 	},
+}
+
+func init() {
+	psCmd.Flags().Uint32P("limit", "n", 20, "how many of the latest jobs to list, 0 for all")
 }
 
 // psState returns the job's state as `ps` shows it: that of `watch --json`, except that a job

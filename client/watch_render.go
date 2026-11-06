@@ -155,12 +155,16 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 	crashed := []string{}
 	failures := []string{}
 	completed := []string{}
+	unknown := []string{} // only in jobs rebuilt from the server's logs
 
 	taskNames = lo.Map(msg.Tasks, func(t *proto.TaskStatus, _ int) string { return t.Name })
 	for _, t := range msg.Tasks {
 		label := t.Name
 
-		if t.StartedAt != nil {
+		if t.Status == proto.TaskStatus_UNKNOWN {
+			// Its end is lost (a job rebuilt from the server's logs): no duration to show, and
+			// one counted up to now would grow forever
+		} else if t.StartedAt != nil {
 			var taskRunningFor time.Duration
 			if t.EndedAt != nil {
 				taskRunningFor = t.EndedAt.AsTime().Sub(t.StartedAt.AsTime()).Truncate(time.Minute)
@@ -196,6 +200,8 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 			timedOut = append(timedOut, label)
 		case proto.TaskStatus_COMPLETED:
 			completed = append(completed, label)
+		case proto.TaskStatus_UNKNOWN:
+			unknown = append(unknown, label)
 		}
 	}
 
@@ -229,6 +235,9 @@ func (r *watchRenderer) renderStats(msg *proto.JobStatus) (taskNames []string, s
 	}
 	if len(completed) > 0 {
 		addStat("✅", completed, true)
+	}
+	if len(unknown) > 0 {
+		addStat("❔", unknown, true)
 	}
 
 	stats = strings.Join(statItems, "\n")

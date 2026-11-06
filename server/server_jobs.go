@@ -132,7 +132,32 @@ func (s *server) WatchJob(req *proto.WatchJobRequest, srv proto.Alfred_WatchJobS
 	}
 }
 
-// WatchJobs is similar to WatchJob but streams the full jobs list, filtered to
+// jobsListLimitForTop is how many of the latest jobs WatchStatus sends besides the running
+// ones: what `top` shows (50).
+const jobsListLimitForTop = 50
+
+// jobsForList returns copies of the jobs a list sends: the latest `limit` (0: all) and every
+// one still running, in order, without the jobfile and command line, which only `show` reads
+// (through WatchJob). The job history makes the full list months long, megabytes in all.
+// Must be called with serverStatusMutex held.
+func jobsForList(jobs []*proto.JobStatus, limit int) []*proto.JobStatus {
+	first := 0
+	if limit > 0 && len(jobs) > limit {
+		first = len(jobs) - limit
+	}
+	var list []*proto.JobStatus
+	for i, job := range jobs {
+		if i < first && job.CompletedAt != nil {
+			continue
+		}
+		copied := goproto.Clone(job).(*proto.JobStatus) // deep copy to avoid races
+		copied.Jobfile, copied.CommandLine = "", ""
+		list = append(list, copied)
+	}
+	return list
+}
+
+// WatchJobs is similar to WatchJob but streams the jobs list (see jobsForList), filtered to
 // job-level events only (scheduled/completed). Used by the `ps` command.
 // Same select pattern: blocks until event or client disconnect.
 func (s *server) WatchJobs(req *proto.WatchJobsRequest, srv proto.Alfred_WatchJobsServer) error {
@@ -148,7 +173,7 @@ func (s *server) WatchJobs(req *proto.WatchJobsRequest, srv proto.Alfred_WatchJo
 
 	sync := func() error {
 		serverStatusMutex.RLock()
-		listToSend := goproto.Clone(&proto.JobsList{Jobs: serverStatus.Jobs}).(*proto.JobsList)
+		listToSend := &proto.JobsList{Jobs: jobsForList(serverStatus.Jobs, int(req.Limit))}
 		serverStatusMutex.RUnlock()
 
 		return srv.Send(listToSend)
@@ -170,7 +195,7 @@ func (s *server) WatchJobs(req *proto.WatchJobsRequest, srv proto.Alfred_WatchJo
 	}
 }
 
-// WatchStatus streams the full server status (nodes, jobs, tasks, scheduler config).
+// WatchStatus streams the server status (nodes, jobs as jobsForList, scheduler config).
 // Used by the `top` command. Events are throttled: incoming events set a dirty flag,
 // and the status is sent at most once per second to avoid overwhelming slow clients.
 func (s *server) WatchStatus(req *proto.WatchStatusRequest, srv proto.Alfred_WatchStatusServer) error {
@@ -179,7 +204,14 @@ func (s *server) WatchStatus(req *proto.WatchStatusRequest, srv proto.Alfred_Wat
 
 	sync := func() error {
 		serverStatusMutex.RLock()
-		statusToSend := goproto.Clone(serverStatus).(*proto.Status)
+		statusToSend := &proto.Status{ // every field of Status, its jobs limited
+			Server:    goproto.Clone(serverStatus.Server).(*proto.Status_Server),
+			Scheduler: goproto.Clone(serverStatus.Scheduler).(*proto.Status_Scheduler),
+			Jobs:      jobsForList(serverStatus.Jobs, jobsListLimitForTop),
+		}
+		for _, node := range serverStatus.Nodes {
+			statusToSend.Nodes = append(statusToSend.Nodes, goproto.Clone(node).(*proto.NodeStatus))
+		}
 		serverStatusMutex.RUnlock()
 
 		return srv.Send(statusToSend)

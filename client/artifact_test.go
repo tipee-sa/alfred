@@ -61,6 +61,19 @@ func TestSelectArtifactTasks_AbortedBeforeStartingHasNoArtifact(t *testing.T) {
 	assert.Empty(t, unknown, "it exists, it just has no artifact")
 }
 
+// A task of a job rebuilt from the server's logs whose end they lost is downloaded, even when
+// they lost its start too: every such task on the server left an artifact.
+func TestSelectArtifactTasks_UnknownTasksAreDownloaded(t *testing.T) {
+	job := &proto.JobStatus{Name: "job-abc", Tasks: []*proto.TaskStatus{
+		{Name: "lost-end", Status: proto.TaskStatus_UNKNOWN, StartedAt: timestamppb.Now()},
+		{Name: "lost-start-too", Status: proto.TaskStatus_UNKNOWN},
+	}}
+	downloadable, unknown, partial := selectArtifactTasks(job, nil)
+	assert.Equal(t, []string{"lost-end", "lost-start-too"}, downloadable)
+	assert.Empty(t, unknown)
+	assert.False(t, partial)
+}
+
 func TestDownloadArtifacts_GoesOnPastFailures(t *testing.T) {
 	var progress []int
 	var attempted []string

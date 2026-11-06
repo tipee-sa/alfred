@@ -126,7 +126,8 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 
 // Subscribe returns an event channel and an unsubscribe function. Every event is delivered,
 // in order, however slowly the caller reads (see subscriber). The caller must call the
-// unsubscribe function when done to prevent memory leaks; the channel is never closed.
+// unsubscribe function when done to prevent memory leaks. The channel closes after the last
+// event once the scheduler has shut down (Shutdown, then every task finished).
 func (s *Scheduler) Subscribe() (<-chan Event, func()) {
 	s.listenersMutex.Lock()
 	defer s.listenersMutex.Unlock()
@@ -159,6 +160,13 @@ func (s *Scheduler) forwardEvents() {
 	}
 	for event := range s.events {
 		emit(event)
+	}
+
+	// The scheduler has shut down: close every subscription once it is drained
+	s.listenersMutex.RLock()
+	defer s.listenersMutex.RUnlock()
+	for sub := range s.listeners {
+		sub.end()
 	}
 }
 

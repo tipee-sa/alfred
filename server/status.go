@@ -36,10 +36,12 @@ func init() {
 // to serverStatus, ensuring consistent state updates. For each event it:
 // 1. Acquires serverStatusMutex (write) and updates serverStatus
 // 2. Acquires clientListenersMutex (read) and forwards the event to matching client watchers
-// This goroutine blocks forever once the scheduler shuts down (the subscriber channel is
-// never closed), but that's fine — the process is exiting and the runtime collects it.
+// A completed job is also saved to disk (job_history.go), after the lock is released.
+// It returns once the scheduler has shut down and the channel has delivered its last event.
 func listenEvents(c <-chan schedulerpkg.Event) {
-	for event := range c { // the scheduler never closes it: runs for the server's lifetime
+	for event := range c { // closed after the scheduler's last event
+		var saveCompletedJob func()
+
 		serverStatusMutex.Lock()
 
 		switch event := event.(type) {
@@ -117,6 +119,11 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 		case schedulerpkg.EventJobCompleted:
 			if job := findJob(event.Job); job != nil {
 				job.CompletedAt = timestamppb.Now()
+				if data, err := marshalJob(job); err != nil {
+					log.Warn("Failed to encode job history", "job", job.Name, "error", err)
+				} else {
+					saveCompletedJob = func() { saveJob(event.Job, data) }
+				}
 			}
 			pruneCompletedJobs()
 
@@ -165,6 +172,10 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 
 		serverStatusMutex.Unlock()
 
+		if saveCompletedJob != nil {
+			saveCompletedJob()
+		}
+
 		clientListenersMutex.RLock()
 		for channel, filter := range clientListeners {
 			if filter != nil && !filter(event) {
@@ -184,7 +195,8 @@ func listenEvents(c <-chan schedulerpkg.Event) {
 	}
 }
 
-// maxCompletedJobs is the maximum number of completed jobs to retain in memory.
+// maxCompletedJobs is the maximum number of completed jobs to retain in memory, and to load
+// from the job history at startup.
 // Oldest completed jobs are pruned first. Running/incomplete jobs are never pruned.
 const maxCompletedJobs = 1000
 

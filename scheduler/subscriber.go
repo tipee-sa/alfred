@@ -18,6 +18,8 @@ type subscriber struct {
 	mu    sync.Mutex
 	queue []Event
 
+	ended bool // set by end(): close out once the queue is drained
+
 	wake chan struct{} // capacity 1: one pending wake-up covers any number of pushes
 	done chan struct{} // closed by unsubscribe, stops the drain goroutine
 }
@@ -44,12 +46,30 @@ func (sub *subscriber) push(event Event) {
 	}
 }
 
+// end tells the subscriber no event will follow: its channel closes once it has delivered the
+// queued ones, so the server knows it has seen the last of them (the jobs a shutdown aborts).
+func (sub *subscriber) end() {
+	sub.mu.Lock()
+	sub.ended = true
+	sub.mu.Unlock()
+
+	select {
+	case sub.wake <- struct{}{}:
+	default: // a wake-up is already pending
+	}
+}
+
 // drain hands queued events to the subscriber one by one, blocking on it as long as needed.
 func (sub *subscriber) drain() {
 	for {
 		sub.mu.Lock()
 		if len(sub.queue) == 0 {
+			ended := sub.ended
 			sub.mu.Unlock()
+			if ended {
+				close(sub.out)
+				return
+			}
 			select {
 			case <-sub.wake:
 				continue

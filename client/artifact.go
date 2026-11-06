@@ -103,6 +103,10 @@ func selectArtifactTasks(job *proto.JobStatus, requestedTasks []string) (downloa
 			downloadable = append(downloadable, task.Name)
 		case proto.TaskStatus_FAILED, proto.TaskStatus_COMPLETED, proto.TaskStatus_TIMED_OUT:
 			downloadable = append(downloadable, task.Name)
+		case proto.TaskStatus_UNKNOWN:
+			// A task of a job rebuilt from the server's logs whose end they lost. The logs
+			// lost its start too at times, yet every such task left an artifact (348 of them).
+			downloadable = append(downloadable, task.Name)
 		case proto.TaskStatus_ABORTED:
 			// Cancelled while still queued, it never ran and has no artifact:
 			// not a failed download.

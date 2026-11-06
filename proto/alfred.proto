@@ -143,7 +143,10 @@ message WatchJobRequest {
     string name = 1;
 }
 
-message WatchJobsRequest {}
+message WatchJobsRequest {
+    // The latest jobs to list, besides those still running; 0 lists them all.
+    uint32 limit = 1;
+}
 
 message WatchStatusRequest {}
 

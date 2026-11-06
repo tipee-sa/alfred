@@ -40,7 +40,8 @@ type taskJSON struct {
 // taskStatuses lists every status `watch --json` reports, in display order. They mirror the
 // text display's groups, so a FAILED task is split by exit code: 42 is "warning" (⚠️), any
 // other code is "failed" (💥). Every status appears in counts, even at zero.
-var taskStatuses = []string{"queued", "running", "aborted", "skipped", "timed_out", "failed", "warning", "completed"}
+// "unknown" is only in the jobs rebuilt from the server's logs, for a task whose end they lost.
+var taskStatuses = []string{"queued", "running", "aborted", "skipped", "timed_out", "failed", "warning", "completed", "unknown"}
 
 func taskStatusName(t *proto.TaskStatus) string {
 	if t.Status == proto.TaskStatus_FAILED && t.ExitCode != nil && *t.ExitCode == 42 {
