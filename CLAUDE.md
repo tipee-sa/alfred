@@ -350,6 +350,16 @@ The codebase uses several recurring async patterns (all annotated with inline co
   real server disagree on redo logs). Don't use it in service health benchmarks.
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion
   (LIFO defer order). Getting this wrong loses artifacts.
+- **The server's logs are its telemetry**: they reach ClickHouse through journald, and a job's
+  timeline is read from them, so a record's message and attribute keys are what queries match.
+  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). A task's records carry
+  `task.job`, `task.name` and, once scheduled, `node.name`; the stages log their end with a
+  duration ("Running task", "Task completed", "Step started"/"Step finished", "Service started",
+  "Preserved artifacts", "Node is online", "Job completed", "Loaded image from client", "Image
+  transferred to node"). "Step finished" adds the container's peak memory and CPU
+  (`provisioner/internal/usage.go`), and each OpenStack node logs "Node state" every 15 s, read
+  over its SSH connection (`provisioner/openstack/state.go`). Events, not metrics, by choice:
+  what matters is what a given job went through, not trends.
 - **Exit code 42**: Treated as "completed with warnings" (⚠️) by the watch command display.
   Task status is `FAILED` with exit code 42, `"warning"` in the JSON. Triggers
   `--abort-on-warning` but not `--abort-on-error` (which is for `"failed"` and `"timed_out"`).
