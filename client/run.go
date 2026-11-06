@@ -28,7 +28,8 @@ output and flags; --async returns once it is scheduled).
 
 The jobfile is a Go template: ARGS are available as .Args, --param KEY=VALUE as
 .Params, the environment as .Env. Its paths (dockerfile, context) are relative
-to the jobfile's directory.
+to the jobfile's directory. A key the format does not have is an error, not
+ignored: a misspelled one would otherwise keep its default unnoticed.
 
 A task runs its steps in order, each in a container that sees ALFRED_TASK,
 ALFRED_OUTPUT (archived as the task's artifact) and ALFRED_SHARED (kept between

@@ -34,6 +34,8 @@ var flagtests = []struct {
 	{"tests/jobfile/invalid_services_map.yaml", "yaml: unmarshal errors:\n  line 7: cannot unmarshal !!seq into map[string]jobfile.JobfileService"},
 	{"tests/jobfile/invalid_services_keys.yaml", "services names must be valid identifiers"},
 	{"tests/jobfile/invalid_services_env_keys.yaml", "services[mysql].env[0/2] must be a valid environment variable identifier"},
+	{"tests/jobfile/invalid_unknown_key.yaml", "yaml: unmarshal errors:\n  line 11: field wait not found in type jobfile.JobfileServiceHealth"},
+	{"tests/jobfile/invalid_task_unknown_key.yaml", "line 8: field slot not found in type jobfile.JobfileTask"},
 }
 
 // --- JobfileTask UnmarshalYAML tests ---
@@ -94,15 +96,12 @@ func TestJobfileTask_ListMixed(t *testing.T) {
 // --- Jobfile validation tests ---
 
 func TestJobValidate(t *testing.T) {
-	var buf []byte
-	var err error
-
 	for _, tt := range flagtests {
 		t.Run(tt.file, func(t *testing.T) {
-			buf = lo.Must(os.ReadFile(tt.file))
+			buf := lo.Must(os.ReadFile(tt.file))
 
-			var jobfile Jobfile
-			if err = yaml.Unmarshal(buf, &jobfile); err != nil {
+			jobfile, err := parseJobfile(buf)
+			if err != nil {
 				assert.Equal(t, tt.expected, err.Error())
 				return
 			}

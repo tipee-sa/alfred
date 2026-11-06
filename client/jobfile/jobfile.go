@@ -36,6 +36,14 @@ func (t *JobfileTask) UnmarshalYAML(value *yaml.Node) error {
 		t.Slots = 1
 		return nil
 	}
+	// value.Decode does not inherit the decoder's KnownFields (see parseJobfile): check the keys here.
+	if value.Kind == yaml.MappingNode {
+		for i := 0; i < len(value.Content); i += 2 {
+			if key := value.Content[i]; key.Value != "name" && key.Value != "slots" {
+				return fmt.Errorf("line %d: field %s not found in type jobfile.JobfileTask", key.Line, key.Value)
+			}
+		}
+	}
 	type plain JobfileTask
 	if err := value.Decode((*plain)(t)); err != nil {
 		return err
