@@ -254,6 +254,10 @@ tasks:
   - task-name-2
 ```
 
+Unknown keys are refused (`parseJobfile` decodes with `KnownFields`, and `JobfileTask` checks its
+own, as `value.Decode` does not inherit it): yaml.v3 drops them silently, and a misspelled key
+would quietly keep its default.
+
 Tasks can be plain strings (defaulting to 1 slot) or objects with `name` and `slots` fields.
 Each task consumes N slots on a node (default 1). The server's `--slots-per-node` flag sets
 the total capacity per node.

@@ -34,6 +34,44 @@ var flagtests = []struct {
 	{"tests/jobfile/invalid_services_map.yaml", "yaml: unmarshal errors:\n  line 7: cannot unmarshal !!seq into map[string]jobfile.JobfileService"},
 	{"tests/jobfile/invalid_services_keys.yaml", "services names must be valid identifiers"},
 	{"tests/jobfile/invalid_services_env_keys.yaml", "services[mysql].env[0/2] must be a valid environment variable identifier"},
+	{"tests/jobfile/invalid_unknown_key.yaml", "yaml: unmarshal errors:\n  line 11: field wait not found in type jobfile.JobfileServiceHealth"},
+	{"tests/jobfile/invalid_task_unknown_key.yaml", "line 8: field slot not found in type jobfile.JobfileTask"},
+}
+
+// --- Unknown keys and YAML merge keys ---
+
+// A merge key ("<<") is not an unknown key: what it merges is checked like the rest, in task
+// objects (checkTaskKeys) as in the jobfile's structs (the decoder's KnownFields).
+func TestParseJobfile_MergeKeys(t *testing.T) {
+	const head = "version: \"1\"\nname: test\nsteps: [{dockerfile: a.dockerfile, context: .}]\n"
+	tests := []struct {
+		name     string
+		yaml     string
+		expected string
+	}{
+		{"task merging an alias", "tasks: [&base {name: one, slots: 4}, {<<: *base, name: two}]", ""},
+		{"task merging a list of aliases", "tasks: [&a {name: one}, &b {name: two, slots: 3}, {<<: [*a, *b], name: three}]", ""},
+		{"task merging an unknown key inline", "tasks: [{<<: {slot: 4}, name: two}]", "line 4: field slot not found in type jobfile.JobfileTask"},
+		{"task merging an unknown key from a list", "tasks: [&a {name: one}, {<<: [*a, {slot: 4}], name: two}]", "line 4: field slot not found in type jobfile.JobfileTask"},
+		{"task merging itself", "tasks: [&base {name: one, <<: *base}]", "yaml: anchor 'base' value contains itself"},
+		{"task with a quoted \"<<\" key", "tasks: [{\"<<\": x, name: two}]", "line 4: field << not found in type jobfile.JobfileTask"},
+		{"service merging an alias", "services:\n  a: &svc {image: redis, health: {cmd: [true]}}\n  b: {<<: *svc, command: [x]}\ntasks: [one]", ""},
+		{"service merging an unknown key", "services:\n  a: {<<: {image: redis, imag: x}, health: {cmd: [true]}}\ntasks: [one]", "yaml: unmarshal errors:\n  line 5: field imag not found in type jobfile.JobfileService"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseJobfile([]byte(head + tt.yaml))
+			if tt.expected == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.EqualError(t, err, tt.expected)
+			}
+		})
+	}
+
+	jobfile, err := parseJobfile([]byte(head + "tasks: [&base {name: one, slots: 4}, {<<: *base, name: two}]"))
+	require.NoError(t, err)
+	assert.Equal(t, []JobfileTask{{Name: "one", Slots: 4}, {Name: "two", Slots: 4}}, jobfile.Tasks)
 }
 
 // --- JobfileTask UnmarshalYAML tests ---
@@ -94,15 +132,12 @@ func TestJobfileTask_ListMixed(t *testing.T) {
 // --- Jobfile validation tests ---
 
 func TestJobValidate(t *testing.T) {
-	var buf []byte
-	var err error
-
 	for _, tt := range flagtests {
 		t.Run(tt.file, func(t *testing.T) {
-			buf = lo.Must(os.ReadFile(tt.file))
+			buf := lo.Must(os.ReadFile(tt.file))
 
-			var jobfile Jobfile
-			if err = yaml.Unmarshal(buf, &jobfile); err != nil {
+			jobfile, err := parseJobfile(buf)
+			if err != nil {
 				assert.Equal(t, tt.expected, err.Error())
 				return
 			}

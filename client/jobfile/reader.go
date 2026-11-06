@@ -1,8 +1,10 @@
 package jobfile
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -41,6 +43,18 @@ type UnmarshalError struct {
 	Source string
 }
 
+// parseJobfile decodes a rendered jobfile and refuses the keys Jobfile does not have: yaml.v3
+// drops them silently otherwise, and a misspelled key would quietly keep its default.
+func parseJobfile(source []byte) (Jobfile, error) {
+	var jobfile Jobfile
+	decoder := yaml.NewDecoder(bytes.NewReader(source))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&jobfile); err != nil && !errors.Is(err, io.EOF) { // EOF: an empty jobfile, which Validate refuses
+		return Jobfile{}, err
+	}
+	return jobfile, nil
+}
+
 func Read(file string, options ReadOptions) (job *proto.Job, renderedSource string, err error) {
 	job = &proto.Job{}
 	workDir := jobfileDir(file)
@@ -56,8 +70,8 @@ func Read(file string, options ReadOptions) (job *proto.Job, renderedSource stri
 	}
 	renderedSource = source
 
-	var jobfile Jobfile
-	if err = yaml.Unmarshal([]byte(source), &jobfile); err != nil {
+	jobfile, err := parseJobfile([]byte(source))
+	if err != nil {
 		return nil, "", UnmarshalError{fmt.Errorf("failed to unmarshal jobfile: %w", err), source}
 	}
 	jobfile.path = workDir

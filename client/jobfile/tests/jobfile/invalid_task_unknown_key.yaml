@@ -1,0 +1,8 @@
+version: "1"
+name: "test"
+steps:
+  - dockerfile: "a.dockerfile"
+    context: "."
+tasks:
+  - one
+  - { name: two, slot: 4 }

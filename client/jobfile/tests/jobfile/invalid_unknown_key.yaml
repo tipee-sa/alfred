@@ -1,0 +1,13 @@
+version: "1"
+name: "test"
+steps:
+  - dockerfile: "a.dockerfile"
+    context: "."
+services:
+  redis:
+    image: "redis"
+    health:
+      cmd: ["redis-cli", "ping"]
+      wait: "1s"
+tasks:
+  - one
