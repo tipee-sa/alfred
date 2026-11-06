@@ -85,7 +85,8 @@ created for different platforms by a GitHub Action.
 
 ### Deploying the server binary
 
-Deployment is done manually using a GitHub Action. **Beware that running jobs are stopped during the deployment.**
+Deployment is done manually using a GitHub Action. **Beware that running jobs are stopped during the deployment:**
+their unfinished tasks end as aborted. The jobs themselves are kept (`alfred ps` still lists them), so re-run the aborted tasks.
 
 ### Updating Alfred nodes' image
 
