@@ -59,3 +59,30 @@ func TestSubscribe_UnsubscribedListenerDoesNotBlockOthers(t *testing.T) {
 		}
 	}
 }
+
+// Once the scheduler has shut down, a subscription delivers what it still holds, then closes:
+// the server waits for that to save the jobs the shutdown aborted.
+func TestSubscribe_ClosesAfterTheLastEventOnShutdown(t *testing.T) {
+	s := New(newMockProvisioner(), newTestConfig())
+	events, unsub := s.Subscribe()
+	defer unsub()
+
+	go s.Run()
+	s.broadcast(EventJobCompleted{Job: "last"})
+	s.Shutdown()
+
+	var received []Event
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				assert.Contains(t, received, Event(EventJobCompleted{Job: "last"}))
+				return
+			}
+			received = append(received, event)
+		case <-timeout:
+			t.Fatal("the subscription never closed")
+		}
+	}
+}

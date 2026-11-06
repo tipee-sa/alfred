@@ -55,6 +55,9 @@ func main() {
 		cleanupOldArtifacts(dataRoot, retention)
 	}
 
+	// Restore the jobs of previous runs, for `alfred ps` and `alfred watch`
+	loadJobHistory()
+
 	// Setup network listener
 	lis, err := net.Listen("tcp", viper.GetString(flags.Listen))
 	if err != nil {
@@ -99,10 +102,14 @@ func main() {
 	// listenEvents runs in its own goroutine, consuming scheduler events to:
 	// 1. Reconstruct serverStatus (the in-memory state used by all gRPC handlers)
 	// 2. Forward filtered events to connected client watchers
-	// It receives every event (the subscription is lossless) for the server's lifetime.
+	// It receives every event (the subscription is lossless) until the scheduler's last one.
 	channel, unsubscribe := scheduler.Subscribe()
 	defer unsubscribe()
-	go listenEvents(channel)
+	eventsDone := make(chan struct{})
+	go func() {
+		listenEvents(channel)
+		close(eventsDone)
+	}()
 
 	// gRPC server goroutine. A nested goroutine watches for shutdown and calls
 	// GracefulStop() with a timeout. GracefulStop stops accepting new connections and
@@ -137,6 +144,14 @@ func main() {
 
 	// Block until both scheduler and gRPC server goroutines have finished.
 	wg.Wait()
+
+	// The scheduler's last events complete the jobs the shutdown aborted: let listenEvents
+	// apply them, so that those jobs are saved too
+	select {
+	case <-eventsDone:
+	case <-time.After(5 * time.Second):
+		log.Warn("Timed out waiting for the last scheduler events, some jobs may not be saved")
+	}
 	log.Info("Shutdown completed. Bye!")
 }
 
@@ -145,7 +160,7 @@ func main() {
 // - Second signal: forces immediate exit (in case graceful shutdown hangs)
 //
 // The unit's KillSignal=SIGINT covers `systemctl stop/restart`, but `systemctl kill`
-// (the host's weekly restart timer) sends SIGTERM regardless. Unhandled, SIGTERM killed
+// sends SIGTERM regardless (the host's weekly restart timer used it). Unhandled, SIGTERM killed
 // the server outright, leaking its OpenStack keypair and VMs every week.
 func setupInterrupts() {
 	sig := make(chan os.Signal, 1) // buffered: won't miss a signal while processing

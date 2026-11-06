@@ -53,6 +53,7 @@ alfred/
 │   ├── server_artifacts.go #   DownloadArtifact streaming RPC
 │   ├── server_load.go      #   LoadImage bidirectional streaming RPC
 │   ├── status.go           #   Event-driven state reconstruction + client broadcasting
+│   ├── job_history.go      #   Completed jobs saved to disk, reloaded at startup
 │   ├── scheduler.go        #   Scheduler factory, artifact/secret callbacks
 │   ├── docker.go           #   Docker client initialization
 │   ├── config/              #   Constants (MaxPacketSize = 50MB)
@@ -125,7 +126,8 @@ gRPC's `MinConnectTimeout` must stay above it, or gRPC kills ssh first.
 
 **Server** (`server/main.go`): gRPC server on port 25373. Initializes Docker client,
 creates scheduler with chosen provisioner, subscribes to scheduler events. Status state
-reconstructed entirely from event stream in `status.go`. Thread-safe via `serverStatusMutex`.
+reconstructed entirely from event stream in `status.go`, on top of the job history loaded at
+startup (`job_history.go`). Thread-safe via `serverStatusMutex`.
 Client watchers get filtered event channels via `addClientListener()`.
 
 **Scheduler** (`scheduler/scheduler.go`): Single-goroutine main loop processes jobs from
@@ -346,7 +348,7 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **One image archive for all nodes**: the server runs `docker save | zstd` once per image, into
   `<server-data>/image-archives` (emptied at startup and shutdown), and every node's transfer
   streams that file. An archive unused for an hour is deleted: every job brings new images (up to
-  ~50 a day, 140-320 MB each), which would fill the disk before the weekly restart. When a job
+  ~50 a day, 140-320 MB each), which would fill the disk between restarts. When a job
   lands on a running fleet, all nodes want its images at once, and 15 concurrent `docker save` of
   one 1.1 GB image took 73-97 s each, against 11 s alone. The archives are built when the job
   arrives (the scheduler calls the optional `ImagePreparer`), not at the first transfer: a new VM
@@ -355,7 +357,17 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
   deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
 - **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover
-  `systemctl kill`, which the host's weekly restart timer runs.
+  `systemctl kill`.
+- **Job history survives restarts**: each completed job is saved as
+  `<server-data>/artifacts/<job>/job.json` (protojson of `JobStatus`) and the latest
+  `maxCompletedJobs` are loaded at startup, so `ps`, `watch` and `artifact` work on them. It
+  shares the artifacts' `--artifact-retention`. A shutdown's aborted jobs are saved too: the
+  scheduler closes its subscriptions after the last event, and `main` waits (5 s at most) for
+  `listenEvents` to apply them.
+- **Host timers** (not in this repository): `alfred-docker-prune.timer` prunes Docker images
+  older than a day every Sunday at 03:30. A weekly `systemctl kill alfred` timer used to work around
+  OpenStack tokens expiring; `AllowReauth` fixed that (2026-10-11), and the timer was disabled on
+  2026-11-06.
 - **Service images are pulled once per daemon**: tasks take a lock per Docker daemon and image
   (`servicePulls` in `provisioner/internal/docker.go`), and a pull's progress is decoded for the
   error a failed pull ends with (the daemon answers it with a success). The OpenStack node image

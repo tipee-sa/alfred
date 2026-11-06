@@ -22,8 +22,9 @@ The state is "queued" while none of the job's tasks has started, "running"
 from then on, and "completed" once every task has ended, however it ended: the
 outcome is in the task statuses ('alfred help scripting' lists them).
 
-The server keeps jobs in memory, so a restart forgets them (their artifacts
-stay on disk).`,
+The list survives server restarts: the server keeps its latest 1000 completed
+jobs, for as long as it keeps their artifacts (six months by default). A job
+still running when the server stops is listed with its tasks aborted.`,
 	Args: cobra.NoArgs,
 
 	RunE: func(cmd *cobra.Command, args []string) error {

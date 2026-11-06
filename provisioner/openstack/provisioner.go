@@ -211,7 +211,7 @@ func (p *Provisioner) Wait() {
 }
 
 // imageArchiveTTL is how long an image's archive is kept once no transfer asks for it. Every
-// job brings new images (up to ~50 a day, 140-320 MB each), so kept until the weekly restart
+// job brings new images (up to ~50 a day, 140-320 MB each), so kept until the next restart
 // they could fill the server's disk. Nodes that join a job late (replacing a failed one)
 // reuse it meanwhile; past it, a node waits ~15 s for a rebuild.
 const imageArchiveTTL = time.Hour
