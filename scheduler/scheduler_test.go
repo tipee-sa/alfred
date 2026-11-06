@@ -1873,3 +1873,51 @@ func TestCancelWithTimeoutProducesAbortedNotTimedOut(t *testing.T) {
 	waitForEvent[EventJobCompleted](t, events)
 	close(node.terminateCh)
 }
+
+// preparingProvisioner records the images it is asked to prepare.
+type preparingProvisioner struct {
+	*mockProvisioner
+	prepared chan []string
+}
+
+func (p *preparingProvisioner) PrepareImages(images []string) {
+	p.prepared <- images
+}
+
+func TestScheduledJobsImagesArePreparedBeforeItsNodes(t *testing.T) {
+	prov := &preparingProvisioner{mockProvisioner: newMockProvisioner(), prepared: make(chan []string, 1)}
+	preparedFirst := make(chan bool, 1)
+	prov.provisionFunc = func(ctx context.Context, nodeName string) (Node, error) {
+		select {
+		case preparedFirst <- len(prov.prepared) == 1:
+		default:
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	s := newTestScheduler(prov)
+	go s.Run()
+	defer func() {
+		s.Shutdown()
+		s.Wait()
+	}()
+
+	job := newTestJob("task-a", "task-b")
+	job.Steps = []string{"alfred-image:one", "alfred-image:two"}
+	_, err := s.Schedule(job)
+	require.NoError(t, err)
+
+	select {
+	case first := <-preparedFirst:
+		assert.True(t, first, "the job's node was provisioned before its images were prepared")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Provision() was never called")
+	}
+	select {
+	case images := <-prov.prepared:
+		assert.Equal(t, job.Steps, images)
+	case <-time.After(5 * time.Second):
+		t.Fatal("PrepareImages() was never called")
+	}
+}

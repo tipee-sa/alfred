@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -268,4 +269,21 @@ func (p *Provisioner) resolveFlavor(flavor string) (string, error) {
 
 	p.log.Debug("Flavor resolved", "flavor", flavor, "id", flavorID)
 	return flavorID, nil
+}
+
+// Provisioner implements scheduler.ImagePreparer
+var _ scheduler.ImagePreparer = (*Provisioner)(nil)
+
+// PrepareImages builds the archives of a job's images as soon as it is scheduled: a node takes
+// a minute or more to come online, and its first transfer then finds them built instead of
+// building them (11-13 s each, measured on a migrations job). Bare image IDs, which old clients
+// send, need a tag on the server first (ensureNodeHasImage) and wait for their transfer.
+func (p *Provisioner) PrepareImages(images []string) {
+	for _, image := range images {
+		if strings.HasPrefix(image, "sha256:") {
+			continue
+		}
+		p.log.Debug("Preparing image archive", "tag", image)
+		p.archives.prepare(image)
+	}
 }

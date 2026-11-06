@@ -254,3 +254,75 @@ func TestImageArchivesGiveEachTagItsOwnFile(t *testing.T) {
 		}
 	}
 }
+
+func TestImageArchivesPrepareBuildsInTheBackground(t *testing.T) {
+	a, saves := testArchives(t, time.Hour, `sleep 0.5; printf "image %s" "$1"`)
+
+	start := time.Now()
+	a.prepare("alfred-image:abc")
+	a.prepare("alfred-image:abc") // finds the build under way
+	if d := time.Since(start); d > 200*time.Millisecond {
+		t.Errorf("prepare took %s: it waited for the save", d)
+	}
+
+	// The transfer that comes next waits for the prepared build instead of starting its own
+	f, built, err := a.open("alfred-image:abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decompress(t, f); built || got != "image alfred-image:abc" || saves.Load() != 1 {
+		t.Errorf("open after prepare: built %v, read %q, %d saves; want the prepared archive and 1 save", built, got, saves.Load())
+	}
+
+	// Preparing a built archive does not rebuild it
+	a.prepare("alfred-image:abc")
+	f, built, err = a.open("alfred-image:abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if built || saves.Load() != 1 {
+		t.Errorf("prepare rebuilt a built archive (built %v, %d saves)", built, saves.Load())
+	}
+}
+
+func TestImageArchivesPrepareAfterAFailureRetries(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "failed-once")
+	a, saves := testArchives(t, time.Hour, `if [ ! -e "`+marker+`" ]; then touch "`+marker+`"; exit 1; fi; printf ok`)
+
+	a.prepare("alfred-image:abc")
+	// Its failure is forgotten: the open builds again
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a.mu.Lock()
+		_, pending := a.entries["alfred-image:abc"]
+		a.mu.Unlock()
+		if !pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the failed prepared build was never forgotten")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	f, built, err := a.open("alfred-image:abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := decompress(t, f); !built || got != "ok" || saves.Load() != 2 {
+		t.Errorf("open after a failed prepare: built %v, read %q, %d saves; want a rebuild", built, got, saves.Load())
+	}
+}
+
+func TestImageArchivesPrepareAfterShutdownDoesNothing(t *testing.T) {
+	a, saves := testArchives(t, time.Hour, `printf ok`)
+	a.removeAll()
+	a.prepare("alfred-image:abc")
+	time.Sleep(100 * time.Millisecond)
+	a.mu.Lock()
+	n := len(a.entries)
+	a.mu.Unlock()
+	if n != 0 || saves.Load() != 0 {
+		t.Errorf("prepare after the shutdown: %d entries, %d saves; want none", n, saves.Load())
+	}
+}

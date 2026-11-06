@@ -333,9 +333,12 @@ The codebase uses several recurring async patterns (all annotated with inline co
 - **One image archive for all nodes**: the server runs `docker save | zstd` once per image, into
   `<server-data>/image-archives` (emptied at startup and shutdown), and every node's transfer
   streams that file. An archive unused for an hour is deleted: every job brings new images (up to
-  ~50 a day, 140-320 MB each), which would fill the disk before the weekly restart. When a job lands on a running fleet, all
-  nodes want its images at once, and 15 concurrent `docker save` of one 1.1 GB image took 73-97 s
-  each, against 11 s alone.
+  ~50 a day, 140-320 MB each), which would fill the disk before the weekly restart. When a job
+  lands on a running fleet, all nodes want its images at once, and 15 concurrent `docker save` of
+  one 1.1 GB image took 73-97 s each, against 11 s alone. The archives are built when the job
+  arrives (the scheduler calls the optional `ImagePreparer`), not at the first transfer: a new VM
+  takes a minute or more to come online, and the build (11-13 s per image) runs meanwhile. Bare
+  `sha256:` IDs from old clients are not prepared: they need their server-side tag first.
 - **OpenStack keypair**: one per host (`alfred-server-<hostname>`), replaced at startup and
   deleted at shutdown, so an unclean exit leaves nothing new against the project's quota.
 - **SIGTERM is a shutdown like SIGINT**: the unit's `KillSignal=SIGINT` does not cover

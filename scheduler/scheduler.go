@@ -261,6 +261,9 @@ func (s *Scheduler) Run() {
 				s.broadcast(EventTaskQueued{Job: task.Job.FQN(), Task: task.Name})
 				s.tasksQueue = append(s.tasksQueue, task)
 			}
+			if preparer, ok := s.provisioner.(ImagePreparer); ok {
+				preparer.PrepareImages(job.Steps)
+			}
 			s.requestTick("job tasks should be scheduled")
 
 		// Scheduling pass: assign queued tasks to free node slots, then resize the node pool.
