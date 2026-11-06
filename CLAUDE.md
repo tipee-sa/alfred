@@ -386,10 +386,11 @@ The codebase uses several recurring async patterns (all annotated with inline co
   (LIFO defer order). Getting this wrong loses artifacts.
 - **The server's logs are its telemetry**: they reach ClickHouse through journald, and a job's
   timeline is read from them, so a record's message and attribute keys are what queries match.
-  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). At `ALFRED_LOG_LEVEL=debug`
-  (the host's), a 2000-task job outruns journald's rate limit, which drops lines ("Suppressed N
-  messages from alfred.service", 68 times from 2026-09-10 to 2026-11-06), so they never reach
-  ClickHouse either. A task's records carry
+  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). Every record a timeline needs
+  is INFO or WARN, and the host runs at `ALFRED_LOG_LEVEL=info` (since 2026-11-06). At `debug`,
+  a 2000-task job writes ~110k lines in 14 minutes (94% DEBUG) and outruns journald's rate limit
+  (10k lines per 30 s), which drops lines, so they never reach ClickHouse either: switch to
+  `debug` only for a while, to investigate. A task's records carry
   `task.job`, `task.name` and, once scheduled, `node.name`; the stages log their end with a
   duration ("Running task", "Task completed", "Step started"/"Step finished", "Service started",
   "Preserved artifacts", "Node is online", "Job completed", "Loaded image from client", "Image
