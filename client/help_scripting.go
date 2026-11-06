@@ -35,7 +35,9 @@ JSON lines (a stable contract: fields and statuses are only ever added)
              lines in between.
   Each task: name, status, exit_code, started_at, ended_at. Statuses: queued,
   running, completed, warning (exit 42), failed (any other non-zero exit),
-  timed_out, skipped (exit 43: a prerequisite was missing), aborted (cancelled).
+  timed_out, skipped (exit 43: a prerequisite was missing), aborted (cancelled),
+  and unknown (only in jobs from before 2026-11-06, rebuilt from the server's
+  logs: a task whose end they lost).
 
 Exit codes
   run, watch   1 if anything fails before the job's tasks run (jobfile, build,

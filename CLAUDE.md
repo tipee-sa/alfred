@@ -180,7 +180,7 @@ Task statuses: `QUEUED -> RUNNING -> COMPLETED | FAILED | ABORTED`.
 | `Ping` | Unary | Health check, returns server version |
 | `ScheduleJob` | Unary | Submit job, returns assigned name |
 | `WatchJob` | Server stream | Stream single job's status events |
-| `WatchJobs` | Server stream | Stream all jobs list (job-level events only) |
+| `WatchJobs` | Server stream | Stream the jobs list (job-level events only; `limit` latest + running) |
 | `DownloadArtifact` | Server stream | Chunked artifact download (completed or live) |
 | `LoadImage` | Bidi stream | Upload compressed Docker images (zstd) |
 
@@ -363,7 +363,11 @@ The codebase uses several recurring async patterns (all annotated with inline co
   `maxCompletedJobs` are loaded at startup, so `ps`, `watch` and `artifact` work on them. It
   shares the artifacts' `--artifact-retention`. A shutdown's aborted jobs are saved too: the
   scheduler closes its subscriptions after the last event, and `main` waits (5 s at most) for
-  `listenEvents` to apply them.
+  `listenEvents` to apply them. Lists never send the whole history: `jobsForList` gives `ps`
+  its `--limit` (default 20) and `top` 50 latest jobs, plus the running ones, without jobfile
+  and command line (131 jobs were 4.6 MB without them; the client takes 50 MB at most).
+  The jobs from 2026-09-10 to 2026-11-06 were rebuilt from the journal: no `StartedBy`, `About`,
+  jobfile or command line, and `UNKNOWN` for the ~2% of tasks whose end journald dropped.
 - **Host timers** (not in this repository): `alfred-docker-prune.timer` runs `docker system
   prune --volumes --all --force` every Sunday at 03:30 (it can delete the image of a job loaded
   but not started yet; `--filter until=24h`, without `--volumes`, would spare it). A weekly `systemctl kill alfred` timer used to work around
@@ -381,7 +385,10 @@ The codebase uses several recurring async patterns (all annotated with inline co
   (LIFO defer order). Getting this wrong loses artifacts.
 - **The server's logs are its telemetry**: they reach ClickHouse through journald, and a job's
   timeline is read from them, so a record's message and attribute keys are what queries match.
-  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). A task's records carry
+  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). At `ALFRED_LOG_LEVEL=debug`
+  (the host's), a 2000-task job outruns journald's rate limit, which drops lines ("Suppressed N
+  messages from alfred.service", 68 times from 2026-09-10 to 2026-11-06), so they never reach
+  ClickHouse either. A task's records carry
   `task.job`, `task.name` and, once scheduled, `node.name`; the stages log their end with a
   duration ("Running task", "Task completed", "Step started"/"Step finished", "Service started",
   "Preserved artifacts", "Node is online", "Job completed", "Loaded image from client", "Image

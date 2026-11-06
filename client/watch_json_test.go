@@ -57,7 +57,7 @@ func TestNewJobStatusJSON_StatusesAndCounts(t *testing.T) {
 		lo.Map(tasks, func(task taskJSON, _ int) string { return task.Status }))
 	assert.Equal(t, map[string]int{
 		"total": 7, "queued": 1, "running": 1, "aborted": 0, "skipped": 1,
-		"timed_out": 1, "failed": 1, "warning": 1, "completed": 1,
+		"timed_out": 1, "failed": 1, "warning": 1, "completed": 1, "unknown": 0,
 	}, status.Counts)
 	assert.Equal(t, now, *tasks[1].StartedAt)
 	assert.Nil(t, tasks[0].ExitCode)

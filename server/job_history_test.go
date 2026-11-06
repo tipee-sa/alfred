@@ -80,3 +80,28 @@ func TestJobHistory_NoArtifactsDirectoryIsNoHistory(t *testing.T) {
 
 	assert.Empty(t, serverStatus.Jobs)
 }
+
+func TestJobsForList_LatestJobsAndTheRunningOnesWithoutTheirJobfile(t *testing.T) {
+	done := timestamppb.Now()
+	jobs := []*proto.JobStatus{
+		{Name: "old-running", Jobfile: "tasks: [a]", CommandLine: "alfred run"},
+		{Name: "old-done", CompletedAt: done},
+		{Name: "recent-done", CompletedAt: done, Jobfile: "tasks: [b]"},
+		{Name: "recent-running"},
+	}
+
+	names := func(list []*proto.JobStatus) []string {
+		out := make([]string, len(list))
+		for i, job := range list {
+			out[i] = job.Name
+		}
+		return out
+	}
+	assert.Equal(t, []string{"old-running", "recent-done", "recent-running"}, names(jobsForList(jobs, 2)))
+	assert.Equal(t, []string{"old-running", "old-done", "recent-done", "recent-running"}, names(jobsForList(jobs, 0)))
+
+	list := jobsForList(jobs, 0)
+	assert.Empty(t, list[0].Jobfile)
+	assert.Empty(t, list[0].CommandLine)
+	assert.Equal(t, "tasks: [a]", jobs[0].Jobfile, "the server's own copy keeps it")
+}
