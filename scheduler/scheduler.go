@@ -466,7 +466,7 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 
 		// On the main goroutine, before the task's own starts: every later record of the task
 		// names its node, so that its steps can be read against what the node went through
-		task.Log = task.Log.With(slog.Group("node", "name", ns.node.Name()))
+		task.Log = task.Log.With(slog.Group("node", "name", ns.nodeName))
 		task.Log.Info("Scheduling task on node", "slots", task.Slots, "startDelay", startDelay, "remainingTasks", len(s.tasksQueue))
 
 		taskKey := task.Job.FQN() + "/" + task.Name

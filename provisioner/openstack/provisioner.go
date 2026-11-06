@@ -186,7 +186,9 @@ func (p *Provisioner) Provision(ctx context.Context, nodeName string) (scheduler
 		name:        name,
 		provisioner: p,
 		server:      server,
-		log:         p.log.With(slog.Group("node", "name", name)),
+		// The scheduler's name for the node, as on its own records and its tasks'; the
+		// OpenStack server's name is the prefixed one
+		log: p.log.With(slog.Group("node", "name", nodeName, "server", name)),
 	}
 
 	node.log.Info("Node created")
