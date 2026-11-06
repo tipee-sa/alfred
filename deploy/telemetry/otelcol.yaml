@@ -1,0 +1,223 @@
+# OpenTelemetry Collector of the Alfred server (compose.yaml): it reads the
+# host's journal, scrapes node-exporter and receives Alfred's OTLP on loopback,
+# and forwards everything to telemetry-aggregator at telemetry.tipee.dev.
+#
+# The journald operators, transform/journald and transform/text-logs are
+# copied from the Nomad nodes' collector, in the platform repository
+# (workload/observability/telemetry-collector/otelcol.yaml), so that the host's
+# services are named and parsed as everywhere else: follow it when it changes.
+
+extensions:
+  # The queue files are memory-mapped and never shrink on their own: without
+  # compaction, a drained backlog stays in the collector's memory.
+  file_storage:
+    directory: /var/lib/otelcol
+    create_directory: true
+    compaction:
+      directory: /var/lib/otelcol
+      on_start: true
+      on_rebound: true
+      cleanup_on_start: true
+
+receivers:
+  # Alfred's own telemetry, and the collector's. Loopback only: the port must
+  # not be reachable from the internet.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+  prometheus:
+    config:
+      global:
+        scrape_interval: 15s
+      scrape_configs:
+        # Named as on the nodes, whose dashboards and alerts select it.
+        - job_name: node-exporter
+          static_configs:
+            - targets: ["127.0.0.1:9100"]
+  # Runs the host's own journalctl, chrooted into its root filesystem, so that
+  # it always reads the journal format of the host's systemd.
+  journald:
+    root_path: /host
+    journalctl_path: /usr/bin/journalctl
+    directory: /var/log/journal
+    priority: debug
+    convert_to_semantic_conventions: true
+    storage: file_storage
+    # Per entry: records are grouped into resources only after the operators.
+    # A record's service is its unit, the one inside its user manager first
+    # (user@<uid>.service runs a whole systemd instance). A scope other than
+    # init.scope is named per instance, such as an SSH session's, so its
+    # records fall back to their syslog identifier.
+    operators:
+      - type: copy
+        if: attributes["journald._SYSTEMD_USER_UNIT"] != nil and (attributes["journald._SYSTEMD_USER_UNIT"] == "init.scope" or not (attributes["journald._SYSTEMD_USER_UNIT"] matches "\\.scope$"))
+        from: attributes["journald._SYSTEMD_USER_UNIT"]
+        to: resource["service.name"]
+      - type: copy
+        if: attributes["journald._SYSTEMD_USER_UNIT"] == nil and attributes["journald._SYSTEMD_UNIT"] != nil and (attributes["journald._SYSTEMD_UNIT"] == "init.scope" or not (attributes["journald._SYSTEMD_UNIT"] matches "\\.scope$"))
+        from: attributes["journald._SYSTEMD_UNIT"]
+        to: resource["service.name"]
+      - type: copy
+        if: resource["service.name"] == nil and attributes["syslog.identifier"] != nil
+        from: attributes["syslog.identifier"]
+        to: resource["service.name"]
+      # Unique per record, they would only bloat the stored attributes.
+      - type: remove
+        if: attributes["journald.__CURSOR"] != nil
+        field: attributes["journald.__CURSOR"]
+      - type: remove
+        if: attributes["journald.__MONOTONIC_TIMESTAMP"] != nil
+        field: attributes["journald.__MONOTONIC_TIMESTAMP"]
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  transform/host:
+    error_mode: ignore
+    trace_statements: &host
+      - set(resource.attributes["host.name"], "${env:HOST_NAME}")
+    metric_statements: *host
+    log_statements: *host
+  transform/journald:
+    error_mode: ignore
+    log_statements:
+      - replace_pattern(resource.attributes["service.name"], "\\.service$", "")
+      # systemd itself: the unit it logs under, and its helper processes, named
+      # in parentheses until they exec, such as (sd-pam).
+      - set(resource.attributes["service.name"], "systemd") where resource.attributes["service.name"] == "init.scope"
+      - set(resource.attributes["service.name"], "systemd") where IsMatch(resource.attributes["service.name"], "^\\(.+\\)$")
+      # systemd-coredump runs one instance per crash, named after its PIDs.
+      - set(resource.attributes["service.name"], "systemd-coredump") where IsMatch(resource.attributes["service.name"], "^systemd-coredump@")
+  transform/text-logs:
+    # A line that only looks like logfmt fails ParseKeyValue, and stays as it
+    # is.
+    error_mode: silent
+    log_statements:
+      - statements:
+          - replace_pattern(log.body, "\\x1b\\[[0-9;]*[A-Za-z]", "")
+      # `<yyyy/mm/dd hh:mm:ss> <message>`, as Go's log package writes it, with
+      # nginx's `[<level>] <pid>#<tid>: [*<conn> ]` or a level word (Go's
+      # default slog handler, rclone) before the message. The record keeps its
+      # own time, which is finer and in UTC.
+      - conditions:
+          - IsMatch(log.body, "^\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2}(\\.\\d+)? ")
+        statements:
+          - 'merge_maps(log.cache, ExtractPatterns(log.body, "^\\S+ \\S+ (?:\\[(?P<nginx_level>[a-z]+)\\] \\d+#\\d+: (?:\\*\\d+ )?|(?P<level>DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|CRITICAL):? )?(?P<message>.*)$"), "upsert")'
+          - set(log.body, log.cache["message"])
+          - set(log.severity_text, log.cache["nginx_level"]) where log.cache["nginx_level"] != ""
+          - set(log.severity_text, log.cache["level"]) where log.cache["level"] != ""
+          - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where log.cache["nginx_level"] != "" or log.cache["level"] != ""
+      # hclog: `<time> [<LEVEL>] <logger>: <message>: <k=v pairs>`.
+      - conditions:
+          - IsMatch(log.body, "^\\s*\\d{4}-\\d{2}-\\d{2}T\\S+\\s+\\[(TRACE|DEBUG|INFO|WARN|ERROR)\\]\\s")
+        statements:
+          - 'merge_maps(log.cache, ExtractPatterns(log.body, "^\\s*\\S+\\s+\\[(?P<level>[A-Z]+)\\]\\s+(?:(?P<logger>[\\w./-]+): )?(?P<message>.*?)(?:: (?P<pairs>[\\w.-]+=.*))?$"), "upsert")'
+          - merge_maps(log.attributes, ParseKeyValue(log.cache["pairs"], "=", " "), "insert") where log.cache["pairs"] != ""
+          - set(log.attributes["logger"], log.cache["logger"]) where log.cache["logger"] != ""
+          - set(log.body, log.cache["message"])
+          - set(log.severity_text, log.cache["level"])
+          - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED)
+      # logfmt: a line of k=v pairs that names a message or a level.
+      - conditions:
+          - IsMatch(log.body, "^\\s*[A-Za-z_][\\w.-]*=") and IsMatch(log.body, "(^|\\s)(msg|level|lvl)=")
+        statements:
+          - merge_maps(log.cache, ParseKeyValue(log.body, "=", " "), "upsert")
+          - set(log.body, log.cache["msg"]) where IsString(log.cache["msg"])
+          - set(log.severity_text, log.cache["level"]) where IsString(log.cache["level"])
+          - set(log.severity_text, log.cache["lvl"]) where IsString(log.cache["lvl"])
+          - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where IsString(log.cache["level"]) or IsString(log.cache["lvl"])
+          - delete_matching_keys(log.cache, "^(msg|level|lvl|ts|time|t)$")
+          - merge_maps(log.attributes, log.cache, "insert")
+  # alfred-server's JSON lines (slog's JSONHandler, server/log/log.go): the
+  # message, the level, and the other fields as attributes. Runs after
+  # transform/text-logs, whose formats a JSON line never matches. The level
+  # alone is set: telemetry-aggregator's transform/severity derives the number,
+  # which the journal's priority (always info on stdout) must not preempt.
+  transform/alfred:
+    error_mode: ignore
+    log_statements:
+      - conditions:
+          - resource.attributes["service.name"] == "alfred" and IsMatch(log.body, "^\\{")
+        statements:
+          - merge_maps(log.cache, ParseJSON(log.body), "upsert")
+          - set(log.body, log.cache["msg"]) where IsString(log.cache["msg"])
+          - set(log.severity_text, log.cache["level"]) where IsString(log.cache["level"])
+          - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where IsString(log.cache["level"])
+          - delete_matching_keys(log.cache, "^(msg|level|time)$")
+          - merge_maps(log.attributes, log.cache, "upsert")
+  batch:
+    send_batch_size: 1024
+    # telemetry-aggregator refuses requests above 20 MiB.
+    send_batch_max_size: 2048
+    timeout: 1s
+
+connectors:
+  # The end of the journal's own pipeline: its records join the logs pipeline.
+  forward/logs:
+
+exporters:
+  otlp_http:
+    # Routed by traefik to telemetry-aggregator's OTLP receiver, which accepts
+    # the tokens of its otlp-tokens Nomad variable.
+    endpoint: https://telemetry.tipee.dev
+    compression: zstd
+    headers:
+      Authorization: Bearer ${env:OTLP_TOKEN}
+    # On disk, and retried without end: an outage of the aggregator or of the
+    # network delays the telemetry instead of dropping it. Bounded for this
+    # host's disk, which Alfred's artifacts and images already fill.
+    sending_queue:
+      enabled: true
+      storage: file_storage
+      sizer: bytes
+      queue_size: 268435456 # 256 MiB
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0
+
+service:
+  extensions: [file_storage]
+  # Its own metrics and logs enter its pipelines like any application's.
+  # Its logs also stay on stderr (`docker compose logs otelcol`): it is where a
+  # refused token shows, since those records cannot reach the aggregator.
+  telemetry:
+    resource:
+      service.name: telemetry-collector
+      service.instance.id: null
+    logs:
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://127.0.0.1:4318
+    metrics:
+      readers:
+        - periodic:
+            interval: 15000
+            exporter:
+              otlp:
+                protocol: http/protobuf
+                endpoint: http://127.0.0.1:4318
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/host, batch]
+      exporters: [otlp_http]
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, transform/host, batch]
+      exporters: [otlp_http]
+    logs/journald:
+      receivers: [journald]
+      processors: [memory_limiter, transform/journald, transform/text-logs, transform/alfred]
+      exporters: [forward/logs]
+    logs:
+      receivers: [otlp, forward/logs]
+      processors: [memory_limiter, transform/host, batch]
+      exporters: [otlp_http]
