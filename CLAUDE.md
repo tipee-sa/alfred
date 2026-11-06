@@ -6,6 +6,9 @@ The Nix devshell (`flake.nix`, `nix/devshell.nix`, loaded by direnv via `.envrc`
 just, protoc, reflex, zstd, and the pinned protoc plugins (`nix/packages/`). Docker and SSH come
 from the host. Outside direnv, prefix commands with `nix develop -c`.
 
+`.mcp.json` declares the `telemetry` MCP server (ClickHouse logs and traces at
+`telemetry.tipee.dev`), as tipee's does; it reads `TIPEE_TELEMETRY_TOKEN` from the environment.
+
 ## Build & Test
 
 ```bash
@@ -74,6 +77,7 @@ alfred/
 │   ├── alfred.proto         #   gRPC service + message definitions
 │   ├── alfred.pb.go         #   Generated protobuf code
 │   └── alfred_grpc.pb.go   #   Generated gRPC stubs
+├── deploy/telemetry/        #   Server's telemetry agent: OTel Collector + node-exporter (Compose)
 ├── namegen/                 #   Random name generation for jobs/nodes
 ├── hack/                    #   Test jobfiles, dev scripts
 │   ├── test-job.yaml       #   Minimal test job (3 tasks)
@@ -255,12 +259,21 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
 ## Deployment
 
 - **Server**: Runs on `alfred.tipee.dev` as systemd unit (`alfred.service`), deployed via
-  GitHub Actions `workflow_dispatch`. Binary SCP'd to `/opt/alfred/alfred-server`.
+  GitHub Actions `workflow_dispatch`. Binary SCP'd to `/opt/alfred/alfred-server`. The unit runs
+  as `alfred` with `EnvironmentFile=/opt/alfred/env` (holds credentials: never print it). Admin
+  access is `debian@alfred.tipee.dev` (passwordless sudo); the `alfred` account refuses the personal key.
 - **Client releases**: Triggered by git tags (`YY.MM.DD` format). Builds 3 binaries:
   `alfred-linux-amd64`, `alfred-darwin-amd64`, `alfred-darwin-arm64`. Uploaded to GitHub releases.
 - **CI**: `go test -v ./...` on every push (Go 1.21, ubuntu-latest). `nix.yaml` runs `nix build`
   on every push.
-- **Logging**: Datadog Agent on the server host tails journald for log shipping (not in this codebase).
+- **Telemetry**: the server writes JSON logs to journald. `deploy/telemetry/` (Docker Compose in
+  `/opt/telemetry`, `just deploy-telemetry`) runs an OpenTelemetry Collector and node-exporter,
+  which send the host's metrics and its journal (Alfred's JSON lines parsed) to
+  `telemetry.tipee.dev`, i.e. ClickHouse (the `telemetry` MCP server reads it). Alfred's
+  telemetry is its logs: everything it sends is in the journal too. An OTLP receiver listens on
+  `127.0.0.1:4317/4318`, used only by the collector's own telemetry. Its token is only in `/opt/telemetry/.env` on the host. It replaces the Datadog
+  Agent, stopped and masked on 2026-11-01 (Linear PF-182). Parts are copied from the `platform`
+  repository's node collector: `deploy/telemetry/README.md` says which.
 - **Self-update**: Client detects latest version from GitHub release redirect URL, downloads
   and atomically replaces its own binary.
 - **Nix**: The flake's default package (`nix/packages/alfred.nix`) builds the client from source;

@@ -31,3 +31,10 @@ proto:
         --go_out=. --go_opt=paths=source_relative \
         --go-grpc_out=. --go-grpc_opt=paths=source_relative \
         proto/alfred.proto
+
+# Deploy the telemetry agent (deploy/telemetry) to the Alfred server
+deploy-telemetry host="debian@alfred.tipee.dev":
+    tar -C deploy/telemetry -c compose.yaml otelcol.yaml | timeout 120 ssh {{host}} 'set -e; \
+        sudo test -s /opt/telemetry/.env || { echo "/opt/telemetry/.env is missing: see deploy/telemetry/README.md" >&2; exit 1; }; \
+        sudo tar -C /opt/telemetry --no-same-owner -x; \
+        sudo docker compose -f /opt/telemetry/compose.yaml up -d --force-recreate --remove-orphans'

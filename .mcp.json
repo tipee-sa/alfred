@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "telemetry": {
+            "type": "http",
+            "url": "https://telemetry.tipee.dev/mcp",
+            "headers": {
+                "Authorization": "Bearer ${TIPEE_TELEMETRY_TOKEN}"
+            }
+        }
+    }
+}

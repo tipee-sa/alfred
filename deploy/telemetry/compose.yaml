@@ -1,0 +1,63 @@
+# The telemetry agent of the Alfred server: node-exporter and an OpenTelemetry
+# Collector (otelcol.yaml), which forwards the host's metrics and journal (with
+# Alfred's logs) to telemetry-aggregator. Deployed by hand
+# to /opt/telemetry (README.md), next to the .env that holds its token.
+#
+# The images follow `local.versions` in the platform repository
+# (workload/observability/main.tf), and node-exporter's flags its
+# telemetry-collector.hcl, so that the host's metrics match the Nomad nodes'
+# and their dashboards and alerts cover it unchanged.
+
+services:
+  # On the host's network and PID namespace: its collectors describe the
+  # namespaces they run in. Listens on loopback only.
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    mem_limit: 64m
+    volumes:
+      - /:/host:ro,rslave
+    environment:
+      DBUS_SYSTEM_BUS_ADDRESS: unix:path=/host/run/dbus/system_bus_socket
+    command:
+      - --path.rootfs=/host
+      - --path.udev.data=/host/run/udev/data
+      - --web.listen-address=127.0.0.1:9100
+      - --web.disable-exporter-metrics
+      - --collector.processes
+      - --collector.systemd
+      - --no-collector.os
+      # Containers' interfaces, named at random.
+      - --collector.netdev.device-exclude=^veth
+      - --collector.netclass.ignored-devices=^veth
+      # The nodes' exclusions, brought down to what Debian and Docker mount.
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+|var/log/journal)($|/)
+      # Replaces the default list rather than extending it, so it restates the
+      # default fields.
+      - --collector.netstat.fields=^(.*_(InErrors|InErrs)|Ip_Forwarding|Ip(6|Ext)_(InOctets|OutOctets)|Icmp6?_(InMsgs|OutMsgs)|TcpExt_(Listen.*|Syncookies.*|TCPSynRetrans|TCPTimeouts|TCPOFOQueue|TCPRcvQDrop|TCPFastRetrans|TCPLossProbes|TCPLossProbeRecovery|TCPDSACKRecv|TCPDSACKUndo|TCPLossUndo|TCPSpuriousRTOs)|Tcp_(ActiveOpens|InSegs|OutSegs|OutRsts|PassiveOpens|RetransSegs|CurrEstab)|Udp6?_(InDatagrams|OutDatagrams|NoPorts|RcvbufErrors|SndbufErrors))$
+
+  # Root, to run the host's journalctl chrooted into /host. On the host's
+  # network so that it scrapes node-exporter and receives OTLP on loopback,
+  # where nothing outside the host reaches it.
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.162.0-amd64
+    network_mode: host
+    user: "0"
+    restart: unless-stopped
+    # memory_limiter's percentages are of this limit; without one, of the
+    # host's whole memory.
+    mem_limit: 512m
+    # HOST_NAME and OTLP_TOKEN, outside the repository. `docker compose config`
+    # and `docker inspect` print the token: do not run them where it shows.
+    env_file: .env
+    command: [--config=/etc/otelcol-contrib/config.yaml]
+    volumes:
+      - /:/host:ro,rslave
+      - ./otelcol.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otelcol-data:/var/lib/otelcol
+
+volumes:
+  # The journal cursor and the export queue, kept across restarts.
+  otelcol-data:
