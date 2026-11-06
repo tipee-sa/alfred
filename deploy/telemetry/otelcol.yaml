@@ -47,6 +47,14 @@ receivers:
     priority: debug
     convert_to_semantic_conventions: true
     storage: file_storage
+    # journalctl's JSON output gives fields over 4 KiB as null without --all: a
+    # long Alfred line would lose its message and attributes
+    all: true
+    # A batch memory_limiter refuses is retried, not dropped: the cursor only
+    # moves on once the pipeline took it, so the journal holds the backlog
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 0
     # Per entry: records are grouped into resources only after the operators.
     # A record's service is its unit, the one inside its user manager first
     # (user@<uid>.service runs a whole systemd instance). A scope other than
@@ -153,11 +161,6 @@ processors:
           - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where IsString(log.cache["level"])
           - delete_matching_keys(log.cache, "^(msg|level|time)$")
           - merge_maps(log.attributes, log.cache, "upsert")
-  batch:
-    send_batch_size: 1024
-    # telemetry-aggregator refuses requests above 20 MiB.
-    send_batch_max_size: 2048
-    timeout: 1s
 
 connectors:
   # The end of the journal's own pipeline: its records join the logs pipeline.
@@ -173,12 +176,21 @@ exporters:
       Authorization: Bearer ${env:OTLP_TOKEN}
     # On disk, and retried without end: an outage of the aggregator or of the
     # network delays the telemetry instead of dropping it. Bounded for this
-    # host's disk, which Alfred's artifacts and images already fill.
+    # host's disk, which Alfred's artifacts and images already fill; once full,
+    # it blocks the pipelines rather than dropping, and the journal receiver
+    # stops reading until there is room: the journal holds the rest.
     sending_queue:
       enabled: true
       storage: file_storage
       sizer: bytes
       queue_size: 268435456 # 256 MiB
+      block_on_overflow: true
+      # Batched here, in bytes: telemetry-aggregator refuses requests above
+      # 20 MiB, which a count of records does not bound
+      batch:
+        sizer: bytes
+        max_size: 8388608 # 8 MiB, before compression
+        flush_timeout: 1s
     retry_on_failure:
       enabled: true
       max_elapsed_time: 0
@@ -210,11 +222,11 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, transform/host, batch]
+      processors: [memory_limiter, transform/host]
       exporters: [otlp_http]
     metrics:
       receivers: [otlp, prometheus]
-      processors: [memory_limiter, transform/host, batch]
+      processors: [memory_limiter, transform/host]
       exporters: [otlp_http]
     logs/journald:
       receivers: [journald]
@@ -222,5 +234,5 @@ service:
       exporters: [forward/logs]
     logs:
       receivers: [otlp, forward/logs]
-      processors: [memory_limiter, transform/host, batch]
+      processors: [memory_limiter, transform/host]
       exporters: [otlp_http]
