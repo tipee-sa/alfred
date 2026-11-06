@@ -369,8 +369,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   The jobs from 2026-09-10 to 2026-11-06 were rebuilt from the journal: no `StartedBy`, `About`,
   jobfile or command line, and `UNKNOWN` for the ~2% of tasks whose end journald dropped.
 - **Host timers** (not in this repository): `alfred-docker-prune.timer` runs `docker system
-  prune --volumes --all --force` every Sunday at 03:30 (it can delete the image of a job loaded
-  but not started yet; `--filter until=24h`, without `--volumes`, would spare it). A weekly `systemctl kill alfred` timer used to work around
+  prune --all --force --filter until=24h`, then `docker volume prune --force`, every Sunday at
+  03:30: only images older than a day, so a job loaded but not started yet keeps its own
+  (`until` is not supported with `--volumes`, hence two commands). A weekly `systemctl kill alfred` timer used to work around
   OpenStack tokens expiring; `AllowReauth` fixed that (2026-10-11), and the timer was disabled on
   2026-11-06.
 - **Service images are pulled once per daemon**: tasks take a lock per Docker daemon and image
