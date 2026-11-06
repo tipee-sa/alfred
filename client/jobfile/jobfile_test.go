@@ -53,6 +53,7 @@ func TestParseJobfile_MergeKeys(t *testing.T) {
 		{"task merging a list of aliases", "tasks: [&a {name: one}, &b {name: two, slots: 3}, {<<: [*a, *b], name: three}]", ""},
 		{"task merging an unknown key inline", "tasks: [{<<: {slot: 4}, name: two}]", "line 4: field slot not found in type jobfile.JobfileTask"},
 		{"task merging an unknown key from a list", "tasks: [&a {name: one}, {<<: [*a, {slot: 4}], name: two}]", "line 4: field slot not found in type jobfile.JobfileTask"},
+		{"task merging itself", "tasks: [&base {name: one, <<: *base}]", "yaml: anchor 'base' value contains itself"},
 		{"task with a quoted \"<<\" key", "tasks: [{\"<<\": x, name: two}]", "line 4: field << not found in type jobfile.JobfileTask"},
 		{"service merging an alias", "services:\n  a: &svc {image: redis, health: {cmd: [true]}}\n  b: {<<: *svc, command: [x]}\ntasks: [one]", ""},
 		{"service merging an unknown key", "services:\n  a: {<<: {image: redis, imag: x}, health: {cmd: [true]}}\ntasks: [one]", "yaml: unmarshal errors:\n  line 5: field imag not found in type jobfile.JobfileService"},
