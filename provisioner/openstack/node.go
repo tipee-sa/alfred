@@ -30,6 +30,8 @@ type Node struct {
 	terminated atomic.Bool
 
 	log *slog.Logger
+	// Reads the node's state for watchState (state.go)
+	stateReader boundedReader
 	// One per image: a task waits for another's transfer of the same image, not of others
 	images internal.KeyedMutex
 }

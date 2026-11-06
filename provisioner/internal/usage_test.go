@@ -83,3 +83,13 @@ func TestRunContainerLogsStepUsage(t *testing.T) {
 	}
 	t.Fatalf("no Step finished record in:\n%s", logs.String())
 }
+
+func TestStepUsageOnCgroupV1(t *testing.T) {
+	// cgroup v1 has both: Docker subtracts total_inactive_file, which counts descendant cgroups
+	docker := newMockDocker()
+	docker.containerStats = `{"read":"2026-11-06T12:00:01Z","memory_stats":{"usage":900,"stats":{"inactive_file":100,"total_inactive_file":300}}}`
+	attrs := watchStepUsage(context.Background(), docker, "step").logAttrs()
+	if len(attrs) < 2 || attrs[0] != "memoryPeakBytes" || attrs[1] != uint64(600) {
+		t.Errorf("usage %v, want memoryPeakBytes 600", attrs)
+	}
+}

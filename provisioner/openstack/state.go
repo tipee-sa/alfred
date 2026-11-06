@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -193,12 +195,15 @@ func (s nodeSample) logAttrs(prev *nodeSample) []any {
 	}
 	perSecond := func(bytes uint64) int64 { return int64(float64(bytes) / elapsed) }
 
-	if total, ok := delta(s.cpuTotal, prev.cpuTotal); ok && total > 0 {
-		idle, _ := delta(s.cpuIdle+s.cpuIowait, prev.cpuIdle+prev.cpuIowait)
-		iowait, _ := delta(s.cpuIowait, prev.cpuIowait)
-		steal, _ := delta(s.cpuSteal, prev.cpuSteal)
+	// The kernel lets iowait go down (proc(5)): an interval where any of them does gives no
+	// CPU rates rather than a wrapped difference
+	total, totalOk := delta(s.cpuTotal, prev.cpuTotal)
+	idle, idleOk := delta(s.cpuIdle, prev.cpuIdle)
+	iowait, iowaitOk := delta(s.cpuIowait, prev.cpuIowait)
+	steal, stealOk := delta(s.cpuSteal, prev.cpuSteal)
+	if totalOk && idleOk && iowaitOk && stealOk && total > 0 {
 		attrs = append(attrs,
-			"cpuPercent", percent(total-min(idle, total), total),
+			"cpuPercent", percent(total-min(idle+iowait, total), total),
 			"cpuIowaitPercent", percent(iowait, total),
 			// Time the hypervisor gave this VM's CPUs to others: a busy OpenStack host
 			"cpuStealPercent", percent(steal, total),
@@ -223,21 +228,83 @@ func (s nodeSample) logAttrs(prev *nodeSample) []any {
 
 // readState runs nodeStateCommand on the node, within nodeStateTimeout.
 func (n *Node) readState() (nodeSample, error) {
-	session, err := n.ssh.NewSession()
+	output, at, err := n.stateReader.read(func() (outputSession, error) { return n.ssh.NewSession() }, nodeStateCommand, nodeStateTimeout)
 	if err != nil {
-		return nodeSample{}, fmt.Errorf("failed to open an SSH session: %w", err)
-	}
-	// Closing the session unblocks Output when the VM does not answer in time
-	timer := time.AfterFunc(nodeStateTimeout, func() { _ = session.Close() })
-	defer timer.Stop()
-	defer session.Close()
-
-	at := time.Now()
-	output, err := session.Output(nodeStateCommand)
-	if err != nil {
-		return nodeSample{}, fmt.Errorf("failed to read the node's state: %w", err)
+		return nodeSample{}, err
 	}
 	return parseNodeState(string(output), at)
+}
+
+// outputSession is what boundedReader needs of an *ssh.Session.
+type outputSession interface {
+	Output(cmd string) ([]byte, error)
+	Close() error
+}
+
+// boundedReader runs a command in a new SSH session within a timeout covering the session's
+// opening too: both wait for the VM, which may stop answering on a connection that stays up.
+// A reading that times out goes on in the background until the connection ends or its session
+// closes, and the next ones fail at once meanwhile, so a VM that does not answer holds one
+// goroutine, not one per interval.
+type boundedReader struct {
+	pending atomic.Bool
+}
+
+func (r *boundedReader) read(open func() (outputSession, error), cmd string, timeout time.Duration) ([]byte, time.Time, error) {
+	if !r.pending.CompareAndSwap(false, true) {
+		return nil, time.Time{}, fmt.Errorf("the previous reading has not ended")
+	}
+
+	type result struct {
+		output []byte
+		at     time.Time
+		err    error
+	}
+	done := make(chan result, 1) // never blocks the goroutine, read or not
+	var mu sync.Mutex
+	var session outputSession
+	var timedOut bool
+
+	go func() {
+		defer r.pending.Store(false)
+		s, err := open()
+		if err != nil {
+			done <- result{err: fmt.Errorf("failed to open an SSH session: %w", err)}
+			return
+		}
+		mu.Lock()
+		if timedOut {
+			// Opened after the deadline: nobody waits for it
+			mu.Unlock()
+			_ = s.Close()
+			return
+		}
+		session = s
+		mu.Unlock()
+		defer s.Close()
+
+		at := time.Now()
+		output, err := s.Output(cmd)
+		if err != nil {
+			err = fmt.Errorf("failed to read the node's state: %w", err)
+		}
+		done <- result{output, at, err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case res := <-done:
+		return res.output, res.at, res.err
+	case <-timer.C:
+		mu.Lock()
+		timedOut = true
+		if session != nil {
+			_ = session.Close() // unblocks Output
+		}
+		mu.Unlock()
+		return nil, time.Time{}, fmt.Errorf("the node did not answer within %s", timeout)
+	}
 }
 
 // watchState logs the node's state every nodeStateInterval until the node is terminated. A

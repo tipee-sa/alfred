@@ -1,8 +1,11 @@
 package openstack
 
 import (
+	"errors"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -114,5 +117,117 @@ func TestNodeSampleLogAttrs(t *testing.T) {
 	}
 	if _, ok := got["networkSentBytesPerSecond"]; ok {
 		t.Error("a counter that went down has a rate")
+	}
+}
+
+func TestNodeSampleLogAttrsSkipsCPUWhenIowaitGoesDown(t *testing.T) {
+	at := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	prev := nodeSample{at: at, cpuTotal: 1000, cpuIdle: 600, cpuIowait: 100}
+	// proc(5): the iowait counter may decrease
+	cur := nodeSample{at: at.Add(10 * time.Second), cpuTotal: 2000, cpuIdle: 1500, cpuIowait: 90}
+
+	got := attrsMap(t, cur.logAttrs(&prev))
+	for _, key := range []string{"cpuPercent", "cpuIowaitPercent", "cpuStealPercent"} {
+		if v, ok := got[key]; ok {
+			t.Errorf("%s = %v over an interval where iowait went down", key, v)
+		}
+	}
+}
+
+// fakeSession is an SSH session whose Output blocks until it is closed when hang is set.
+type fakeSession struct {
+	hang   bool
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newFakeSession(hang bool) *fakeSession {
+	return &fakeSession{hang: hang, closed: make(chan struct{})}
+}
+
+func (s *fakeSession) Output(string) ([]byte, error) {
+	if s.hang {
+		<-s.closed
+		return nil, errors.New("session closed")
+	}
+	return []byte("state"), nil
+}
+
+func (s *fakeSession) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+func TestBoundedReaderReads(t *testing.T) {
+	var r boundedReader
+	session := newFakeSession(false)
+	output, _, err := r.read(func() (outputSession, error) { return session, nil }, "cmd", time.Second)
+	if err != nil || string(output) != "state" {
+		t.Fatalf("read %q, %v", output, err)
+	}
+	select {
+	case <-session.closed:
+	case <-time.After(time.Second):
+		t.Error("the session was not closed after the reading")
+	}
+}
+
+func TestBoundedReaderBoundsTheSessionsOpening(t *testing.T) {
+	// A VM that stops answering on a live connection: opening a session waits
+	var r boundedReader
+	release := make(chan struct{})
+	late := newFakeSession(false)
+	open := func() (outputSession, error) {
+		<-release
+		return late, nil
+	}
+
+	start := time.Now()
+	if _, _, err := r.read(open, "cmd", 50*time.Millisecond); err == nil {
+		t.Fatal("a session that never opened gave a reading")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("gave up after %s, want the 50ms timeout", elapsed)
+	}
+
+	// While it is stuck, the next readings fail at once instead of piling up goroutines
+	start = time.Now()
+	if _, _, err := r.read(func() (outputSession, error) { return newFakeSession(false), nil }, "cmd", time.Second); err == nil {
+		t.Error("a reading started while the previous one was stuck")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("the next reading waited %s", elapsed)
+	}
+
+	// The session opening after the deadline is closed, and readings work again
+	close(release)
+	select {
+	case <-late.closed:
+	case <-time.After(time.Second):
+		t.Fatal("a session opened after the deadline stayed open")
+	}
+	deadline := time.Now().Add(time.Second)
+	for r.pending.Load() && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if _, _, err := r.read(func() (outputSession, error) { return newFakeSession(false), nil }, "cmd", time.Second); err != nil {
+		t.Errorf("reading after the stuck one ended: %v", err)
+	}
+}
+
+func TestBoundedReaderBoundsTheCommand(t *testing.T) {
+	var r boundedReader
+	session := newFakeSession(true)
+	start := time.Now()
+	if _, _, err := r.read(func() (outputSession, error) { return session, nil }, "cmd", 50*time.Millisecond); err == nil {
+		t.Fatal("a command that never ended gave a reading")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("gave up after %s, want the 50ms timeout", elapsed)
+	}
+	select {
+	case <-session.closed:
+	case <-time.After(time.Second):
+		t.Error("the session of a timed-out command stayed open")
 	}
 }

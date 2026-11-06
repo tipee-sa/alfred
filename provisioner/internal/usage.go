@@ -56,8 +56,9 @@ func (u *stepUsage) add(r container.StatsResponse) {
 	u.readings++
 
 	memory := r.MemoryStats.Usage
-	// What `docker stats` subtracts: inactive_file on cgroup v2, total_inactive_file on v1
-	for _, key := range []string{"inactive_file", "total_inactive_file"} {
+	// What `docker stats` subtracts: total_inactive_file on cgroup v1, which has inactive_file
+	// too but without the descendant cgroups, and inactive_file on v2
+	for _, key := range []string{"total_inactive_file", "inactive_file"} {
 		if cache, ok := r.MemoryStats.Stats[key]; ok {
 			memory -= min(cache, memory)
 			break
