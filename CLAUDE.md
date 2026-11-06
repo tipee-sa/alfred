@@ -36,44 +36,60 @@ alfred/
 │   ├── main.go             #   Entry point, root command, global flags
 │   ├── connect.go          #   gRPC connection + Ping within --connect-timeout
 │   ├── run.go              #   Schedule jobs from jobfiles
-│   ├── watch.go            #   Real-time job status monitoring
+│   ├── watch.go            #   Real-time job status monitoring (flags, stream loop)
+│   ├── watch_render.go     #   watch's text display (terminal and plain lines)
+│   ├── watch_json.go       #   watch --json: the script contract
+│   ├── cancel.go           #   Cancel a job or one task
+│   ├── logs.go             #   Stream a task's step logs (tail, -f, -n all)
+│   ├── show.go             #   A job's details and rendered jobfile
 │   ├── artifact.go         #   Download task artifacts
 │   ├── help_scripting.go   #   `alfred help scripting`: the guide for scripts and agents
-│   ├── ps.go               #   List all jobs
+│   ├── ps.go               #   List the latest jobs
 │   ├── top.go              #   Server dashboard (tview TUI)
 │   ├── version.go          #   Client + server version display
 │   ├── self_update.go      #   Binary self-update from GitHub releases
+│   ├── update_check.go     #   Background "new version available" notice
+│   ├── completion.go       #   bash/zsh completion scripts
 │   ├── jobfile/             #   YAML jobfile parsing, validation, Docker build
 │   ├── sossh/               #   SSH+socat tunneling for gRPC
 │   └── ui/                  #   Terminal UI helpers (spinner, colors)
 ├── server/                  # gRPC server
 │   ├── main.go             #   Entry point, lifecycle, graceful shutdown
 │   ├── server.go           #   gRPC service registration, Ping handler
-│   ├── server_jobs.go      #   ScheduleJob, WatchJob, WatchJobs RPCs
+│   ├── server_jobs.go      #   ScheduleJob, CancelJob/Task, WatchJob, WatchJobs, WatchStatus RPCs
 │   ├── server_artifacts.go #   DownloadArtifact streaming RPC
 │   ├── server_load.go      #   LoadImage bidirectional streaming RPC
+│   ├── server_logs.go      #   StreamTaskLogs RPC
 │   ├── status.go           #   Event-driven state reconstruction + client broadcasting
 │   ├── job_history.go      #   Completed jobs saved to disk, reloaded at startup
+│   ├── artifacts.go        #   Startup cleanup of artifacts past --artifact-retention
 │   ├── scheduler.go        #   Scheduler factory, artifact/secret callbacks
 │   ├── docker.go           #   Docker client initialization
 │   ├── config/              #   Constants (MaxPacketSize = 50MB)
 │   ├── flags/               #   CLI flags + viper env bindings
 │   └── log/                 #   Structured slog logging setup
 ├── scheduler/               # Event-driven task scheduler
-│   ├── scheduler.go        #   Main loop, node pool, task scheduling, subscriptions
-│   ├── events.go           #   Event types (11 types: node/job/task lifecycle)
+│   ├── scheduler.go        #   Main loop, node pool, task scheduling, cancellations
+│   ├── subscriber.go       #   Lossless per-subscriber event queues
+│   ├── events.go           #   Event types (13 types: node/job/task lifecycle)
 │   ├── job.go              #   Job wrapper with unique ID and completion tracking
 │   ├── task.go             #   Task model, FQN generation
 │   ├── node.go             #   Node interface, RunTaskConfig, node status constants
-│   ├── provisioner.go      #   Provisioner interface
+│   ├── provisioner.go      #   Provisioner interface, optional ImagePreparer
 │   ├── config.go           #   Scheduler configuration
 │   └── internal/            #   NbNodesToCreate() provisioning calculator
 ├── provisioner/
 │   ├── internal/
 │   │   ├── docker.go       #   RunContainer() - full Docker execution engine
+│   │   ├── usage.go        #   A step container's peak memory and CPU
+│   │   ├── keyed_mutex.go  #   One lock per key (service image pulls)
+│   │   ├── retry.go        #   Retry with exponential backoff
 │   │   └── workspacefs.go  #   WorkspaceFS interface + ScopedFS
 │   ├── local/               #   Local Docker provisioner (thin wrapper)
 │   └── openstack/           #   OpenStack VM provisioner (SSH + Docker)
+│       ├── archive.go      #     Image archives, built once for all nodes
+│       ├── transfer.go     #     Image transfer to a node, timed
+│       └── state.go        #     "Node state" record every 15 s
 ├── proto/
 │   ├── alfred.proto         #   gRPC service + message definitions
 │   ├── alfred.pb.go         #   Generated protobuf code
@@ -159,19 +175,21 @@ Special env vars injected into step containers: `ALFRED_TASK`, `ALFRED_TASK_FQN`
 
 ### Event System
 
-The scheduler broadcasts 11 event types. The server's `listenEvents()` goroutine consumes
+The scheduler broadcasts 13 event types. The server's `listenEvents()` goroutine consumes
 them to maintain `serverStatus` and forward filtered events to connected client watchers.
 
 | Category | Events |
 |----------|--------|
 | Node | `EventNodeCreated`, `EventNodeStatusUpdated`, `EventNodeSlotUpdated`, `EventNodeTerminated` |
 | Job | `EventJobScheduled`, `EventJobCompleted` |
-| Task | `EventTaskQueued`, `EventTaskRunning`, `EventTaskAborted`, `EventTaskFailed`, `EventTaskCompleted` |
+| Task | `EventTaskQueued`, `EventTaskRunning`, `EventTaskAborted`, `EventTaskFailed`, `EventTaskSkipped`, `EventTaskTimedOut`, `EventTaskCompleted` |
 
 Node statuses: `QUEUED -> PROVISIONING -> ONLINE -> TERMINATING -> TERMINATED`
-(with `FAILED_PROVISIONING -> DISCARDED` error path).
+(with `FAILED_PROVISIONING -> DISCARDED` and `TERMINATING -> FAILED_TERMINATING` error paths).
 
-Task statuses: `QUEUED -> RUNNING -> COMPLETED | FAILED | ABORTED`.
+Task statuses: `QUEUED -> RUNNING -> COMPLETED | FAILED | SKIPPED | TIMED_OUT | ABORTED`
+(a queued task can go straight to `ABORTED`). `UNKNOWN` appears only in the jobs rebuilt from
+the journal (see job history below).
 
 ### gRPC API (`proto/alfred.proto`)
 
@@ -181,6 +199,9 @@ Task statuses: `QUEUED -> RUNNING -> COMPLETED | FAILED | ABORTED`.
 | `ScheduleJob` | Unary | Submit job, returns assigned name |
 | `WatchJob` | Server stream | Stream single job's status events |
 | `WatchJobs` | Server stream | Stream the jobs list (job-level events only; `limit` latest + running) |
+| `WatchStatus` | Server stream | Stream the whole server status: nodes, slots, jobs (`top`) |
+| `CancelJob` / `CancelTask` | Unary | Abort a job's queued and running tasks, or one task |
+| `StreamTaskLogs` | Server stream | A task's step logs: tail, follow, or whole (`-n all`, last 10 MB each) |
 | `DownloadArtifact` | Server stream | Chunked artifact download (completed or live) |
 | `LoadImage` | Bidi stream | Upload compressed Docker images (zstd) |
 
@@ -248,11 +269,15 @@ Jobfiles support Go templates with slim-sprig functions. Available data: `.Env` 
 | `--listen` | `:25373` | `ALFRED_LISTEN` | gRPC address |
 | `--log-level` | `INFO` | `ALFRED_LOG_LEVEL` | DEBUG, INFO, WARN, ERROR |
 | `--log-format` | `json` | `ALFRED_LOG_FORMAT` | json or text |
+| `--log-source` | `false` | `ALFRED_LOG_SOURCE` | Add the source location to each record |
 | `--provisioner` | `local` | `ALFRED_PROVISIONER` | local or openstack |
 | `--max-nodes` | `(CPU+1)/2` | `ALFRED_MAX_NODES` | Max provisioned nodes |
 | `--slots-per-node` | `2` | `ALFRED_SLOTS_PER_NODE` | Slot capacity per node |
 | `--task-startup-delay` | `1s` | `ALFRED_TASK_STARTUP_DELAY` | Delay between starting tasks on the same node |
 | `--provisioning-delay` | `20s` | `ALFRED_PROVISIONING_DELAY` | Delay between node creations |
+| `--provisioning-failure-cooldown` | `1m` | `ALFRED_PROVISIONING_FAILURE_COOLDOWN` | Wait before retrying a failed provisioning |
+| `--task-timeout` | `5h` | `ALFRED_TASK_TIMEOUT` | A task running longer ends `TIMED_OUT` (0 = no limit) |
+| `--artifact-retention` | `4320h` (~6 months) | `ALFRED_ARTIFACT_RETENTION` | Artifacts and saved jobs older than this are deleted at startup (0 = keep) |
 | `--node-workspace` | `var/node-workspace` | `ALFRED_NODE_WORKSPACE` | Workspace directory |
 | `--server-data` | `var/server-data` | `ALFRED_SERVER_DATA` | Artifacts + secrets directory |
 
@@ -266,7 +291,7 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
   access is `debian@alfred.tipee.dev` (passwordless sudo); the `alfred` account refuses the personal key.
 - **Client releases**: Triggered by git tags (`YY.MM.DD` format). Builds 3 binaries:
   `alfred-linux-amd64`, `alfred-darwin-amd64`, `alfred-darwin-arm64`. Uploaded to GitHub releases.
-- **CI**: `go test -v ./...` on every push (Go 1.21, ubuntu-latest). `nix.yaml` runs `nix build`
+- **CI**: `go test -v ./...` on every push (Go 1.24, ubuntu-latest). `nix.yaml` runs `nix build`
   on every push.
 - **Telemetry**: the server writes JSON logs to journald. `deploy/telemetry/` (Docker Compose in
   `/opt/telemetry`, `just deploy-telemetry`) runs an OpenTelemetry Collector and node-exporter,
@@ -288,7 +313,7 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
 The codebase uses several recurring async patterns (all annotated with inline comments):
 
 - **Scheduler main loop** (`scheduler/scheduler.go:Run`): Single-goroutine event loop using
-  `select` on 4 channels (input, tickRequests, deferred, stop). All scheduler state mutations
+  `select` on 5 channels (input, tickRequests, deferred, cancellations, stop). All scheduler state mutations
   happen here — no mutexes needed for tasksQueue, nodes, nodesQueue.
 
 - **Watcher goroutines** (`watchTaskExecution`, `watchNodeProvisioning`, `watchNodeTermination`):

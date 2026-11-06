@@ -230,10 +230,11 @@ func (s *Scheduler) Shutdown() {
 // Run is the scheduler's main event loop. It runs in a single goroutine — all state
 // mutations (tasksQueue, nodes, nodesQueue) happen here, so no mutexes are needed for them.
 //
-// The loop blocks on select until one of four things happens:
+// The loop blocks on select until one of five things happens:
 //   - A new job arrives (from Schedule via s.input)
 //   - A tick is requested (from any goroutine via requestTick)
 //   - A deferred function fires (from after() via s.deferred)
+//   - A job or task is cancelled (from CancelJob/CancelTask via s.cancellations)
 //   - Shutdown is signaled (from Shutdown() closing s.stop)
 //
 // Background goroutines (watchTaskExecution, watchNodeProvisioning, watchNodeTermination)
