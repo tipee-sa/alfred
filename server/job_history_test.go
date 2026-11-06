@@ -107,8 +107,9 @@ func TestJobsForList_LatestJobsAndTheRunningOnesWithoutTheirJobfile(t *testing.T
 	assert.Equal(t, "tasks: [a]", jobs[0].Jobfile, "the server's own copy keeps it")
 }
 
-// With every artifact kept (--artifact-retention 0), startup reads only the newest
-// maxCompletedJobs directories, never the whole history.
+// With every artifact kept (--artifact-retention 0), startup reads the newest directories
+// until it has maxCompletedJobs jobs, never the whole history; ones without a usable
+// job.json take no place.
 func TestJobHistory_ReadsOnlyTheNewestDirectories(t *testing.T) {
 	withJobHistory(t)
 
@@ -120,6 +121,15 @@ func TestJobHistory_ReadsOnlyTheNewestDirectories(t *testing.T) {
 		require.NoError(t, err)
 		saveJob(name, data)
 		require.NoError(t, os.Chtimes(path.Join(dataRoot, "artifacts", name), at, at))
+	}
+	newest := base.Add(time.Duration(maxCompletedJobs+1) * time.Minute)
+	for _, name := range []string{"job-without-history", "job-broken"} {
+		dir := path.Join(dataRoot, "artifacts", name)
+		require.NoError(t, os.MkdirAll(dir, 0755))
+		if name == "job-broken" {
+			require.NoError(t, os.WriteFile(path.Join(dir, jobHistoryFile), []byte("{"), 0644))
+		}
+		require.NoError(t, os.Chtimes(dir, newest, newest))
 	}
 
 	loadJobHistory()

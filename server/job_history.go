@@ -43,10 +43,10 @@ func saveJob(name string, data []byte) {
 // loadJobHistory puts the saved jobs into serverStatus, oldest first, keeping the latest
 // maxCompletedJobs. Runs at startup, before the scheduler emits any event.
 //
-// Only the newest maxCompletedJobs directories are read: with --artifact-retention 0 the
-// artifacts are kept forever, and decoding them all (~100 kB a job) would cost memory for
-// nothing. A directory's date is its job's last write (artifacts, then job.json), close
-// enough to its order.
+// Directories are read newest first, until maxCompletedJobs jobs are loaded: with
+// --artifact-retention 0 the artifacts are kept forever, and decoding them all (~100 kB a
+// job) would cost memory for nothing. A directory's date is its job's last write (artifacts,
+// then job.json), close enough to its order.
 func loadJobHistory() {
 	artifactsDir := path.Join(dataRoot, "artifacts")
 	entries, err := os.ReadDir(artifactsDir)
@@ -73,12 +73,12 @@ func loadJobHistory() {
 		dirs = append(dirs, dir{entry.Name(), info.ModTime()})
 	}
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].modTime.After(dirs[j].modTime) })
-	if len(dirs) > maxCompletedJobs {
-		dirs = dirs[:maxCompletedJobs]
-	}
 
-	var jobs []*proto.JobStatus // at most maxCompletedJobs: no cap to apply after
+	var jobs []*proto.JobStatus
 	for _, entry := range dirs {
+		if len(jobs) == maxCompletedJobs {
+			break
+		}
 		data, err := os.ReadFile(path.Join(artifactsDir, entry.name, jobHistoryFile))
 		if err != nil {
 			if !os.IsNotExist(err) { // jobs from before the history have none

@@ -650,10 +650,16 @@ func TestRenderStats_UnknownTasksAreListed(t *testing.T) {
 		ScheduledAt: timestamppb.New(now.Add(-5 * time.Minute)),
 		CompletedAt: timestamppb.New(now),
 		Tasks: []*proto.TaskStatus{
-			{Name: "lost-end", Status: proto.TaskStatus_UNKNOWN, StartedAt: timestamppb.New(now.Add(-3 * time.Minute))},
+			{Name: "lost-end", Status: proto.TaskStatus_UNKNOWN, StartedAt: timestamppb.New(now.Add(-30 * 24 * time.Hour))},
+			{Name: "lost-all", Status: proto.TaskStatus_UNKNOWN},
 		},
 	}
+	msg.ScheduledAt = timestamppb.New(now.Add(-30 * 24 * time.Hour))
 	_, stats := r.renderStats(msg)
 	assert.Contains(t, stats, "❔")
 	assert.Contains(t, stats, "lost-end")
+	assert.Contains(t, stats, "lost-all")
+	for _, duration := range []string{"🐢", "🧟", "😴"} {
+		assert.NotContains(t, stats, duration, "its duration is unknown, not counted up to now")
+	}
 }
