@@ -6,6 +6,9 @@ The Nix devshell (`flake.nix`, `nix/devshell.nix`, loaded by direnv via `.envrc`
 just, protoc, reflex, zstd, and the pinned protoc plugins (`nix/packages/`). Docker and SSH come
 from the host. Outside direnv, prefix commands with `nix develop -c`.
 
+`.mcp.json` declares the `telemetry` MCP server (ClickHouse logs and traces at
+`telemetry.tipee.dev`), as tipee's does; it reads `TIPEE_TELEMETRY_TOKEN` from the environment.
+
 ## Build & Test
 
 ```bash
