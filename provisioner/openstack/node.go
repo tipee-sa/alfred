@@ -143,6 +143,9 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 		}
 	}()
 
+	// Log what the VM goes through while tasks run on it (state.go)
+	go n.watchState()
+
 	n.log.Debug("Wait for Docker daemon to start", "wait", initialWait)
 	select {
 	case <-time.After(initialWait):

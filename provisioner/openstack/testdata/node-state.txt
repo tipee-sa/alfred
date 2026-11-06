@@ -1,0 +1,80 @@
+#loadavg
+0.32 0.08 0.03 1/240 978201
+#stat
+cpu  3094796 2046 1165378 655476542 986758 0 225726 14620 0 0
+#meminfo
+MemTotal:       16388428 kB
+MemFree:         3628336 kB
+MemAvailable:   15018208 kB
+Buffers:          866940 kB
+Cached:          8944364 kB
+SwapCached:            0 kB
+Active:          5859332 kB
+Inactive:        4673128 kB
+Active(anon):        452 kB
+Inactive(anon):   721408 kB
+Active(file):    5858880 kB
+Inactive(file):  3951720 kB
+Unevictable:           0 kB
+Mlocked:               0 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Dirty:               732 kB
+Writeback:             0 kB
+AnonPages:        714624 kB
+Mapped:           402704 kB
+Shmem:               696 kB
+KReclaimable:    1916784 kB
+Slab:            2130472 kB
+SReclaimable:    1916784 kB
+SUnreclaim:       213688 kB
+KernelStack:        3856 kB
+PageTables:         5756 kB
+SecPageTables:         0 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:     8194212 kB
+Committed_AS:    2145088 kB
+VmallocTotal:   34359738367 kB
+VmallocUsed:       14424 kB
+VmallocChunk:          0 kB
+Percpu:             4064 kB
+AnonHugePages:    616448 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+FileHugePages:         0 kB
+FilePmdMapped:         0 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+Hugetlb:               0 kB
+DirectMap4k:      104300 kB
+DirectMap2M:     5138432 kB
+DirectMap1G:    13631488 kB
+#netdev
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo: 65966447938 4362105    0    0    0     0          0         0 65966447938 4362105    0    0    0     0       0          0
+  ens3: 58978419874 43669390    0    0    0     0          0         0 534990939824 35181101    0    0    0     0       0          0
+docker0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+#diskstats
+  11       0 sr0 39 0 312 42 0 0 0 0 0 48 42 0 0 0 0 0 0
+   8       0 sda 1548436 84614 255444840 27025018 4415900 4924879 2639876714 101545040 0 8141240 129630926 391873 2 3342965056 735794 238849 325072
+   8       1 sda1 1548031 84124 255428603 27024586 4415897 4924879 2639876714 101545040 0 8853384 129305414 391870 0 3342735832 735788 0 0
+   8      14 sda14 72 0 576 80 0 0 0 0 0 76 80 0 0 0 0 0 0
+   8      15 sda15 155 490 8845 262 0 0 0 0 0 236 269 3 2 229224 6 0 0
+   8      16 sdb 140835 403 2977008 135141 67205 21332 25253120 485797 0 1166812 628533 8096 0 135190520 6725 1544 869
+   7       0 loop0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       1 loop1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       2 loop2 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       3 loop3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       4 loop4 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       5 loop5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       6 loop6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+   7       7 loop7 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+#df
+Filesystem        1-blocks        Used  Available Capacity Mounted on
+/dev/sda1      52666433536 40959102976 9528418304      82% /
