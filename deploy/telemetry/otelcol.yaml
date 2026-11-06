@@ -145,6 +145,8 @@ processors:
           - resource.attributes["service.name"] == "alfred" and IsMatch(log.body, "^\\{")
         statements:
           - merge_maps(log.cache, ParseJSON(log.body), "upsert")
+          # slog's groups nest ({"task":{"job":…}}): task.job, node.name as attributes
+          - flatten(log.cache)
           - set(log.body, log.cache["msg"]) where IsString(log.cache["msg"])
           - set(log.severity_text, log.cache["level"]) where IsString(log.cache["level"])
           - set(log.severity_number, SEVERITY_NUMBER_UNSPECIFIED) where IsString(log.cache["level"])
