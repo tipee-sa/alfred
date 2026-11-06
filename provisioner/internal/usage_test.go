@@ -123,3 +123,19 @@ func TestStepUsageDoesNotHoldTheStep(t *testing.T) {
 		t.Fatal("the step waited for its stats stream past the timeout")
 	}
 }
+
+func TestStepUsageWithoutAnIntervalHasNoCPUPeak(t *testing.T) {
+	// A step shorter than two readings: its only one has no previous to measure against
+	docker := newMockDocker()
+	docker.containerStats = `{"read":"2026-11-06T12:00:01Z","preread":"0001-01-01T00:00:00Z",` +
+		`"cpu_stats":{"cpu_usage":{"total_usage":52000000}},"memory_stats":{"usage":8663040}}`
+	attrs := watchStepUsage(context.Background(), docker, "step").logAttrs()
+	for i := 0; i+1 < len(attrs); i += 2 {
+		if attrs[i] == "cpuPeakCores" {
+			t.Errorf("cpuPeakCores = %v without any interval measured", attrs[i+1])
+		}
+	}
+	if len(attrs) != 4 {
+		t.Errorf("usage %v, want memoryPeakBytes and cpuSeconds", attrs)
+	}
+}

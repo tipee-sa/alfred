@@ -30,6 +30,9 @@ type stepUsage struct {
 	peakMemory   uint64  // bytes, without the page cache, as `docker stats` shows it
 	cpu          uint64  // nanoseconds of CPU time, all cores
 	peakCPUCores float64 // the most cores used over one reading's interval
+	// Whether any reading had a previous one to measure an interval against: a step shorter
+	// than two readings has no peak, rather than a peak of zero
+	peakMeasured bool
 }
 
 // watchStepUsage starts reading the container's stats until stop. A daemon that refuses them
@@ -83,6 +86,7 @@ func (u *stepUsage) add(r container.StatsResponse) {
 	precpu := r.PreCPUStats.CPUUsage.TotalUsage
 	if !r.PreRead.IsZero() && interval > 0 && cpu >= precpu && precpu > 0 {
 		u.peakCPUCores = max(u.peakCPUCores, float64(cpu-precpu)/float64(interval.Nanoseconds()))
+		u.peakMeasured = true
 	}
 }
 
@@ -109,9 +113,12 @@ func (u *stepUsage) logAttrs() []any {
 	if !u.stop() || u.readings == 0 {
 		return nil
 	}
-	return []any{
+	attrs := []any{
 		"memoryPeakBytes", u.peakMemory,
 		"cpuSeconds", float64(u.cpu/1e6) / 1e3, // to the millisecond
-		"cpuPeakCores", float64(int(u.peakCPUCores*100)) / 100,
 	}
+	if u.peakMeasured {
+		attrs = append(attrs, "cpuPeakCores", float64(int(u.peakCPUCores*100))/100)
+	}
+	return attrs
 }
