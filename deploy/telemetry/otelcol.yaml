@@ -1,6 +1,6 @@
 # OpenTelemetry Collector of the Alfred server (compose.yaml): it reads the
-# host's journal, scrapes node-exporter and receives Alfred's OTLP on loopback,
-# and forwards everything to telemetry-aggregator at telemetry.tipee.dev.
+# host's journal (Alfred's logs included), scrapes node-exporter and receives
+# OTLP on loopback, and forwards everything to telemetry-aggregator at telemetry.tipee.dev.
 #
 # The journald operators, transform/journald and transform/text-logs are
 # copied from the Nomad nodes' collector, in the platform repository
@@ -20,8 +20,9 @@ extensions:
       cleanup_on_start: true
 
 receivers:
-  # Alfred's own telemetry, and the collector's. Loopback only: the port must
-  # not be reachable from the internet.
+  # The collector's own telemetry, and whatever may export OTLP on the host
+  # (Alfred logs to the journal). Loopback only: the port must not be reachable
+  # from the internet.
   otlp:
     protocols:
       grpc:

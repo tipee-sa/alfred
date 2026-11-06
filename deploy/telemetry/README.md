@@ -2,9 +2,11 @@
 
 `compose.yaml` runs node-exporter and an OpenTelemetry Collector (`otelcol.yaml`) on
 `alfred.tipee.dev`. The collector sends the host's metrics and journal, Alfred's JSON logs
-parsed, and whatever Alfred exports over OTLP to `127.0.0.1:4317`/`4318`, to
-telemetry-aggregator (`https://telemetry.tipee.dev`), which stores them in ClickHouse. Its
-starting point is Linear PF-182.
+parsed, to telemetry-aggregator (`https://telemetry.tipee.dev`), which stores them in
+ClickHouse. Alfred's telemetry is its logs, so all of it is in the journal too; node-exporter's
+metrics are what only goes this way. The OTLP receiver on `127.0.0.1:4317`/`4318` takes the
+collector's own telemetry, and whatever may export OTLP on the host later. Its starting point is
+Linear PF-182.
 
 ## Token
 

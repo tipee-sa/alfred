@@ -268,9 +268,10 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
   on every push.
 - **Telemetry**: the server writes JSON logs to journald. `deploy/telemetry/` (Docker Compose in
   `/opt/telemetry`, `just deploy-telemetry`) runs an OpenTelemetry Collector and node-exporter,
-  which send the host's metrics, its journal (Alfred's JSON lines parsed) and Alfred's OTLP on
-  `127.0.0.1:4317/4318` to `telemetry.tipee.dev`, i.e. ClickHouse (the `telemetry` MCP server
-  reads it). Its token is only in `/opt/telemetry/.env` on the host. It replaces the Datadog
+  which send the host's metrics and its journal (Alfred's JSON lines parsed) to
+  `telemetry.tipee.dev`, i.e. ClickHouse (the `telemetry` MCP server reads it). Alfred's
+  telemetry is its logs: everything it sends is in the journal too. An OTLP receiver listens on
+  `127.0.0.1:4317/4318`, used only by the collector's own telemetry. Its token is only in `/opt/telemetry/.env` on the host. It replaces the Datadog
   Agent, stopped and masked on 2026-11-01 (Linear PF-182). Parts are copied from the `platform`
   repository's node collector: `deploy/telemetry/README.md` says which.
 - **Self-update**: Client detects latest version from GitHub release redirect URL, downloads

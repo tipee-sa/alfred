@@ -1,6 +1,6 @@
 # The telemetry agent of the Alfred server: node-exporter and an OpenTelemetry
-# Collector (otelcol.yaml), which forwards the host's metrics and journal, and
-# whatever Alfred sends it over OTLP, to telemetry-aggregator. Deployed by hand
+# Collector (otelcol.yaml), which forwards the host's metrics and journal (with
+# Alfred's logs) to telemetry-aggregator. Deployed by hand
 # to /opt/telemetry (README.md), next to the .env that holds its token.
 #
 # The images follow `local.versions` in the platform repository
@@ -39,8 +39,8 @@ services:
       - --collector.netstat.fields=^(.*_(InErrors|InErrs)|Ip_Forwarding|Ip(6|Ext)_(InOctets|OutOctets)|Icmp6?_(InMsgs|OutMsgs)|TcpExt_(Listen.*|Syncookies.*|TCPSynRetrans|TCPTimeouts|TCPOFOQueue|TCPRcvQDrop|TCPFastRetrans|TCPLossProbes|TCPLossProbeRecovery|TCPDSACKRecv|TCPDSACKUndo|TCPLossUndo|TCPSpuriousRTOs)|Tcp_(ActiveOpens|InSegs|OutSegs|OutRsts|PassiveOpens|RetransSegs|CurrEstab)|Udp6?_(InDatagrams|OutDatagrams|NoPorts|RcvbufErrors|SndbufErrors))$
 
   # Root, to run the host's journalctl chrooted into /host. On the host's
-  # network so that it scrapes node-exporter and receives Alfred's OTLP on
-  # loopback, where nothing outside the host reaches it.
+  # network so that it scrapes node-exporter and receives OTLP on loopback,
+  # where nothing outside the host reaches it.
   otelcol:
     image: otel/opentelemetry-collector-contrib:0.162.0-amd64
     network_mode: host
