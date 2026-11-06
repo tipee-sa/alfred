@@ -37,12 +37,8 @@ func (t *JobfileTask) UnmarshalYAML(value *yaml.Node) error {
 		return nil
 	}
 	// value.Decode does not inherit the decoder's KnownFields (see parseJobfile): check the keys here.
-	if value.Kind == yaml.MappingNode {
-		for i := 0; i < len(value.Content); i += 2 {
-			if key := value.Content[i]; key.Value != "name" && key.Value != "slots" {
-				return fmt.Errorf("line %d: field %s not found in type jobfile.JobfileTask", key.Line, key.Value)
-			}
-		}
+	if err := checkTaskKeys(value); err != nil {
+		return err
 	}
 	type plain JobfileTask
 	if err := value.Decode((*plain)(t)); err != nil {
@@ -50,6 +46,36 @@ func (t *JobfileTask) UnmarshalYAML(value *yaml.Node) error {
 	}
 	if t.Slots == 0 {
 		t.Slots = 1
+	}
+	return nil
+}
+
+// checkTaskKeys refuses the keys a task object does not have, its own and those it inherits through
+// YAML merge keys ("<<: *base", "<<: {...}", "<<: [*a, *b]"), which value.Decode then applies.
+// Anything that is not a mapping is left to value.Decode to accept or refuse.
+func checkTaskKeys(node *yaml.Node) error {
+	if node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	switch node.Kind {
+	case yaml.SequenceNode: // only as a merge key's value: the mappings it merges
+		for _, item := range node.Content {
+			if err := checkTaskKeys(item); err != nil {
+				return err
+			}
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			switch {
+			case key.Kind == yaml.ScalarNode && key.ShortTag() == "!!merge":
+				if err := checkTaskKeys(node.Content[i+1]); err != nil {
+					return err
+				}
+			case key.Value != "name" && key.Value != "slots":
+				return fmt.Errorf("line %d: field %s not found in type jobfile.JobfileTask", key.Line, key.Value)
+			}
+		}
 	}
 	return nil
 }
