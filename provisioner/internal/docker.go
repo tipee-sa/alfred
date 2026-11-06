@@ -93,14 +93,19 @@ func ensureServiceImage(ctx context.Context, docker DockerClient, log *slog.Logg
 	}
 
 	log.Info("Pulling service image", "image", ref)
-	return Retry(4, func() error {
+	start := time.Now()
+	if err := Retry(4, func() error {
 		reader, err := docker.ImagePull(ctx, ref, image.PullOptions{})
 		if err != nil {
 			return err
 		}
 		defer reader.Close()
 		return pullError(reader)
-	})
+	}); err != nil {
+		return err
+	}
+	log.Info("Pulled service image", "image", ref, "durationSeconds", time.Since(start).Round(time.Millisecond).Seconds())
+	return nil
 }
 
 // pullError reads a pull's progress to its end and returns the error it reports, if any: the
@@ -246,6 +251,8 @@ func RunContainer(
 			defer wg.Done()
 			serviceLog := task.Log.With("service", service.Name)
 			env := serviceEnv[service.Name]
+			// From its first container's creation to its passed health check, retries included
+			serviceStart := time.Now()
 
 			tmpfs := map[string]string{}
 			for _, t := range service.Tmpfs {
@@ -304,9 +311,7 @@ func RunContainer(
 
 				err = startAndWaitForService(ctx, docker, service, resp.ID, env, serviceLog)
 				if err == nil {
-					if attempt > 1 {
-						serviceLog.Info("Service started successfully after retry", "attempt", attempt)
-					}
+					serviceLog.Info("Service started", "attempts", attempt, "durationSeconds", time.Since(serviceStart).Round(time.Millisecond).Seconds())
 					containerCleanupMu.Lock()
 					containerCleanupIDs = append(containerCleanupIDs, resp.ID)
 					containerCleanupMu.Unlock()
@@ -449,6 +454,9 @@ func RunContainer(
 			}); err != nil {
 				return fmt.Errorf("failed to start docker container for step %d: %w", stepIndex, err)
 			}
+			stepStart := time.Now()
+			stepSeconds := func() float64 { return time.Since(stepStart).Round(time.Millisecond).Seconds() }
+			task.Log.Info("Step started", "step", stepIndex, "image", image)
 
 			// Stream container logs to file in a background goroutine.
 			// Uses a child context so we can cancel log streaming when the container exits.
@@ -472,6 +480,7 @@ func RunContainer(
 				if err := <-logDone; err != nil && logCtx.Err() == nil {
 					task.Log.Error("Failed to stream container logs", "error", err, "step", stepIndex)
 				}
+				task.Log.Info("Step finished", "step", stepIndex, "exitCode", status.StatusCode, "durationSeconds", stepSeconds())
 
 				if status.StatusCode != 0 {
 					return fmt.Errorf("step %d failed with status: %d", stepIndex, status.StatusCode)
@@ -485,7 +494,7 @@ func RunContainer(
 			case <-ctx.Done():
 				// Task was cancelled. Actively kill the container since context cancellation
 				// may not propagate through the Docker SDK (especially over SSH-tunneled connections).
-				task.Log.Info("Killing container for aborted step", "step", stepIndex)
+				task.Log.Info("Killing container for aborted step", "step", stepIndex, "durationSeconds", stepSeconds())
 				_ = docker.ContainerKill(context.Background(), resp.ID, "SIGKILL")
 				cancelLogs()
 				<-logDone
@@ -514,6 +523,7 @@ func RunContainer(
 		func() error {
 			if runConfig.ArtifactPreserver != nil {
 				task.Log.Debug("Preserve artifact")
+				start := time.Now()
 
 				reader, err := taskFs.Archive("/output")
 				if err != nil {
@@ -521,9 +531,11 @@ func RunContainer(
 				}
 				defer reader.Close()
 
-				if err := runConfig.ArtifactPreserver(reader, task); err != nil {
+				archive := &countingReader{Reader: reader}
+				if err := runConfig.ArtifactPreserver(archive, task); err != nil {
 					return fmt.Errorf("failed to preserve artifacts: %w", err)
 				}
+				task.Log.Info("Preserved artifacts", "bytes", archive.n, "durationSeconds", time.Since(start).Round(time.Millisecond).Seconds())
 			}
 			return nil
 		},
@@ -635,4 +647,16 @@ func startAndWaitForService(
 	}
 
 	return fmt.Errorf("failed health check for service '%s'", service.Name)
+}
+
+// countingReader counts the bytes read through it.
+type countingReader struct {
+	io.Reader
+	n int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.n += int64(n)
+	return n, err
 }

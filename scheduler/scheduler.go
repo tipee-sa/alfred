@@ -170,6 +170,7 @@ func (s *Scheduler) forwardEvents() {
 // down (Run() has exited, so nobody reads from s.input).
 func (s *Scheduler) Schedule(job *Job) (string, error) {
 	job.id = namegen.Get()
+	job.scheduledAt = time.Now()
 	nbTasks := len(job.Tasks)
 
 	// Validate that every task fits within the node's slot capacity
@@ -252,6 +253,8 @@ func (s *Scheduler) Run() {
 					Name:  jobTask.Name,
 					Slots: slots,
 					Log:   s.log.With(slog.Group("task", "job", job.FQN(), "name", jobTask.Name)),
+
+					queuedAt: time.Now(),
 				}
 
 				task.Log.Debug("Queuing task", "slots", slots)
@@ -355,10 +358,7 @@ func (s *Scheduler) handleCancellation(req cancelRequest) {
 			found = true
 			task.Log.Info("Task aborted (was queued)")
 			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
-			if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
-				s.log.Info("Job completed", "name", task.Job.FQN())
-				s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
-			}
+			s.taskFinished(task)
 			s.wg.Done()
 		} else {
 			remaining = append(remaining, task)
@@ -464,7 +464,10 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 			ns.nextTaskStart = ns.nextTaskStart.Add(s.config.TaskStartupDelay)
 		}
 
-		task.Log.Info("Scheduling task on node", "node", ns.node.Name(), "slots", task.Slots, "startDelay", startDelay, "remainingTasks", len(s.tasksQueue))
+		// On the main goroutine, before the task's own starts: every later record of the task
+		// names its node, so that its steps can be read against what the node went through
+		task.Log = task.Log.With(slog.Group("node", "name", ns.node.Name()))
+		task.Log.Info("Scheduling task on node", "slots", task.Slots, "startDelay", startDelay, "remainingTasks", len(s.tasksQueue))
 
 		taskKey := task.Job.FQN() + "/" + task.Name
 		var ctx context.Context
@@ -681,8 +684,11 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 		return
 	}
 
-	if node, err := s.provisioner.Provision(ctx, nodeState.nodeName); err != nil {
-		nodeState.log.Error("Provisioning of node failed", "error", err)
+	provisioningStart := time.Now()
+	node, err := s.provisioner.Provision(ctx, nodeState.nodeName)
+	provisioningSeconds := time.Since(provisioningStart).Round(time.Millisecond).Seconds()
+	if err != nil {
+		nodeState.log.Error("Provisioning of node failed", "error", err, "durationSeconds", provisioningSeconds)
 
 		select {
 		case s.deferred <- func() {
@@ -698,12 +704,13 @@ func (s *Scheduler) watchNodeProvisioning(nodeState *nodeState) {
 		case <-s.stop:
 		}
 	} else {
-		nodeState.log.Info("Node is online")
+		nodeState.log.Info("Node is online", "durationSeconds", provisioningSeconds)
 
 		select {
 		case s.deferred <- func() {
 			delete(s.provisionCancels, nodeState.nodeName)
 			nodeState.node = node
+			nodeState.onlineAt = time.Now()
 			nodeState.UpdateStatus(NodeStatusOnline)
 			s.requestTick("online node should be ready for duty")
 		}:
@@ -777,10 +784,7 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 			task.Log.Info("Task aborted during startup delay")
 			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
 
-			if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
-				s.log.Info("Job completed", "name", task.Job.FQN())
-				s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
-			}
+			s.taskFinished(task)
 
 			select {
 			case s.deferred <- func() {
@@ -834,38 +838,39 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 		},
 	}
 
-	task.Log.Info("Running task")
+	task.Log.Info("Running task", "queuedSeconds", time.Since(task.queuedAt).Round(time.Millisecond).Seconds())
 	s.broadcast(EventTaskRunning{Job: task.Job.FQN(), Task: task.Name})
 
 	// This blocks for the entire task duration (minutes to hours)
-	if exitCode, err := node.RunTask(ctx, task, runConfig); err != nil {
+	startedAt := time.Now()
+	exitCode, err := node.RunTask(ctx, task, runConfig)
+	// Every outcome's record carries how long the task ran and its exit code
+	log := task.Log.With("durationSeconds", time.Since(startedAt).Round(time.Millisecond).Seconds(), "exitCode", exitCode)
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			task.Log.Warn("Task timed out")
+			log.Warn("Task timed out")
 			s.broadcast(EventTaskTimedOut{Job: task.Job.FQN(), Task: task.Name})
 		} else if ctx.Err() != nil {
-			task.Log.Info("Task aborted")
+			log.Info("Task aborted")
 			s.broadcast(EventTaskAborted{Job: task.Job.FQN(), Task: task.Name})
 		} else if exitCode == 42 {
-			task.Log.Info("Task ran successfully, but reported issues", "error", err)
+			log.Info("Task ran successfully, but reported issues", "error", err)
 			s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		} else if exitCode == 43 {
-			task.Log.Info("Task skipped, a prerequisite failed", "error", err)
+			log.Info("Task skipped, a prerequisite failed", "error", err)
 			s.broadcast(EventTaskSkipped{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		} else {
-			task.Log.Warn("Task failed while running", "error", err)
+			log.Warn("Task failed while running", "error", err)
 			s.broadcast(EventTaskFailed{Job: task.Job.FQN(), Task: task.Name, ExitCode: exitCode})
 		}
 	} else {
-		task.Log.Info("Task completed")
+		log.Info("Task completed")
 		s.broadcast(EventTaskCompleted{Job: task.Job.FQN(), Task: task.Name})
 	}
 
 	// Atomic counter: multiple watchTaskExecution goroutines may finish concurrently.
 	// When the last task of a job completes, broadcast EventJobCompleted.
-	if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
-		s.log.Info("Job completed", "name", task.Job.FQN())
-		s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
-	}
+	s.taskFinished(task)
 
 	// Free all node slots occupied by this task on the main goroutine (via deferred channel)
 	// to avoid a data race with scheduleTaskOnOnlineNode() which reads nodeState.tasks
@@ -923,7 +928,7 @@ func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 				"error", err, "attempts", nodeState.terminationAttempts)
 			nodeState.UpdateStatus(NodeStatusFailedTerminating)
 		} else {
-			nodeState.log.Info("Node terminated")
+			nodeState.log.Info("Node terminated", "onlineSeconds", nodeState.onlineSeconds())
 			nodeState.UpdateStatus(NodeStatusTerminated)
 		}
 		s.nodes = lo.Without(s.nodes, nodeState)
@@ -949,4 +954,13 @@ func (s *Scheduler) emptyNodesQueue() {
 		s.broadcast(EventNodeTerminated{Node: ns.nodeName})
 	}
 	s.nodesQueue = nil
+}
+
+// taskFinished counts a finished task of its job, whatever its outcome, and reports the job's
+// completion with its last one. Safe from any goroutine: the counter is atomic.
+func (s *Scheduler) taskFinished(task *Task) {
+	if task.Job.tasksCompleted.Add(1) == uint32(len(task.Job.Tasks)) {
+		s.log.Info("Job completed", "name", task.Job.FQN(), "durationSeconds", time.Since(task.Job.scheduledAt).Round(time.Millisecond).Seconds())
+		s.broadcast(EventJobCompleted{Job: task.Job.FQN()})
+	}
 }

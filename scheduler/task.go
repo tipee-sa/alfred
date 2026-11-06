@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/gammadia/alfred/proto"
 )
@@ -27,6 +28,9 @@ type Task struct {
 	Name  string
 	Slots int
 	Log   *slog.Logger
+
+	// When it entered the queue, for the time it waited for a node
+	queuedAt time.Time
 }
 
 func (t *Task) FQN() string {
