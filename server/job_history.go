@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path"
+	"slices"
 	"sort"
 
 	"github.com/gammadia/alfred/proto"
@@ -79,7 +80,8 @@ func loadJobHistory() {
 		return jobs[i].ScheduledAt.AsTime().Before(jobs[j].ScheduledAt.AsTime())
 	})
 	if len(jobs) > maxCompletedJobs {
-		jobs = jobs[len(jobs)-maxCompletedJobs:]
+		// A copy, not a reslice: the backing array would keep the dropped jobs alive
+		jobs = slices.Clone(jobs[len(jobs)-maxCompletedJobs:])
 	}
 
 	serverStatusMutex.Lock()
