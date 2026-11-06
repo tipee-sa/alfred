@@ -139,6 +139,8 @@ type fakeSession struct {
 	hang   bool
 	closed chan struct{}
 	once   sync.Once
+	// When set, Close blocks until it is closed: an SSH connection that stopped draining writes
+	closeBlock chan struct{}
 }
 
 func newFakeSession(hang bool) *fakeSession {
@@ -154,6 +156,9 @@ func (s *fakeSession) Output(string) ([]byte, error) {
 }
 
 func (s *fakeSession) Close() error {
+	if s.closeBlock != nil {
+		<-s.closeBlock
+	}
 	s.once.Do(func() { close(s.closed) })
 	return nil
 }
@@ -229,5 +234,48 @@ func TestBoundedReaderBoundsTheCommand(t *testing.T) {
 	case <-session.closed:
 	case <-time.After(time.Second):
 		t.Error("the session of a timed-out command stayed open")
+	}
+}
+
+func TestBoundedReaderDoesNotWaitForAClosingSession(t *testing.T) {
+	var r boundedReader
+	session := newFakeSession(true)
+	session.closeBlock = make(chan struct{})
+
+	// A read that waits for the close would block for good: fail after a second instead
+	released := false
+	defer func() {
+		if !released {
+			close(session.closeBlock)
+		}
+	}()
+	errs := make(chan error, 1)
+	go func() {
+		_, _, err := r.read(func() (outputSession, error) { return session, nil }, "cmd", 50*time.Millisecond)
+		errs <- err
+	}()
+	select {
+	case err := <-errs:
+		if err == nil {
+			t.Fatal("a command that never ended gave a reading")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the reading waited for the session's close past its timeout")
+	}
+
+	// Once the close goes through, the reading ends and the next one can start
+	close(session.closeBlock)
+	released = true
+	select {
+	case <-session.closed:
+	case <-time.After(time.Second):
+		t.Fatal("the session never closed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for r.pending.Load() && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if r.pending.Load() {
+		t.Error("the reading never ended")
 	}
 }

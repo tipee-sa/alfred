@@ -801,7 +801,7 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 				if len(freed) > 0 {
 					s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slots: freed, Task: nil})
 				}
-				task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", len(freed))
+				task.Log.Debug("Freed task slots", "slotsFreed", len(freed)) // task.Log names the node
 				s.requestTick("aborted task during delay should give its slots to another task")
 			}:
 			case <-s.stop:
@@ -890,7 +890,7 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 		if len(freed) > 0 {
 			s.broadcast(EventNodeSlotUpdated{Node: nodeState.nodeName, Slots: freed, Task: nil})
 		}
-		task.Log.Debug("Freed task slots", "node", nodeState.nodeName, "slotsFreed", len(freed))
+		task.Log.Debug("Freed task slots", "slotsFreed", len(freed)) // task.Log names the node
 		s.requestTick("executed task should give its slots to another task")
 	}:
 	case <-s.stop:

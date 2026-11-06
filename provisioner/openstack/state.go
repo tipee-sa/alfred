@@ -299,10 +299,13 @@ func (r *boundedReader) read(open func() (outputSession, error), cmd string, tim
 	case <-timer.C:
 		mu.Lock()
 		timedOut = true
-		if session != nil {
-			_ = session.Close() // unblocks Output
-		}
+		s := session
 		mu.Unlock()
+		if s != nil {
+			// Unblocks Output. In the background: closing writes to the VM, which a connection
+			// that stopped draining blocks as well, and the caller must not wait past timeout
+			go func() { _ = s.Close() }()
+		}
 		return nil, time.Time{}, fmt.Errorf("the node did not answer within %s", timeout)
 	}
 }

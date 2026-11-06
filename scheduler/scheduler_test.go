@@ -1,7 +1,9 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1919,5 +1921,88 @@ func TestScheduledJobsImagesArePreparedBeforeItsNodes(t *testing.T) {
 		assert.Equal(t, job.Steps, images)
 	case <-time.After(5 * time.Second):
 		t.Fatal("PrepareImages() was never called")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the scheduler's goroutines to log into.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// duplicateKeys returns the top-level keys a JSON object repeats.
+func duplicateKeys(t *testing.T, line string) []string {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(line))
+	if _, err := decoder.Token(); err != nil { // {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	var duplicates []string
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[key.(string)] {
+			duplicates = append(duplicates, key.(string))
+		}
+		seen[key.(string)] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return duplicates
+}
+
+// The logs reach ClickHouse as JSON, where a repeated key overwrites the first: a task's
+// records, which carry their node as a group, must not add another "node".
+func TestSchedulerLogsNoDuplicateKeys(t *testing.T) {
+	nodes := make(chan *mockNode, 10)
+	prov := newMockProvisioner()
+	prov.provisionFunc = func(_ context.Context, nodeName string) (Node, error) {
+		n := &mockNode{name: nodeName, taskDone: make(chan struct{}), terminateCh: make(chan struct{})}
+		nodes <- n
+		return n, nil
+	}
+
+	var logs syncBuffer
+	config := newTestConfig()
+	config.Logger = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	s := New(prov, config)
+	events, unsub := s.Subscribe()
+	defer unsub()
+	go s.Run()
+
+	_, err := s.Schedule(newTestJob("my-task"))
+	require.NoError(t, err)
+	node := waitForNode(t, nodes)
+	waitForEvent[EventTaskRunning](t, events)
+	close(node.taskDone)
+	waitForEvent[EventJobCompleted](t, events)
+	close(node.terminateCh)
+	waitForEvent[EventNodeTerminated](t, events)
+	s.Shutdown()
+	s.Wait()
+
+	output := logs.String()
+	require.Contains(t, output, `"msg":"Freed task slots"`)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if duplicates := duplicateKeys(t, line); len(duplicates) > 0 {
+			t.Errorf("keys %v repeated in %s", duplicates, line)
+		}
 	}
 }
