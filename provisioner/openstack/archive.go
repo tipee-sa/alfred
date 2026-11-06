@@ -164,7 +164,13 @@ func (a *imageArchives) prepare(tag string) {
 	}
 	archive := &imageArchive{ready: make(chan struct{}), lastUsed: time.Now()}
 	a.entries[tag] = archive
-	go a.build(tag, archive)
+	go func() {
+		a.build(tag, archive)
+		// No transfer waits on it to report the failure; the next one retries
+		if archive.err != nil && !errors.Is(archive.err, errArchivesClosed) {
+			a.log.Warn("Failed to prepare image archive", "tag", tag, "error", archive.err)
+		}
+	}()
 }
 
 func (a *imageArchives) build(tag string, archive *imageArchive) {
