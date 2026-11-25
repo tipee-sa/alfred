@@ -368,6 +368,105 @@ func TestResizePool_QueuePrunedWhenProvisioningCoversNeeds(t *testing.T) {
 	assert.Equal(t, 0, len(s.nodesQueue), "queued nodes should be pruned when provisioning covers needs")
 }
 
+// --- Node start times (issue #58) ---
+
+// newFleetScheduler is a scheduler with production's shape: 30 nodes, started 20 s apart.
+func newFleetScheduler() *Scheduler {
+	config := newTestConfig()
+	config.MaxNodes = 30
+	config.SlotsPerNode = 1
+	config.ProvisioningDelay = 20 * time.Second
+
+	return New(&mockProvisioner{shutdownCh: make(chan struct{})}, config)
+}
+
+// queueTasks replaces the tasks queue with count one-slot tasks of a new job.
+func queueTasks(s *Scheduler, count int) {
+	names := make([]string, count)
+	for i := range names {
+		names[i] = fmt.Sprintf("task-%d", i)
+	}
+	s.tasksQueue = makeTasksForJob(makeJob("job", names...))
+}
+
+// queuedStarts gives each queued node's start, in ProvisioningDelay steps after the first node's.
+func queuedStarts(s *Scheduler) []int {
+	return lo.Map(s.nodesQueue, func(ns *nodeState, _ int) int {
+		return int(ns.earliestStart.Sub(s.nodes[0].earliestStart) / s.config.ProvisioningDelay)
+	})
+}
+
+func TestResizePool_ProvisioningNodeCountsOnceAgainstMaxNodes(t *testing.T) {
+	s := newFleetScheduler()
+	queueTasks(s, 2000)
+
+	s.resizePool()
+	require.Len(t, s.nodes, 1)
+	require.Equal(t, NodeStatusProvisioning, s.nodes[0].status)
+	require.Equal(t, lo.RangeFrom(1, 29), queuedStarts(s), "29 nodes queued, one delay apart")
+
+	// Nothing changed: the node being provisioned must not cost the queue its last node.
+	s.resizePool()
+	assert.Equal(t, lo.RangeFrom(1, 29), queuedStarts(s))
+
+	// The first node comes online and takes a task: no node to create again, one delay further.
+	s.nodes[0].status = NodeStatusOnline
+	s.nodes[0].tasks[0] = s.tasksQueue[0]
+	s.tasksQueue = s.tasksQueue[1:]
+	s.resizePool()
+	assert.Equal(t, lo.RangeFrom(1, 29), queuedStarts(s))
+}
+
+func TestResizePool_QueuedNodesComingDueCountOnceAgainstMaxNodes(t *testing.T) {
+	s := newFleetScheduler()
+	queueTasks(s, 2000)
+	s.resizePool()
+	require.Len(t, s.nodesQueue, 29)
+
+	// Three queued nodes come due: they start, and the 26 others keep their place.
+	for _, ns := range s.nodesQueue[:3] {
+		ns.earliestStart = time.Now().Add(-time.Second)
+	}
+	s.resizePool()
+
+	assert.Len(t, s.nodes, 4)
+	assert.Equal(t, lo.RangeFrom(4, 26), queuedStarts(s))
+}
+
+func TestResizePool_CancelledJobGivesItsNodesStartsBack(t *testing.T) {
+	s := newFleetScheduler()
+	queueTasks(s, 2000)
+	s.resizePool()
+	require.Equal(t, lo.RangeFrom(1, 29), queuedStarts(s))
+
+	// The job is cancelled: its queued nodes go.
+	s.tasksQueue = nil
+	s.resizePool()
+	require.Empty(t, s.nodesQueue)
+
+	// The next job's nodes start one delay after the node that did start, not after the 29 that never will.
+	queueTasks(s, 2000)
+	s.resizePool()
+	assert.Equal(t, lo.RangeFrom(1, 29), queuedStarts(s))
+}
+
+func TestResizePool_PrunedQueuedNodesGiveTheirStartsBack(t *testing.T) {
+	s := newFleetScheduler()
+	queueTasks(s, 6)
+	s.resizePool()
+	require.Equal(t, []int{1, 2, 3, 4, 5}, queuedStarts(s))
+
+	// Two tasks left the queue: the last two queued nodes are not needed any more.
+	queueTasks(s, 4)
+	s.resizePool()
+	require.Equal(t, []int{1, 2, 3}, queuedStarts(s))
+
+	// Two tasks arrive: their nodes take the starts the pruned ones had.
+	queueTasks(s, 6)
+	s.resizePool()
+	assert.Equal(t, []int{1, 2, 3, 4, 5}, queuedStarts(s))
+}
+
 // --- Full lifecycle tests ---
 
 func TestLifecycle_NodeReuse(t *testing.T) {
