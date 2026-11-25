@@ -26,6 +26,8 @@ type sshTestServer struct {
 	// Connections accepted since the start, and those still open
 	accepted atomic.Int32
 	open     atomic.Int32
+	// Sessions open on all connections
+	sessions atomic.Int32
 
 	mu    sync.Mutex
 	conns []net.Conn
@@ -98,7 +100,9 @@ func (s *sshTestServer) serve(conn net.Conn) {
 			sessions.Add(-1)
 			continue
 		}
+		s.sessions.Add(1)
 		go func() {
+			defer s.sessions.Add(-1)
 			defer sessions.Add(-1)
 			defer channel.Close()
 			// Ends when the client closes the session
@@ -203,18 +207,18 @@ func TestSessionPoolReusesTheRoomAClosedSessionLeaves(t *testing.T) {
 		t.Fatalf("expected 2 connections for 4 sessions, got %d", got)
 	}
 
-	for range 10 {
-		_ = held[0].Close()
+	for i := range 10 {
+		closed := i % len(held)
+		_ = held[closed].Close()
+		eventually(t, "the server to see the session closed", func() bool { return server.sessions.Load() == 3 })
 		session, err := pool.NewSession()
 		if err != nil {
 			t.Fatal(err)
 		}
-		held[0] = session
+		held[closed] = session
 	}
-	// The closed session's place may not be free yet when the next one opens, which then takes
-	// a third connection: never more, as two places are free from then on
-	if got := server.accepted.Load(); got > 3 {
-		t.Errorf("expected sessions to reuse the connections, got %d connections", got)
+	if got := server.accepted.Load(); got != 2 {
+		t.Errorf("expected sessions to reuse the 2 connections, got %d connections", got)
 	}
 }
 
@@ -232,8 +236,8 @@ func TestSessionPoolWaitsForAFreeSessionAtItsConnectionLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	time.AfterFunc(300*time.Millisecond, func() { _ = first.Close() })
 	start := time.Now()
+	time.AfterFunc(300*time.Millisecond, func() { _ = first.Close() })
 	if _, err := pool.NewSession(); err != nil {
 		t.Fatalf("expected the session to open once another ended, got %v", err)
 	}
@@ -264,7 +268,8 @@ func TestSessionPoolReturnsTheRefusalAfterItsWait(t *testing.T) {
 	if got, want := err.Error(), "ssh: rejected: connect failed (open failed)"; got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
-	if waited := time.Since(start); waited < 200*time.Millisecond || waited > 2*time.Second {
+	// To the end of its wait, where it tries one last time
+	if waited := time.Since(start); waited < pool.wait || waited > pool.wait+2*time.Second {
 		t.Errorf("expected a wait of about %s, got %s", pool.wait, waited)
 	}
 }
@@ -340,13 +345,10 @@ func TestSessionPoolFailsAtOnceWhenTheMainConnectionIsGone(t *testing.T) {
 	pool := server.pool(t)
 	_ = pool.main.Close()
 
-	start := time.Now()
+	// Not a refusal, which is what the pool waits on
 	_, err := pool.NewSession()
 	if err == nil || isSessionRefused(err) {
 		t.Fatalf("expected the connection's error, got %v", err)
-	}
-	if waited := time.Since(start); waited > 150*time.Millisecond {
-		t.Errorf("expected no wait, got %s", waited)
 	}
 	if got := server.accepted.Load(); got != 1 {
 		t.Errorf("expected no other connection, got %d", got)

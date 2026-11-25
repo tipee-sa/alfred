@@ -79,9 +79,12 @@ func (p *sessionPool) NewSession() (*ssh.Session, error) {
 		// refused together do not come back together
 		delay := 200 * time.Millisecond << min(attempt, 4)
 		delay = delay/2 + rand.N(delay)
-		if time.Now().Add(delay).After(deadline) {
+		// The last attempt is made at the deadline, not given up before it
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			return nil, err
 		}
+		delay = min(delay, remaining)
 		select {
 		case <-time.After(delay):
 		case <-p.done:
