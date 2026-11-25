@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/scheduler"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1" // for DockerClient interface
@@ -322,17 +324,8 @@ func RunContainer(
 				lastErr = err
 
 				// Fetch container logs to help diagnose the failure
-				logReader, logErr := RetryResult(2, func() (io.ReadCloser, error) {
-					return docker.ContainerLogs(ctx, resp.ID, container.LogsOptions{
-						ShowStdout: true,
-						ShowStderr: true,
-					})
-				})
-				if logErr == nil {
-					if logs, readErr := io.ReadAll(logReader); readErr == nil && len(logs) > 0 {
-						serviceLog.Warn("Service container logs", "logs", string(logs))
-					}
-					logReader.Close()
+				if logs := serviceContainerLogs(ctx, docker, resp.ID); logs != "" {
+					serviceLog.Warn("Service container logs", "logs", logs)
 				}
 
 				// Remove failed container before creating a new one
@@ -555,6 +548,27 @@ func RunContainer(
 	}
 
 	return 0, nil
+}
+
+// serviceContainerLogs returns a service container's stdout and stderr, interleaved, or "" if
+// they cannot be read. A container without a TTY, as services are, sends them multiplexed: each
+// chunk comes after an 8-byte header (stream, then length), which StdCopy takes off.
+func serviceContainerLogs(ctx context.Context, docker DockerClient, containerID string) string {
+	logReader, err := RetryResult(2, func() (io.ReadCloser, error) {
+		return docker.ContainerLogs(ctx, containerID, container.LogsOptions{
+			ShowStdout: true,
+			ShowStderr: true,
+		})
+	})
+	if err != nil {
+		return ""
+	}
+	defer logReader.Close()
+
+	// What was read before an error still helps
+	var logs bytes.Buffer
+	_, _ = stdcopy.StdCopy(&logs, &logs, logReader)
+	return logs.String()
 }
 
 func startAndWaitForService(

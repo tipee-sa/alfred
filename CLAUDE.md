@@ -414,7 +414,8 @@ The codebase uses several recurring async patterns (all annotated with inline co
   error a failed pull ends with (the daemon answers it with a success). The OpenStack node image
   ships with the service images, so pulls only happen when a jobfile's service image changes.
 - **Service container logs**: collected only on startup failure; step containers always stream
-  theirs.
+  theirs. Without a TTY the daemon multiplexes them (an 8-byte header before each chunk), so
+  `serviceContainerLogs` demultiplexes them with `stdcopy.StdCopy` before logging them.
 - **sshd caps a connection's sessions** (`MaxSessions`, 10 by default) and refuses the next with
   `ssh: rejected: connect failed (open failed)`. Each running step holds one for its whole
   duration (`docker logs --follow`), so a node running 12 two-slot tasks sat at the cap, and the
