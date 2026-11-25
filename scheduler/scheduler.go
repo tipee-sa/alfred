@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -114,7 +113,14 @@ func New(provisioner Provisioner, config Config) *Scheduler {
 		liveLogReaders: make(map[string]func(int) (io.ReadCloser, error)),
 	}
 
-	scheduler.log.Debug("Scheduler config", "config", string(lo.Must(json.Marshal(config))))
+	scheduler.log.Debug("Scheduler config",
+		"maxNodes", config.MaxNodes,
+		"slotsPerNode", config.SlotsPerNode,
+		"provisioningDelaySeconds", config.ProvisioningDelay.Seconds(),
+		"provisioningFailureCooldownSeconds", config.ProvisioningFailureCooldown.Seconds(),
+		"taskStartupDelaySeconds", config.TaskStartupDelay.Seconds(),
+		"taskTimeoutSeconds", config.TaskTimeout.Seconds(),
+	)
 
 	// forwardEvents runs as a long-lived goroutine that drains s.events and queues
 	// each event for all registered listeners (non-blocking, lossless: see subscriber).
@@ -479,7 +485,7 @@ func (s *Scheduler) scheduleTaskOnOnlineNode() bool {
 		// On the main goroutine, before the task's own starts: every later record of the task
 		// names its node, so that its steps can be read against what the node went through
 		task.Log = task.Log.With(slog.Group("node", "name", ns.nodeName))
-		task.Log.Info("Scheduling task on node", "slots", task.Slots, "startDelay", startDelay, "remainingTasks", len(s.tasksQueue))
+		task.Log.Info("Scheduling task on node", "slots", task.Slots, "startDelaySeconds", startDelay.Round(time.Millisecond).Seconds(), "remainingTasks", len(s.tasksQueue))
 
 		taskKey := task.Job.FQN() + "/" + task.Name
 		var ctx context.Context
@@ -791,7 +797,7 @@ func (s *Scheduler) watchTaskExecution(ctx context.Context, cancel context.Cance
 
 	// Stagger task starts to avoid overwhelming the node with concurrent Docker operations
 	if startDelay > 0 {
-		task.Log.Debug("Waiting before starting task", "delay", startDelay)
+		task.Log.Debug("Waiting before starting task", "delaySeconds", startDelay.Round(time.Millisecond).Seconds())
 		select {
 		case <-time.After(startDelay):
 			task.Log.Debug("Startup delay elapsed, starting task now")

@@ -98,7 +98,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 	sshCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	n.log.Debug("Wait for SSH daemon to start", "wait", initialWait)
+	n.log.Debug("Wait for SSH daemon to start", "waitSeconds", initialWait.Seconds())
 	select {
 	case <-time.After(initialWait):
 	case <-ctx.Done():
@@ -125,7 +125,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 		default:
 			n.ssh, err = dial()
 			if err != nil {
-				n.log.Debug("SSH connection refused, retrying", "attempt", connectionAttempts, "retryIn", retryInterval, "error", err)
+				n.log.Debug("SSH connection refused, retrying", "attempt", connectionAttempts, "retryInSeconds", retryInterval.Seconds(), "error", err)
 				select {
 				case <-time.After(retryInterval):
 				case <-sshCtx.Done():
@@ -159,7 +159,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 	// Log what the VM goes through while tasks run on it (state.go)
 	go n.watchState()
 
-	n.log.Debug("Wait for Docker daemon to start", "wait", initialWait)
+	n.log.Debug("Wait for Docker daemon to start", "waitSeconds", initialWait.Seconds())
 	select {
 	case <-time.After(initialWait):
 	case <-ctx.Done():
@@ -183,7 +183,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 					if conn, err = n.ssh.Dial(network, addr); err == nil {
 						return
 					} else {
-						n.log.Debug("Docker connection refused, retrying", "attempt", connectionAttempts, "retryIn", retryInterval, "error", err)
+						n.log.Debug("Docker connection refused, retrying", "attempt", connectionAttempts, "retryInSeconds", retryInterval.Seconds(), "error", err)
 						time.Sleep(retryInterval)
 						connectionAttempts += 1
 					}

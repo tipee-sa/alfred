@@ -9,7 +9,7 @@ pkgs.buildGoModule {
 
   src = flake;
 
-  vendorHash = "sha256-etgxw9bRWIMYe270DonBqf4kVa66NteQPqJn3AWN+io=";
+  vendorHash = "sha256-U8/cFHYfTov1fkr0CaVJiAuRgcygEs8WjA7kSwVzkkU=";
   # The default name embeds the version, which changes with every commit and
   # would refetch every module.
   overrideModAttrs = {

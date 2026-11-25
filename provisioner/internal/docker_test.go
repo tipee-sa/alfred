@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/gammadia/alfred/proto"
 	"github.com/gammadia/alfred/scheduler"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -44,6 +45,8 @@ type mockDocker struct {
 	containerStats string
 	// Replaces containerStats when set
 	containerStatsBody io.ReadCloser
+	// What ContainerLogs returns, as the daemon sends it for a container without a TTY
+	containerLogs []byte
 
 	// Like the daemon when a create request is cancelled in flight: the object
 	// is created, but the call returns the context's error (and no ID).
@@ -134,7 +137,50 @@ func (m *mockDocker) ContainerRemove(_ context.Context, containerID string, _ co
 }
 
 func (m *mockDocker) ContainerLogs(_ context.Context, _ string, _ container.LogsOptions) (io.ReadCloser, error) {
-	return io.NopCloser(strings.NewReader("mock logs")), nil
+	return io.NopCloser(bytes.NewReader(m.containerLogs)), nil
+}
+
+// multiplexed is a log stream as the daemon sends it for a container without a TTY: each write
+// after an 8-byte header naming its stream
+func multiplexed(t *testing.T, chunks ...[2]string) []byte {
+	t.Helper()
+	var stream bytes.Buffer
+	for _, chunk := range chunks {
+		out := stdcopy.Stdout
+		if chunk[0] == "stderr" {
+			out = stdcopy.Stderr
+		}
+		if _, err := stdcopy.NewStdWriter(&stream, out).Write([]byte(chunk[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return stream.Bytes()
+}
+
+func TestServiceContainerLogsDemultiplexed(t *testing.T) {
+	docker := newMockDocker()
+	long := strings.Repeat("x", 300) + "\n"
+	docker.containerLogs = multiplexed(t,
+		[2]string{"stdout", "Entrypoint script started.\n"},
+		[2]string{"stderr", "[ERROR] io_setup() failed with EAGAIN.\n"},
+		[2]string{"stdout", long},
+	)
+
+	want := "Entrypoint script started.\n[ERROR] io_setup() failed with EAGAIN.\n" + long
+	if got := serviceContainerLogs(context.Background(), docker, "ctr"); got != want {
+		t.Errorf("logs %q, want %q", got, want)
+	}
+}
+
+func TestServiceContainerLogsKeepsWhatWasRead(t *testing.T) {
+	// A stream cut in the middle of its second chunk
+	docker := newMockDocker()
+	stream := multiplexed(t, [2]string{"stdout", "first\n"}, [2]string{"stderr", "second\n"})
+	docker.containerLogs = stream[:len(stream)-3]
+
+	if got := serviceContainerLogs(context.Background(), docker, "ctr"); !strings.HasPrefix(got, "first\n") {
+		t.Errorf("logs %q, want them to start with the first chunk", got)
+	}
 }
 
 func (m *mockDocker) ContainerStats(_ context.Context, _ string, _ bool) (container.StatsResponseReader, error) {

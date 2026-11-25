@@ -303,7 +303,10 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
   telemetry is its logs: everything it sends is in the journal too. An OTLP receiver listens on
   `127.0.0.1:4317/4318`, used only by the collector's own telemetry. Its token is only in `/opt/telemetry/.env` on the host. It replaces the Datadog
   Agent, stopped and masked on 2026-11-01 (Linear PF-182). Parts are copied from the `platform`
-  repository's node collector: `deploy/telemetry/README.md` says which.
+  repository's node collector: `deploy/telemetry/README.md` says which. A change to
+  `deploy/telemetry/` reaches the host only through `just deploy-telemetry`: until 2026-11-25 the host
+  ran a config from before `all: true`, and every journal line over 4 KiB (long "Service
+  container logs") reached ClickHouse with an empty body and no attributes (issue #63).
 - **Self-update**: Client detects latest version from GitHub release redirect URL, downloads
   and atomically replaces its own binary.
 - **Nix**: The flake's default package (`nix/packages/alfred.nix`) builds the client from source;
@@ -414,7 +417,8 @@ The codebase uses several recurring async patterns (all annotated with inline co
   error a failed pull ends with (the daemon answers it with a success). The OpenStack node image
   ships with the service images, so pulls only happen when a jobfile's service image changes.
 - **Service container logs**: collected only on startup failure; step containers always stream
-  theirs.
+  theirs. Without a TTY the daemon multiplexes them (an 8-byte header before each chunk), so
+  `serviceContainerLogs` demultiplexes them with `stdcopy.StdCopy` before logging them.
 - **sshd caps a connection's sessions** (`MaxSessions`, 10 by default) and refuses the next with
   `ssh: rejected: connect failed (open failed)`. Each running step holds one for its whole
   duration (`docker logs --follow`), so a node running 12 two-slot tasks sat at the cap, and the
@@ -432,7 +436,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   (LIFO defer order). Getting this wrong loses artifacts.
 - **The server's logs are its telemetry**: they reach ClickHouse through journald, and a job's
   timeline is read from them, so a record's message and attribute keys are what queries match.
-  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). Every record a timeline needs
+  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...): pass `"fooSeconds", d.Seconds()`,
+  never a `time.Duration`, which slog writes as nanoseconds (the server's handler turns one that
+  slips through into `fooSeconds`, `server/log/log.go`). Every record a timeline needs
   is INFO or WARN, and the host runs at `ALFRED_LOG_LEVEL=info` (since 2026-11-06). At `debug`,
   a 2000-task job writes ~110k lines in 14 minutes (94% DEBUG) and outruns journald's rate limit
   (10k lines per 30 s), which drops lines, so they never reach ClickHouse either: switch to
