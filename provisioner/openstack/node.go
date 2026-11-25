@@ -55,11 +55,14 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 
 	openstackClient := n.provisioner.client
 
-	n.log.Debug("Wait for server to become ready", "wait", 2*time.Minute)
-	err = servers.WaitForStatus(openstackClient, server.ID, "ACTIVE", 120)
+	n.log.Debug("Wait for server to become ready", "wait", serverActiveTimeout)
+	waited, err := waitForActive(ctx, func() (serverStatus, error) {
+		return getServerStatus(openstackClient, server.ID)
+	}, serverActiveTimeout, serverPollInterval)
 	if err != nil {
 		return fmt.Errorf("failed to wait for server '%s' to become ready: %w", n.name, err)
 	}
+	n.log.Info("Server is active", "durationSeconds", waited.Seconds())
 
 	var nodeAddress string
 	if err := internal.Retry(4, func() error {
