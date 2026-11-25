@@ -14,32 +14,22 @@ import (
 )
 
 type fs struct {
-	root string
-	ssh  *ssh.Client
+	root     string
+	sessions *sessionPool
 }
 
 // fs implements internal.WorkspaceFS
 var _ internal.WorkspaceFS = (*fs)(nil)
 
-func newFs(root string, ssh *ssh.Client) *fs {
+func newFs(root string, sessions *sessionPool) *fs {
 	return &fs{
-		root: strings.TrimRight(root, "/"),
-		ssh:  ssh,
+		root:     strings.TrimRight(root, "/"),
+		sessions: sessions,
 	}
 }
 
-// newSession creates an SSH session with retry and exponential backoff.
-// Under heavy load (many concurrent tasks), the SSH daemon or Docker daemon
-// may temporarily reject new sessions/channels. Retrying avoids failing
-// operations that would succeed moments later.
-func newSession(sshClient *ssh.Client) (*ssh.Session, error) {
-	return internal.RetryResult(6, func() (*ssh.Session, error) {
-		return sshClient.NewSession()
-	})
-}
-
 func (f *fs) through(thunk func(ssh.Session) error) error {
-	session, err := newSession(f.ssh)
+	session, err := f.sessions.NewSession()
 	if err != nil {
 		return err
 	}
@@ -63,7 +53,7 @@ func (f *fs) MkDir(p string) error {
 }
 
 func (f *fs) SaveContainerLogs(containerId, p string) error {
-	session, err := newSession(f.ssh)
+	session, err := f.sessions.NewSession()
 	if err != nil {
 		return err
 	}
@@ -77,7 +67,7 @@ func (f *fs) SaveContainerLogs(containerId, p string) error {
 }
 
 func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) error {
-	session, err := newSession(f.ssh)
+	session, err := f.sessions.NewSession()
 	if err != nil {
 		return err
 	}
@@ -96,7 +86,7 @@ func (f *fs) StreamContainerLogs(ctx context.Context, containerId, p string) err
 }
 
 func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
-	session, err := newSession(f.ssh)
+	session, err := f.sessions.NewSession()
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +117,7 @@ func (f *fs) TailLogs(dir string, lines int) (io.ReadCloser, error) {
 // hangs on long-lived connections. Setting session.Stdout lets the SSH
 // library manage channel reading via an internal goroutine.
 func (f *fs) Archive(p string) (io.ReadCloser, error) {
-	session, err := newSession(f.ssh)
+	session, err := f.sessions.NewSession()
 	if err != nil {
 		return nil, err
 	}

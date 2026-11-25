@@ -24,8 +24,10 @@ type Node struct {
 	provisioner *Provisioner
 	server      *servers.Server
 	ssh         *ssh.Client
-	docker      *client.Client
-	fs          *fs
+	// Opens the node's SSH sessions, on ssh or on more connections when it is full (sessions.go)
+	sessions *sessionPool
+	docker   *client.Client
+	fs       *fs
 
 	terminated atomic.Bool
 
@@ -100,6 +102,17 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 		return ctx.Err()
 	}
 
+	dial := func() (*ssh.Client, error) {
+		return dialSSH(fmt.Sprintf("%s:22", nodeAddress), &ssh.ClientConfig{
+			User:            n.provisioner.config.SshUsername,
+			Timeout:         cmdTimeout,
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Auth: []ssh.AuthMethod{
+				ssh.PublicKeys(n.provisioner.privateKey),
+			},
+		})
+	}
+
 	connectionAttempts := 1
 	for n.ssh == nil {
 		select {
@@ -107,14 +120,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 			return fmt.Errorf("failed to connect to server '%s' after %s and %d attempts: %w", n.name, timeout, connectionAttempts, err)
 
 		default:
-			n.ssh, err = ssh.Dial("tcp", fmt.Sprintf("%s:22", nodeAddress), &ssh.ClientConfig{
-				User:            n.provisioner.config.SshUsername,
-				Timeout:         cmdTimeout,
-				HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-				Auth: []ssh.AuthMethod{
-					ssh.PublicKeys(n.provisioner.privateKey),
-				},
-			})
+			n.ssh, err = dial()
 			if err != nil {
 				n.log.Debug("SSH connection refused, retrying", "attempt", connectionAttempts, "retryIn", retryInterval, "error", err)
 				select {
@@ -127,9 +133,11 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 		}
 	}
 
+	n.sessions = newSessionPool(n.ssh, dial, n.log)
+
 	// Start SSH keepalive goroutine to prevent connection from dying during long tasks (4h+)
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(sshKeepaliveInterval)
 		defer ticker.Stop()
 		for range ticker.C {
 			if n.terminated.Load() {
@@ -185,7 +193,7 @@ func (n *Node) connect(ctx context.Context, server *servers.Server) (err error) 
 	}
 
 	// Initialize file system
-	n.fs = newFs(n.provisioner.config.Workspace, n.ssh)
+	n.fs = newFs(n.provisioner.config.Workspace, n.sessions)
 
 	return nil
 }
@@ -315,7 +323,7 @@ func (n *Node) ensureNodeHasImage(image string) (string, error) {
 	// Last resort: list all images on the node to help diagnose
 	n.log.Warn("Image not accessible by tag after docker load, listing all images on node for diagnostics",
 		"image", image, "tag", tag)
-	diagSession, diagErr := newSession(n.ssh)
+	diagSession, diagErr := n.sessions.NewSession()
 	if diagErr == nil {
 		var diagOutput bytes.Buffer
 		diagSession.Stdout = &diagOutput
@@ -334,6 +342,9 @@ func (n *Node) Terminate() error {
 		return nil
 	}
 
+	if n.sessions != nil {
+		n.sessions.Close()
+	}
 	if n.ssh != nil {
 		_ = n.ssh.Close()
 	}
