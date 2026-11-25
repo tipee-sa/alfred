@@ -303,7 +303,10 @@ OpenStack flags: `--openstack-{docker-host,flavor,image,networks,security-groups
   telemetry is its logs: everything it sends is in the journal too. An OTLP receiver listens on
   `127.0.0.1:4317/4318`, used only by the collector's own telemetry. Its token is only in `/opt/telemetry/.env` on the host. It replaces the Datadog
   Agent, stopped and masked on 2026-11-01 (Linear PF-182). Parts are copied from the `platform`
-  repository's node collector: `deploy/telemetry/README.md` says which.
+  repository's node collector: `deploy/telemetry/README.md` says which. A change to
+  `deploy/telemetry/` reaches the host only through `just deploy-telemetry`: until 2026-11-25 the host
+  ran a config from before `all: true`, and every journal line over 4 KiB (long "Service
+  container logs") reached ClickHouse with an empty body and no attributes (issue #63).
 - **Self-update**: Client detects latest version from GitHub release redirect URL, downloads
   and atomically replaces its own binary.
 - **Nix**: The flake's default package (`nix/packages/alfred.nix`) builds the client from source;

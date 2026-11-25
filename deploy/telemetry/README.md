@@ -32,6 +32,10 @@ It copies both files to `/opt/telemetry` and recreates the containers (a bind-mo
 `otelcol.yaml` that changed is not reloaded otherwise). The journal cursor and the export
 queue are in the `telemetry_otelcol-data` volume, so the journal resumes where it stopped.
 
+Nothing else deploys it: a change merged here reaches the host only with this command. One merged
+on 2026-11-06 (`all: true`, among others) waited for it until 2026-11-25, and meanwhile every
+Alfred line over 4 KiB reached ClickHouse with an empty body and no attributes.
+
 ## Check
 
 - `sudo docker compose -f /opt/telemetry/compose.yaml logs otelcol`: a refused token shows
