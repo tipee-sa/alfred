@@ -401,6 +401,13 @@ The codebase uses several recurring async patterns (all annotated with inline co
   (`until` is not supported with `--volumes`, hence two commands). A weekly `systemctl kill alfred` timer used to work around
   OpenStack tokens expiring; `AllowReauth` fixed that (2026-10-11), and the timer was disabled on
   2026-11-06.
+- **Node starts stay on the `--provisioning-delay` grid** (issue #58): `earliestNextNodeStart` is
+  the start of the next node to create, one delay after the last node queued or started. Whatever
+  drops queued nodes goes through `removeQueuedNodes`, which gives their starts back; left where a
+  cancelled 30-node job had pushed it, the next job waited 10 minutes for its second node. And a
+  node counts once against `--max-nodes`: `s.nodes` holds the provisioning nodes, which
+  `NbNodesToCreate` takes as incoming, not existing. Counted in both, each cost the queue a node,
+  re-created at the end of the grid (7 min 40 without a new node, 580+ tasks queued).
 - **Service images are pulled once per daemon**: tasks take a lock per Docker daemon and image
   (`servicePulls` in `provisioner/internal/docker.go`), and a pull's progress is decoded for the
   error a failed pull ends with (the daemon answers it with a success). The OpenStack node image

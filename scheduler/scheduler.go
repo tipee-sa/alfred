@@ -544,6 +544,10 @@ func (s *Scheduler) resizePool() {
 			provisioningNodes++
 		}
 	}
+	// s.nodes holds the provisioning nodes too, and NbNodesToCreate takes them as incoming nodes:
+	// counted in both, each one took a node off --max-nodes for as long as it was provisioning.
+	// Counted here, before the queue's nodes join s.nodes below.
+	existingNodes := len(s.nodes) - provisioningNodes
 
 	s.log.Debug("Need more nodes",
 		"totalSlotsNeeded", totalSlotsNeeded,
@@ -553,7 +557,7 @@ func (s *Scheduler) resizePool() {
 	)
 
 	nbNodesToCreate := func(incomingNodes int) int {
-		return internal.NbNodesToCreate(s.config.MaxNodes, slotsPerNode, totalSlotsNeeded, len(s.nodes), incomingNodes)
+		return internal.NbNodesToCreate(s.config.MaxNodes, slotsPerNode, totalSlotsNeeded, existingNodes, incomingNodes)
 	}
 
 	nodesToCreate := 0
@@ -951,21 +955,27 @@ func (s *Scheduler) watchNodeTermination(nodeState *nodeState) {
 	}
 }
 
+// removeQueuedNodes drops the last count nodes of the queue and gives their start times back: the
+// next node created takes the earliest of them, one ProvisioningDelay after the node before it.
+// The queue is in start order (nodes join at its tail, and leave from its head to be provisioned).
+// Left where the dropped nodes had pushed it, earliestNextNodeStart made the next job wait for
+// nodes that would never start (10 minutes after a cancelled 30-node job, on 2026-11-25).
 func (s *Scheduler) removeQueuedNodes(count int) {
-	removed := 0
-	for i := len(s.nodesQueue) - 1; i >= 0 && removed < count; i-- {
-		ns := s.nodesQueue[i]
-		s.broadcast(EventNodeTerminated{Node: ns.nodeName})
-		s.nodesQueue = append(s.nodesQueue[:i], s.nodesQueue[i+1:]...)
-		removed++
+	count = min(count, len(s.nodesQueue))
+	if count < 1 {
+		return
 	}
+
+	kept := len(s.nodesQueue) - count
+	for _, ns := range s.nodesQueue[kept:] {
+		s.broadcast(EventNodeTerminated{Node: ns.nodeName})
+	}
+	s.earliestNextNodeStart = s.nodesQueue[kept].earliestStart
+	s.nodesQueue = s.nodesQueue[:kept]
 }
 
 func (s *Scheduler) emptyNodesQueue() {
-	for _, ns := range s.nodesQueue {
-		s.broadcast(EventNodeTerminated{Node: ns.nodeName})
-	}
-	s.nodesQueue = nil
+	s.removeQueuedNodes(len(s.nodesQueue))
 }
 
 // taskFinished counts a finished task of its job, whatever its outcome, and reports the job's
