@@ -416,7 +416,8 @@ The codebase uses several recurring async patterns (all annotated with inline co
   (`provisioner/openstack/sessions.go`), which opens another SSH connection when all are full
   ("Opened another SSH connection to the node"), up to 8, then waits a minute for a session to
   end. Never call `n.ssh.NewSession()` directly. Docker's API calls are not sessions (forwarded
-  channels on the main connection) and are not capped.
+  channels on the main connection) and are not capped. A step whose log stream fails anyway gets
+  its log written whole from the container ("Container logs saved after their stream failed").
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
   real server disagree on redo logs). Don't use it in service health benchmarks.
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion
