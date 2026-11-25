@@ -86,6 +86,7 @@ alfred/
 │   └── openstack/           #   OpenStack VM provisioner (SSH + Docker)
 │       ├── archive.go      #     Image archives, built once for all nodes
 │       ├── transfer.go     #     Image transfer to a node, timed
+│       ├── sessions.go     #     SSH sessions over as many connections as they need
 │       └── state.go        #     "Node state" record every 15 s
 ├── proto/
 │   ├── alfred.proto         #   gRPC service + message definitions
@@ -406,6 +407,17 @@ The codebase uses several recurring async patterns (all annotated with inline co
   ships with the service images, so pulls only happen when a jobfile's service image changes.
 - **Service container logs**: collected only on startup failure; step containers always stream
   theirs.
+- **sshd caps a connection's sessions** (`MaxSessions`, 10 by default) and refuses the next with
+  `ssh: rejected: connect failed (open failed)`. Each running step holds one for its whole
+  duration (`docker logs --follow`), so a node running 12 two-slot tasks sat at the cap, and the
+  mkdir, archive and delete of the tasks around them were refused: tasks failed creating their
+  workspace, artifacts and logs were lost (most large jobs from 2026-11-12, 24 tasks of one on
+  2026-11-25). Every session of a node now goes through its `sessionPool`
+  (`provisioner/openstack/sessions.go`), which opens another SSH connection when all are full
+  ("Opened another SSH connection to the node"), up to 8, then waits a minute for a session to
+  end. Never call `n.ssh.NewSession()` directly. Docker's API calls are not sessions (forwarded
+  channels on the main connection) and are not capped. A step whose log stream fails anyway gets
+  its log written whole from the container ("Container logs saved after their stream failed").
 - **MySQL `--innodb-fast-shutdown=2`**: Breaks MySQL's init sequence (temporary server and
   real server disagree on redo logs). Don't use it in service health benchmarks.
 - **Workspace defer order matters**: Artifacts must be archived BEFORE workspace deletion

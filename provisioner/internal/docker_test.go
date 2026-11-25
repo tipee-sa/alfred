@@ -181,6 +181,10 @@ type mockFS struct {
 	dirsCreated  []string
 	deletedPaths []string
 	hostPath     string
+	// What StreamContainerLogs and SaveContainerLogs return, and the logs saved
+	streamErr error
+	saveErr   error
+	savedLogs []string
 }
 
 func newMockFS() *mockFS {
@@ -196,8 +200,14 @@ func (f *mockFS) MkDir(p string) error {
 	return nil
 }
 
-func (f *mockFS) SaveContainerLogs(_, _ string) error                      { return nil }
-func (f *mockFS) StreamContainerLogs(_ context.Context, _, _ string) error { return nil }
+func (f *mockFS) SaveContainerLogs(_, p string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.savedLogs = append(f.savedLogs, p)
+	return f.saveErr
+}
+
+func (f *mockFS) StreamContainerLogs(_ context.Context, _, _ string) error { return f.streamErr }
 
 func (f *mockFS) Archive(_ string) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader([]byte("archive-data"))), nil
@@ -723,5 +733,55 @@ func TestRunContainer_ExitCode43(t *testing.T) {
 	}
 	if exitCode != 43 {
 		t.Fatalf("expected exit code 43, got %d", exitCode)
+	}
+}
+
+// A step whose log stream failed still has its log: the container outlives the step, and its
+// log is written whole instead.
+func TestRunContainer_SavesLogsWhenTheirStreamFailed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		streamErr, saveErr error
+		wantSaved          []string
+		wantLog            string
+	}{
+		"stream worked": {
+			wantSaved: nil,
+		},
+		"stream failed": {
+			streamErr: errors.New("ssh: rejected: connect failed (open failed)"),
+			wantSaved: []string{"/output/task-1-step-1.log"},
+			wantLog:   "level=WARN msg=\"Container logs saved after their stream failed\"",
+		},
+		"stream and save failed": {
+			streamErr: errors.New("ssh: rejected: connect failed (open failed)"),
+			saveErr:   errors.New("no such container"),
+			wantSaved: []string{"/output/task-1-step-1.log"},
+			wantLog:   "level=ERROR msg=\"Failed to stream container logs\"",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			docker := newMockDocker()
+			fs := newMockFS()
+			fs.streamErr, fs.saveErr = tc.streamErr, tc.saveErr
+			task := testTask([]string{"step-image:latest"})
+			var logs bytes.Buffer
+			task.Log = slog.New(slog.NewTextHandler(&logs, nil))
+
+			docker.containerWaitCh <- container.WaitResponse{StatusCode: 0}
+
+			// The task's outcome is its steps', whatever became of their logs
+			if exitCode, err := RunContainer(context.Background(), docker, task, fs, noopRunConfig(), nil); err != nil || exitCode != 0 {
+				t.Fatalf("expected the task to succeed, got exit code %d and %v", exitCode, err)
+			}
+			if !slices.Equal(fs.savedLogs, tc.wantSaved) {
+				t.Errorf("saved logs %v, want %v", fs.savedLogs, tc.wantSaved)
+			}
+			if tc.wantLog != "" && !strings.Contains(logs.String(), tc.wantLog) {
+				t.Errorf("want a record with %q, got:\n%s", tc.wantLog, logs.String())
+			}
+			if tc.wantLog == "" && strings.Contains(logs.String(), "stream") {
+				t.Errorf("want no record about the log stream, got:\n%s", logs.String())
+			}
+		})
 	}
 }

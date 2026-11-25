@@ -481,7 +481,13 @@ func RunContainer(
 				// Container exited. Wait for log streaming goroutine to flush remaining output.
 				// Only report log errors if they're genuine (not from our own cancellation).
 				if err := <-logDone; err != nil && logCtx.Err() == nil {
-					task.Log.Error("Failed to stream container logs", "error", err, "step", stepIndex)
+					// The container is still there, and so is its log: write it whole, over
+					// whatever the stream wrote before it failed
+					if saveErr := taskFs.SaveContainerLogs(resp.ID, logPath); saveErr != nil {
+						task.Log.Error("Failed to stream container logs", "error", err, "saveError", saveErr, "step", stepIndex)
+					} else {
+						task.Log.Warn("Container logs saved after their stream failed", "error", err, "step", stepIndex)
+					}
 				}
 				task.Log.Info("Step finished", append([]any{"step", stepIndex, "exitCode", status.StatusCode, "durationSeconds", stepSeconds()}, usage.logAttrs()...)...)
 

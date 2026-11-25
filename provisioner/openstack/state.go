@@ -228,7 +228,7 @@ func (s nodeSample) logAttrs(prev *nodeSample) []any {
 
 // readState runs nodeStateCommand on the node, within nodeStateTimeout.
 func (n *Node) readState() (nodeSample, error) {
-	output, at, err := n.stateReader.read(func() (outputSession, error) { return n.ssh.NewSession() }, nodeStateCommand, nodeStateTimeout)
+	output, at, err := n.stateReader.read(func() (outputSession, error) { return n.sessions.NewSession() }, nodeStateCommand, nodeStateTimeout)
 	if err != nil {
 		return nodeSample{}, err
 	}

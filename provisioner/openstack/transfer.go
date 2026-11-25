@@ -72,7 +72,7 @@ func (n *Node) transferImage(tag string, stats *transferStats) error {
 	defer archive.Close()
 	stats.opened = time.Now()
 
-	session, err := newSession(n.ssh)
+	session, err := n.sessions.NewSession()
 	if err != nil {
 		return err
 	}
