@@ -84,6 +84,7 @@ alfred/
 │   │   └── workspacefs.go  #   WorkspaceFS interface + ScopedFS
 │   ├── local/               #   Local Docker provisioner (thin wrapper)
 │   └── openstack/           #   OpenStack VM provisioner (SSH + Docker)
+│       ├── server.go       #     Wait for a new server to become ACTIVE (stops on ERROR)
 │       ├── archive.go      #     Image archives, built once for all nodes
 │       ├── transfer.go     #     Image transfer to a node, timed
 │       ├── sessions.go     #     SSH sessions over as many connections as they need
@@ -438,7 +439,7 @@ The codebase uses several recurring async patterns (all annotated with inline co
   `debug` only for a while, to investigate. A task's records carry
   `task.job`, `task.name` and, once scheduled, `node.name`; the stages log their end with a
   duration ("Running task", "Task completed", "Step started"/"Step finished", "Service started",
-  "Preserved artifacts", "Node is online", "Job completed", "Loaded image from client", "Image
+  "Preserved artifacts", "Server is active", "Node is online", "Job completed", "Loaded image from client", "Image
   transferred to node"). "Step finished" adds the container's peak memory and CPU
   (`provisioner/internal/usage.go`), and each OpenStack node logs "Node state" every 15 s, read
   over its SSH connection (`provisioner/openstack/state.go`). Events, not metrics, by choice:
