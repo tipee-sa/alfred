@@ -11,15 +11,15 @@ type ArtifactPreserver func(io.Reader, *Task) error
 type SecretLoader func(string) ([]byte, error)
 
 type Config struct {
-	ArtifactPreserver           ArtifactPreserver `json:"-"`
-	SlotsPerNode                int               `json:"slots-per-node"`
-	Logger                      *slog.Logger      `json:"-"`
-	MaxNodes                    int               `json:"max-nodes"`
-	ProvisioningDelay           time.Duration     `json:"provisioning-delay"`
-	ProvisioningFailureCooldown time.Duration     `json:"provisioning-failure-cooldown"`
-	SecretLoader                SecretLoader      `json:"-"`
-	TaskStartupDelay            time.Duration     `json:"task-startup-delay"`
-	TaskTimeout                 time.Duration     `json:"task-timeout"`
+	ArtifactPreserver           ArtifactPreserver
+	SlotsPerNode                int
+	Logger                      *slog.Logger
+	MaxNodes                    int
+	ProvisioningDelay           time.Duration
+	ProvisioningFailureCooldown time.Duration
+	SecretLoader                SecretLoader
+	TaskStartupDelay            time.Duration
+	TaskTimeout                 time.Duration
 }
 
 func Validate(config Config) error {

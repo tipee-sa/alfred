@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/gammadia/alfred/server/flags"
 	"github.com/spf13/viper"
@@ -26,8 +27,9 @@ func Init() error {
 	}
 
 	options := slog.HandlerOptions{
-		AddSource: viper.GetBool(flags.LogSource),
-		Level:     logLevel,
+		AddSource:   viper.GetBool(flags.LogSource),
+		Level:       logLevel,
+		ReplaceAttr: durationsInSeconds,
 	}
 
 	switch format := viper.GetString(flags.LogFormat); format {
@@ -41,6 +43,17 @@ func Init() error {
 
 	logger = Base.With("component", "server")
 	return nil
+}
+
+// durationsInSeconds writes a time.Duration as a number of seconds, its key suffixed with
+// "Seconds". The logs are the server's telemetry, whose durations are seconds (durationSeconds,
+// queuedSeconds, ...), and slog writes a Duration as nanoseconds in JSON: a record should pass
+// "fooSeconds", d.Seconds() itself, and this catches the one that does not.
+func durationsInSeconds(_ []string, a slog.Attr) slog.Attr {
+	if a.Value.Kind() == slog.KindDuration {
+		return slog.Float64(a.Key+"Seconds", a.Value.Duration().Round(time.Millisecond).Seconds())
+	}
+	return a
 }
 
 // Proxies for slog.Logger methods

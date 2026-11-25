@@ -433,7 +433,9 @@ The codebase uses several recurring async patterns (all annotated with inline co
   (LIFO defer order). Getting this wrong loses artifacts.
 - **The server's logs are its telemetry**: they reach ClickHouse through journald, and a job's
   timeline is read from them, so a record's message and attribute keys are what queries match.
-  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...). Every record a timeline needs
+  Durations are seconds (`durationSeconds`, `queuedSeconds`, ...): pass `"fooSeconds", d.Seconds()`,
+  never a `time.Duration`, which slog writes as nanoseconds (the server's handler turns one that
+  slips through into `fooSeconds`, `server/log/log.go`). Every record a timeline needs
   is INFO or WARN, and the host runs at `ALFRED_LOG_LEVEL=info` (since 2026-11-06). At `debug`,
   a 2000-task job writes ~110k lines in 14 minutes (94% DEBUG) and outruns journald's rate limit
   (10k lines per 30 s), which drops lines, so they never reach ClickHouse either: switch to
